@@ -172,7 +172,7 @@ Flight/payload record layouts (big-endian, as every existing record):
 
 | Criterion | Result |
 |---|---|
-| 1. Unit tests, honesty, canary | `unittest discover -s tests`: 395 tests OK (369 before; 26 new in `tests/test_wad_uplink.py`, plus `WAD_CHANNELS` in `test_runner.py`). `honesty.py --canary`: 17 checks, 0 failed. |
+| 1. Unit tests, honesty, canary | `unittest discover -s tests`: 412 tests OK (369 before; 38 new in `tests/test_wad_uplink.py`, 5 in `tests/test_wad_uplink_demo.py`, plus `WAD_CHANNELS` in `test_runner.py`). `honesty.py --canary`: 17 checks, 0 failed. |
 | 2. `basic.wad` over `freedoom2.wad` under the code autopilot | One pilot (`--system-one code --system-two none`) flying. The 2704 bytes went up in 1.0 s, then `[FileReceived]`, then `[WadUplinked] Uplinked WAD ready to load: /root/doom/wads/uplink/basic.wad`. `LOAD_WAD` gave `[WadLoaded] Now flying basic.wad over freedoom2.wad on MAP01` about 2 s later. Telemetry: `WAD_IWAD='freedoom2.wad' WAD_PWAD='basic.wad'`, `WAD_LOADS 0 -> 1`, `EPISODE 1 -> 2`, `FRAMES_SENT 311 -> 331`. Frame `out/wad_uplink_basic_MAP01.jpg` shows basic.wad's room and its Cacodemon, the player at 100% health. |
 | 3. IWAD swap | A fresh flight on `freedoom1.wad`. `doom1.wad` went up as `shareware.wad`: 4,196,020 bytes in 167.7 s (25.0 KB/s), and the md5 on board matches `doom1.wad`. `[WadLoaded] Now flying shareware.wad on E1M1`, `WAD_IWAD='shareware.wad'`, `EPISODE 1 -> 2`. The saved frame is E1M1's opening hangar. |
 | 4. Negative cases (all `WadLoadFailed`; `WAD_IWAD`, `WAD_LOADS` and `EPISODE` unchanged; `FRAMES_SENT` rising) | Truncated (200 KB of doom1.wad): "the game would not start on it (killed by signal 11: Failed to allocate memory from system heap)". Missing: "nothere.wad is in neither the uplink nor the installed WAD directory". Traversal: "IWAD must be a bare file name, not a path", and the same for a PWAD `../uplink/shareware.wad`. Wrong extension: "IWAD is not a .wad file". During an unfinished uplink (11,776 of 4,196,020 bytes): "shareware.wad has not finished its uplink (shareware.wad.1791067902.part so far)". The uplink then completed and loaded. Extra case, a map not in the WAD (`MAP01` on shareware): refused after the timeout, "is it in that WAD?". |
@@ -239,7 +239,7 @@ raising upstream".
 - A truncated uplink (`trunc-doom1.wad`), a missing name, traversal and a wrong extension, all refused with
   `WAD_IWAD`, `WAD_LOADS` and `EPISODE` unchanged and frames rising.
 
-Afterwards only the flying WAD's pin was left, and no ViZDoom engine was orphaned. 445 unit tests pass, and
+Afterwards only the flying WAD's pin was left, and no ViZDoom engine was orphaned. 412 unit tests pass (369 before this branch), and
 honesty plus the canary report 17 checks, 0 failed.
 
 ### Suggested charter note (for the PR; the charter is not edited)
