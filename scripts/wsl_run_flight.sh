@@ -10,7 +10,7 @@ REPO=$DOOMSAT_REPO
 # GEOMETRY=on   exact lines, gated on the automap having drawn them (payload/seen_geometry.py)
 # ORACLE=L0|L1  the diagnostic ladder. Never on a shareware level, and never scored.
 # WAD=, MAP=    which level. A dev flight is WAD=freedoom1.wad.
-mkdir -p "$RUN" "$REPO/out"
+mkdir -p "$RUN" "$REPO/out" "$WADS/uplink"   # uplink: where an uplinked WAD lands (LOAD_WAD, README)
 stop() {
   pkill -f "doom_payloa[d].py --fps" 2>/dev/null
   pkill -f "fprime_yamc[s]" 2>/dev/null
