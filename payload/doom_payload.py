@@ -36,11 +36,13 @@ import io
 import math
 import os
 import re
+import signal
 import socket
 import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections import deque
 
@@ -130,7 +132,8 @@ STEP_MARKS_BARRIER = False  # on: tell the planner instead, so it routes round r
 DEPTH_FAR = 56         # depth steps beyond which the range camera is not trusted (~400 units)
 SENSE_EVERY = 7        # tics between automap stamps and the slower sensing (5 Hz)
 UPLINK_TIMEOUT_S = 3.0  # no CONTROL for this long -> release everything (safe mode)
-WAD_PROBE_TIMEOUT_S = 20.0  # a LOAD_WAD whose game has not flown a second in a child process by now is refused
+WAD_PROBE_TIMEOUT_S = 15.0  # a LOAD_WAD whose game has not flown a second in a child process by now is refused
+PROBE_LOADED = "[probe] the game loaded the file"   # what the child says between loading and starting the map
 DOOR_TRIES = 10        # use presses at a door before it counts as "does not open for me now"
 DOOR_RETRY_S = 120.0   # a door that did not open is treated as a wall for this long
 # How long a barrier learned by bumping into something is believed. It used to be an hour, which inside a
@@ -742,6 +745,8 @@ class Payload:
         g.init()
         for c in AM_CVARS:
             g.send_game_command(c)
+        if getattr(self.args, "probe", False):
+            print(PROBE_LOADED, flush=True)
         return g
 
     def new_episode(self):
@@ -805,7 +810,10 @@ class Payload:
     def level_finished(self):
         """Carry weapons and ammunition into the next map, as the game does (keys stay behind)."""
         self.carry = {"shotgun": self.var("WEAPON3") > 0, "shells": int(self.var("AMMO3")), "bullets": int(self.var("AMMO2"))}
-        self.map = next_map(self.map)
+        # Over a PWAD (LOAD_WAD) the next map would be the IWAD's, or one the engine cannot find, and
+        # new_episode() on a missing map never returns: fly the uplinked one again instead.
+        if not self.pwad:
+            self.map = next_map(self.map)
         self.new_episode()
 
     # ------------------------------------------------------------------ observation
@@ -1270,7 +1278,7 @@ class Payload:
         except ValueError:
             self.outbox.append(self.wad_report(wu.FAILED, "?", "malformed LOAD_WAD record"))
             return
-        name = wu.display_name(iwad, pwad)
+        name, map_name = wu.display_name(iwad, pwad), map_name.upper()   # next_map() reads upper case
         ipath = ppath = None
         if self.wad_job is not None:
             why = "another LOAD_WAD is still being checked"
@@ -1287,7 +1295,10 @@ class Payload:
         if ppath:
             cmd += ["--pwad", ppath]
         out = tempfile.TemporaryFile()
-        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
+        # Its own process group: a child that dies or is killed leaves its ViZDoom engine running (as an
+        # orphan, still loading, still growing), so it is the group that gets killed.
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                start_new_session=True)
         request = dict(name=name, map=map_name, ipath=ipath, ppath=ppath)
         self.wad_job = (proc, out, request, time.time())
         print(f"[payload] LOAD_WAD {name} on {map_name}: proving the game starts on it", flush=True)
@@ -1299,20 +1310,26 @@ class Payload:
         if code is None and time.time() - started < WAD_PROBE_TIMEOUT_S:
             return False
         self.wad_job = None
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)   # the child's engine, whatever became of the child
+        except OSError:
+            pass
+        proc.wait()
+        out.seek(0)
+        said = [ln.strip() for ln in out.read().decode("utf-8", "replace").splitlines()
+                if ln.strip() and not ln.startswith("[payload]")]
+        out.close()
         if code is None:
-            proc.kill()
-            proc.wait()
-            # What a map the WAD does not have looks like: ViZDoom waits, silently, for ever
-            why = f"the game had not started on it after {WAD_PROBE_TIMEOUT_S:.0f} s (is the map in that WAD?)"
+            # Both hang silently: a damaged PWAD while loading, and a map the WAD does not have once loaded
+            why = (f"the map would not start within {WAD_PROBE_TIMEOUT_S:.0f} s (is it in that WAD?)"
+                   if PROBE_LOADED in said else
+                   f"the game had not loaded it after {WAD_PROBE_TIMEOUT_S:.0f} s (a truncated or damaged file?)")
         elif code != 0:
-            out.seek(0)
-            said = [ln.strip() for ln in out.read().decode("utf-8", "replace").splitlines()
-                    if ln.strip() and not ln.startswith("[payload]")]
+            said = [ln for ln in said if ln != PROBE_LOADED]
             how = f"killed by signal {-code}" if code < 0 else f"exit {code}"
             why = f"the game would not start on it ({how}{': ' + said[-1][:60] if said else ''})"
         else:
             why = self.switch_wad(request["ipath"], request["ppath"], request["map"])
-        out.close()
         if why is None:
             self.wad_loads += 1
             self.outbox.append(self.wad_report(wu.LOADED, request["name"]))
@@ -1320,22 +1337,26 @@ class Payload:
             return True
         print(f"[payload] LOAD_WAD {request['name']}: {why}", flush=True)
         self.outbox.append(self.wad_report(wu.FAILED, request["name"], why))
-        return code == 0   # a rebuild that failed went back to the old WAD, and that is a new game too
+        return False
 
     def switch_wad(self, ipath, ppath, map_name):
-        """Rebuild the game on another WAD; the process, and with it the flight link, stays up."""
+        """Rebuild the game on another WAD; the process, and with it the flight link, stays up.
+
+        The new game is built before the old one is closed, so a build that fails leaves the old game flying.
+        """
         old = (self.wad, self.pwad, self.map)
-        self.game.close()
+        self.wad, self.pwad, self.map = ipath, ppath, map_name
         try:
-            self.wad, self.pwad, self.map = ipath, ppath, map_name
-            self.game = self._make_game()
-        except Exception as e:  # noqa: BLE001  back to the WAD it had
+            game = self._make_game()
+        except Exception as e:  # noqa: BLE001  the old game never stopped
             self.wad, self.pwad, self.map = old
-            self.game = self._make_game()
-            self.new_episode()
             return f"the game would not start on it ({type(e).__name__}: {str(e)[:60]})"
-        # A different game: nothing carries over, not the loadout and not the count of levels played
+        self.game.close()
+        self.game = game
+        # A different game: nothing carries over, not the loadout, the count of levels played, the last
+        # observation of the old one, or a map image of it still waiting to go down
         self.carry, self.level, self.explorer_map = None, 0, None
+        self.last_obs = self.exec_obs = self.map_png_bytes = None
         self.new_episode()
         return None
 
@@ -1534,6 +1555,12 @@ def main():
                         "in a child process because a damaged WAD kills the process rather than raising")
     args = p.parse_args()
     if args.probe:
+        # If the payload that started this probe dies before it can, take the probe and its engine down
+        def _watchdog():
+            time.sleep(WAD_PROBE_TIMEOUT_S + 5)
+            os.killpg(0, signal.SIGKILL)
+        if os.getpgrp() == os.getpid():
+            threading.Thread(target=_watchdog, daemon=True).start()
         sys.exit(Payload(args).probe())
     Payload(args).serve()
 
