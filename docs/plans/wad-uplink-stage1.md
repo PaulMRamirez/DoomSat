@@ -85,9 +85,9 @@ _Kept up to date by Claude during the session. Newest first within each section.
 ### Status
 
 - [x] Branch `feature/wad-uplink` created from `fe2666b`, spec saved here.
-- [ ] Install (`scripts/flight.sh setup`, `scripts/setup_ground.sh python`)
+- [x] Install (`scripts/flight.sh setup`, `scripts/setup_ground.sh python`), after one fix (below)
 - [ ] Plan
-- [ ] Baseline
+- [x] Baseline (below)
 - [ ] Implementation
 - [ ] End to end
 - [ ] Docs, push, draft PR
@@ -100,3 +100,43 @@ Python 3.11.15 with `venv`; `build-essential` and `binutils` installed; `deb.deb
 `raw.githubusercontent.com` and `nodejs.org` reachable; `git ls-remote` of `nasa/fprime` and
 `fprime-community/fprime-yamcs` works through the proxy (the github.com web UI returns 403, which does not
 affect git).
+
+### Install (2026-10-03)
+
+- `scripts/flight.sh`, `start_pilot.sh`, `wsl_*.sh` and others are committed without the executable bit (mode
+  100644), so `scripts/flight.sh setup` fails with `Permission denied` in a fresh clone. Running them as
+  `bash scripts/...` works; CLAUDE.md and the README call them directly. Left unchanged (mode change only;
+  worth raising upstream).
+- A transient PyPI read error (`IncompleteRead`, not a proxy refusal) killed `fprime-bootstrap`'s
+  `pip install -r lib/fprime/requirements.txt` half way, and the bootstrap carried on, so CMake later failed
+  in `lib/fprime/cmake/required.cmake:30` (no fpp tools). Fixed by re-running that pip install with
+  `--retries 10`, then `scripts/flight.sh setup fprime`.
+- **Bug fixed (`f4f7c93`)**: `scripts/wsl_sync.sh` was not re-runnable. `grep -q "/config" ... || { ...; } > .cm
+  && mv .cm ...` parses as `(grep || ...) && mv`, so once the config line exists the `mv` runs on a file
+  nothing wrote and `set -e` stops every later `flight.sh build` and any re-run of `flight.sh setup fprime`.
+- No URL was refused. Freedoom's GitHub release asset downloaded fine; `deb.debian.org` served `doom1.wad`.
+- Versions in `fprime-venv`: fprime-tools 4.3.0, fprime-fpp 3.3.0, fprime-gds 4.4.0 (pulled up by
+  fprime-yamcs 0.2.1, which needs `>=4.4.0a3`), fprime-yamcs 0.2.1, fprime-xtce 0.2.0 (the PR branch),
+  yamcs-client 1.13.0. First F´ build took about 3 minutes on 4 vCPUs.
+
+### Baseline (2026-10-03, before any change)
+
+| Check | Result |
+|---|---|
+| `python3 tools/doctor.py` | all ok except `Open MCT built` (skipped on purpose) and no TypeSafe key (expected) |
+| `payload/play.py --check` | `vizdoom 1.3.0: doom1.wad E1M1 ran 100 tics, health 100; screenshot out/doom_check.png` |
+| `scripts/flight.sh start`, `check` after 40 s | 4 processes up; `FRAMES_SENT` 203 and rising, `PAYLOAD_LINK True`, `UDP_TM_IN` 1717 frames; XTCE loaded 194 parameters and 55 commands |
+| `ground/.venv/bin/python -m unittest discover -s tests` | 369 tests OK |
+| `research/honesty.py --canary` | 17 checks, 0 failed |
+| `start_pilot.sh --system-one code --system-two none --duration 40` | 160+ decisions, `CMDS_RECEIVED` 163, frames ok=325 lost=1 |
+
+### Assumption probes (payload venv, no flight software)
+
+- **Scenario PWADs run with this payload's setup.** `basic.wad` over `freedoom2.wad` on `MAP01`, with
+  `set_doom_scenario_path`, ran 300 tics through `observe`, `action` and `pack_status` without error.
+- **Closing and re-creating the `DoomGame` in one process is safe.** Four `close()` / `_make_game()` /
+  `new_episode()` cycles alternating `freedoom1.wad` and `doom1.wad`: 0.4 to 0.6 s each, flies normally after.
+- **A truncated WAD kills the process.** `doom1.wad` cut to 12 bytes, 100 KB or 2 MB: ViZDoom prints
+  `Failed to allocate memory from system heap` and the Python process dies with SIGSEGV (exit 139). Nothing
+  to catch. So the payload must never hand an unproven file to its own game: each candidate is first
+  launched in a short-lived child process, and only a clean child result lets the swap happen.
