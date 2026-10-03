@@ -41,6 +41,9 @@ from pathlib import Path
 from yamcs.client import YamcsClient
 
 ROOT = Path(__file__).resolve().parent.parent
+# Yamcs 5.12.8 caps a bucket upload over HTTP at 5 MiB (UploadObject's max_body_size in buckets.proto),
+# whatever the bucket's own size limit: doom1.wad (4.2 MB) goes, freedoom2.wad (28.8 MB) cannot.
+BUCKET_UPLOAD_MAX = 5 * 1024 * 1024
 DOOM = "/DoomSat_DoomSat/DoomSat/doom"
 CHUNK_HEADER = struct.Struct("!IHHH")   # seq, index, count, length: the FrameChunk header (Doom.fpp)
 WATCHED = ["WAD_IWAD", "WAD_PWAD", "WAD_LOADS", "EPISODE", "FRAMES_SENT", "CMDS_RECEIVED", "PAYLOAD_LINK",
@@ -215,6 +218,10 @@ def main():
         content = Path(a.wad).read_bytes()          # ground tooling: the bytes go into the bucket, nothing more
         if a.truncate is not None:
             content = content[:a.truncate]
+        if len(content) > BUCKET_UPLOAD_MAX:
+            say(f"{a.wad} is {len(content)} bytes; Yamcs takes at most {BUCKET_UPLOAD_MAX} in one bucket upload "
+                "over HTTP, so it cannot be uplinked this way (see docs/plans/wad-uplink-stage1.md)")
+            return 2
         name = a.name or os.path.basename(a.wad)
         part = f"{name}.{int(time.time())}.part"
         remote = a.remote_dir.rstrip("/") + "/" + part
