@@ -93,6 +93,10 @@ dataLinks:
         ocfPresent: false
         service: "PACKET"
         priority: 1
+        # One space packet per TC frame. By default Yamcs packs every queued command that fits into one frame,
+        # and F' v4.3.0's SpacePacketDeframer reads only the first packet of a frame and drops the rest without
+        # an event: 19 to 36 of 100 commands issued together were lost, and a file uplink failed its checksum.
+        multiplePacketsPerFrame: false
         commandPostprocessorClassName: com.example.myproject.FprimeCommandPostprocessor
         stream: "tc_realtime"
         useCop1: false
