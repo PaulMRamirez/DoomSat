@@ -19,6 +19,8 @@ stop() {
   pkill -f "fprime-gd[s] " 2>/dev/null; pkill -f "fprime_gds[.]executables" 2>/dev/null   # flight.sh gds
   sleep 1
   kill_hung_payload
+  # Yamcs takes up to ~15 s to shut down; a new one started sooner fails, and the flight software with it
+  for _ in $(seq 1 40); do pgrep -f "YamcsServe[r]" >/dev/null || break; sleep 0.5; done
 }
 # The payload closes its game on SIGTERM, but one stuck inside ViZDoom never gets to run that handler (the
 # engine holds the GIL): kill it outright rather than leave it holding port 4242.
