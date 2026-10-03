@@ -86,11 +86,12 @@ _Kept up to date by Claude during the session. Newest first within each section.
 
 - [x] Branch `feature/wad-uplink` created from `fe2666b`, spec saved here.
 - [x] Install (`scripts/flight.sh setup`, `scripts/setup_ground.sh python`), after one fix (below)
-- [ ] Plan
+- [x] Plan (below: design as built, and where it departs from the spec)
 - [x] Baseline (below)
-- [ ] Implementation
-- [ ] End to end
-- [ ] Docs, push, draft PR
+- [x] Implementation
+- [x] End to end (below: acceptance criteria 1 to 5, and the optional large-file check)
+- [x] Docs (criterion 6)
+- [ ] Review pass, push, draft PR
 
 ### Cloud environment (checked 2026-10-03)
 
@@ -140,3 +141,63 @@ affect git).
   `Failed to allocate memory from system heap` and the Python process dies with SIGSEGV (exit 139). Nothing
   to catch. So the payload must never hand an unproven file to its own game: each candidate is first
   launched in a short-lived child process, and only a clean child result lets the swap happen.
+
+### Plan: the design as built
+
+Five parallel code readers (flight, payload, honesty, ground, F´ v4.3.0) checked the leads above. Every lead
+held. The design follows the spec, with these additions and departures (reasons from code that was read or run):
+
+| Decision | Why |
+|---|---|
+| **Race-free arrival: the Doom component renames on FileUplink's `fileAnnounce`.** The ground uploads to `NAME.<nonce>.part`. FileUplink calls `fileAnnounce` only after the End packet's checksum matches, and the Doom component (new `sync input port fileAnnounce: Svc.FileAnnounce`, wired from `FileHandling.fileUplink.fileAnnounce`, previously unconnected) renames it to `NAME` with `rename(2)` (event `WadUplinked`). | The spec offered a FileManager rename or checking for the completion event. A FileManager `MoveFile` cannot do it: F´ v4.3.0 caps every command string argument at `FW_CMD_STRING_MAX_SIZE` = 40 on board (FORMAT_ERROR above), and `/root/doom/wads/uplink/freedoom2.wad.part` is already 41. FileUplink also writes into the final path while the file arrives, keeps a file that failed its checksum, and opens without `O_TRUNC`, so re-uplinking a shorter file to the same name leaves the old tail and still passes the checksum. A fresh `.part` name per uplink plus a rename only on verified arrival covers all of these. LOAD_WAD accepts only names ending `.wad`, so a `.part` can never be loaded; a request for a name whose `.part` is present says "has not finished its uplink". |
+| **The payload proves a WAD in a child process** (`doom_payload.py --probe`, the same `_make_game`, `new_episode`, `observe`, `action` and `pack_status`, flown for one second) **before touching its own game.** | Probe: a truncated WAD does not raise in ViZDoom 1.3.0. `init()` prints "Failed to allocate memory from system heap" and the process dies with SIGSEGV (exit 139), so the spec's "if ViZDoom fails, restore the previous WAD" cannot be a try/except. A damaged PWAD can instead hang while loading, and a map missing from the WAD hangs `new_episode()`. The child runs in its own session and its whole process group is killed when it ends (its engine is a separate process that otherwise outlives it); it also kills itself if the payload dies first; 15 s timeout. Only a clean exit 0 lets the swap happen. |
+| **The new `DoomGame` is built before the old one is closed.** | A build that fails leaves the old game flying, untouched. |
+| **Record kind 3 carries `result:u8 loads:u16` then five texts: the IWAD and PWAD now running, the requested name, the map, the reason.** It is also sent once on connect (`result` 0, REPORT). | One record has to carry both what is running (telemetry) and what was asked for (the failure event). The report on connect, plus a once-a-second repeat in the Doom component, lets a ground that joins late see the WAD. Before that repeat the channels read `None` after a restart, because the payload reports before Yamcs is listening. |
+| **Telemetry: `WAD_IWAD` and `WAD_PWAD` are `[40] U8` arrays with `@ !binary`, zero-padded; `WAD_LOADS` is U16.** One channel `WAD_NAME` became two. | The repo already documents that F´ string telemetry does not decode in Yamcs: fprime-xtce gives it a fixed size while F´ sends it length-prefixed. The `!binary` byte array is the mechanism `FrameChunk` already uses. |
+| **Events: `WadLoaded(name, map)`, `WadLoadFailed(name, reason)`** as specified, with `name` like "basic.wad over freedoom2.wad". Plus `WadUplinked(fileName)` and `WadUplinkFailed(fileName)`. | |
+| **`LOAD_WAD(iwad: string size 40, pwad: string size 40, map: string size 10)`.** | Yamcs counts the two-byte length tag against a string argument's declared size, so 40 carries 38 characters (the payload's limit) and 10 carries the 8 of a map lump name. |
+| **With a PWAD loaded, finishing a level flies the same map again.** | `next_map()` names the IWAD's next map: over freedoom2 the game drifted into freedoom2's MAP02 while telemetry still said basic.wad, and over freedoom1 `new_episode()` on a map that doesn't exist hangs the live payload. With no PWAD (every scored flight) nothing changes. |
+| **The demo is a ground tool in `tools/`** (developer-side for the honesty suite) and reads the WAD bytes only to put them in the bucket. | `research/honesty.py` scans `PILOT_SIDE` only; `tools/` "may read the WAD". `payload/wad_uplink.py` is not in `PILOT_SIDE`, and it opens nothing anyway; a unit test holds it to the suite's patterns. |
+| `LOAD_WAD` is refused while `--oracle` is on. | The diagnostic ladder computes exits from the launch WAD and level. |
+
+Flight/payload record layouts (big-endian, as every existing record):
+
+    flight -> payload  'D' 0x16 len | iwadLen iwad | pwadLen pwad (0 = none) | mapLen map
+    payload -> flight  'D' 0x03 len | result (0 REPORT, 1 LOADED, 2 FAILED) | loads:u16 |
+                        iwadLen iwad | pwadLen pwad | nameLen name | mapLen map | reasonLen reason
+
+### End-to-end results (all run on this VM, 2026-10-03)
+
+| Criterion | Result |
+|---|---|
+| 1. Unit tests, honesty, canary | `unittest discover -s tests`: 395 tests OK (369 before; 26 new in `tests/test_wad_uplink.py`, plus `WAD_CHANNELS` in `test_runner.py`). `honesty.py --canary`: 17 checks, 0 failed. |
+| 2. `basic.wad` over `freedoom2.wad` under the code autopilot | One pilot (`--system-one code --system-two none`) flying. The 2704 bytes went up in 1.0 s, then `[FileReceived]`, then `[WadUplinked] Uplinked WAD ready to load: /root/doom/wads/uplink/basic.wad`. `LOAD_WAD` gave `[WadLoaded] Now flying basic.wad over freedoom2.wad on MAP01` about 2 s later. Telemetry: `WAD_IWAD='freedoom2.wad' WAD_PWAD='basic.wad'`, `WAD_LOADS 0 -> 1`, `EPISODE 1 -> 2`, `FRAMES_SENT 311 -> 331`. Frame `out/wad_uplink_basic_MAP01.jpg` shows basic.wad's room and its Cacodemon, the player at 100% health. |
+| 3. IWAD swap | A fresh flight on `freedoom1.wad`. `doom1.wad` went up as `shareware.wad`: 4,196,020 bytes in 167.7 s (25.0 KB/s), and the md5 on board matches `doom1.wad`. `[WadLoaded] Now flying shareware.wad on E1M1`, `WAD_IWAD='shareware.wad'`, `EPISODE 1 -> 2`. The saved frame is E1M1's opening hangar. |
+| 4. Negative cases (all `WadLoadFailed`; `WAD_IWAD`, `WAD_LOADS` and `EPISODE` unchanged; `FRAMES_SENT` rising) | Truncated (200 KB of doom1.wad): "the game would not start on it (killed by signal 11: Failed to allocate memory from system heap)". Missing: "nothere.wad is in neither the uplink nor the installed WAD directory". Traversal: "IWAD must be a bare file name, not a path", and the same for a PWAD `../uplink/shareware.wad`. Wrong extension: "IWAD is not a .wad file". During an unfinished uplink (11,776 of 4,196,020 bytes): "shareware.wad has not finished its uplink (shareware.wad.1791067902.part so far)". The uplink then completed and loaded. Extra case, a map not in the WAD (`MAP01` on shareware): refused after the timeout, "is it in that WAD?". |
+| 5. Commands during a multi-minute uplink | `CONTROL` round trip, measured as the time from issuing the command to `CMDS_RECEIVED` arriving back one higher (command response is not downlinked), no pilot. Idle: median 103 ms (78 to 164), 30/30. During a 167 s `doom1.wad` uplink, sampled every 5 s across it: median 107 ms (39 to 150), 30/30. A first run, 20 samples in the first 12 s of the uplink: 113 ms idle and 102 ms during. |
+| 6. Docs | README "Uplink a new level"; `docs/ARCHITECTURE.md` (what is proven, findings 7 to 10); CLAUDE.md (tables, a gotcha). |
+| Dashboard | Level file panel, checked headless with Playwright. The form's `LOAD_WAD freedoom2.wad on MAP01` gave `[WadLoaded] Now flying freedoom2.wad on MAP01`, and a missing name gave the reason. |
+| Optional: freedoom2.wad (28.8 MB) | **Cannot be uplinked through Yamcs's HTTP API.** Yamcs 5.12.8 caps a bucket upload at 5 MiB (`max_body_size: 5242880` on `UploadObject` in `buckets.proto`, independent of the bucket's 100 MB `maxSize`); the upload fails with HTTP 413. The demo now says so. Ways round it, not built: a filesystem-backed bucket (`buckets:` in `yamcs.yaml` with a `path`, filled by copying the file in), or splitting into 5 MiB parts and joining them on board. |
+
+### Findings worth raising upstream
+
+- **F´ v4.3.0**
+  - `string size N` on a command argument is ignored on board: `Fw::CmdStringArg` caps it at `FW_CMD_STRING_MAX_SIZE` (40), so FileManager's 240-character paths fail above 40 with FORMAT_ERROR.
+  - FileUplink opens without truncation and keeps files that fail their checksum.
+  - `next_map`-style advances to a map the WAD lacks hang ViZDoom's `new_episode()` (that one is ViZDoom).
+- **fprime-xtce**
+  - Telemetry strings use `Fixed` size plus `LeadingSize`, so a short F´ string does not decode in Yamcs.
+  - Command `maxSizeInBits` doesn't allow for the 16-bit length tag.
+- **fprime-yamcs 0.2.1**
+  - The upload "COMPLETED" state means *sent*, not *received*: there is no feedback from FileUplink and no retransmission. One TC packet lost in this session (`PacketOutOfOrder: Received packet 6 after packet 4`) failed a whole file's checksum.
+  - The YAML comment's `FPRIME_UPLINK_CHUNK_SIZE=1024` example can't fit a 1024-byte TC frame.
+- **Yamcs**
+  - The 5 MiB bucket upload cap above.
+- **ViZDoom 1.3.0**
+  - A truncated WAD segfaults instead of raising.
+  - A killed client leaves its engine process running.
+- **DoomSat itself (fixed here, worth a look upstream)**
+  - `scripts/wsl_sync.sh` was not re-runnable (`f4f7c93`).
+  - Every `flight.sh stop` or restart orphaned the ViZDoom engine (twelve built up in one session); fixed by closing the game on SIGTERM.
+  - `scripts/*.sh` are committed without the executable bit.
+  - The committed reference XTCE was stale, missing `INTENT` and 15 channels.
