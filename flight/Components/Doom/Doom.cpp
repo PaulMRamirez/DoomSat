@@ -42,6 +42,28 @@ constexpr U8 WAD_TEXT_MAX = 120;      // longest WAD report text kept (the reaso
 // The payload's WAD report (kind 3): what it did with a LOAD_WAD, or, with result REPORT, what it is
 // running when the link comes up.
 enum WadResult : U8 { WAD_REPORT = 0, WAD_LOADED = 1, WAD_FAILED = 2 };
+// An uplinked WAD arrives as NAME.wad.<nonce>.part (or NAME.wad.part). The length of NAME.wad's path, or 0 for
+// any other file. The nonce is the last dot-free segment, so a NAME that itself contains ".wad." survives.
+FwSizeType wadDestLength(const char* path, FwSizeType len) {
+    constexpr FwSizeType PART_LEN = 5;  // ".part"
+    if (len <= PART_LEN || std::strcmp(path + len - PART_LEN, ".part") != 0) {
+        return 0;
+    }
+    const char* const slash = std::strrchr(path, '/');
+    const FwSizeType base = (slash != nullptr) ? static_cast<FwSizeType>(slash + 1 - path) : 0;
+    auto isWad = [&](FwSizeType end) { return end >= base + 5 && std::strncmp(path + end - 4, ".wad", 4) == 0; };
+    FwSizeType end = len - PART_LEN;
+    if (!isWad(end)) {
+        while (end > base && path[end - 1] != '.') {
+            end--;
+        }
+        if (end == base) {
+            return 0;
+        }
+        end--;  // the '.' before the nonce
+    }
+    return isWad(end) ? end : 0;
+}
 }  // namespace
 
 Doom ::Doom(const char* const compName)
@@ -84,21 +106,14 @@ void Doom ::run_handler(FwIndexType portNum, U32 context) {
 
 void Doom ::fileAnnounce_handler(FwIndexType portNum, Fw::StringBase& file_name) {
     const char* const path = file_name.toChar();
-    const FwSizeType len = file_name.length();
-    constexpr FwSizeType PART_LEN = 5;  // ".part"
-    if (len <= PART_LEN || std::strcmp(path + len - PART_LEN, ".part") != 0) {
+    const FwSizeType destLen = wadDestLength(path, file_name.length());
+    if (destLen == 0) {
         return;  // not an uplinked WAD (a sequence, a parameter file): nothing to do
-    }
-    const char* const slash = std::strrchr(path, '/');
-    const char* const base = (slash != nullptr) ? slash + 1 : path;
-    const char* const wad = std::strstr(base, ".wad.");
-    if (wad == nullptr || wad == base) {
-        return;
     }
     // A fresh .part name for every uplink, renamed over NAME.wad in the same directory: rename(2) is
     // atomic, and FileUplink, which opens without truncating, never writes into an older file.
     Fw::String dest;
-    dest.format("%.*s", static_cast<int>(wad + 4 - path), path);
+    dest.format("%.*s", static_cast<int>(destLen), path);
     if (Os::FileSystem::rename(path, dest.toChar()) == Os::FileSystem::OP_OK) {
         this->log_ACTIVITY_HI_WadUplinked(dest);
     } else {

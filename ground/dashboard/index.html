@@ -14,13 +14,14 @@
   header .chain { color:var(--dim); font-size:14px; }
   header .level { margin-left:auto; font-size:22px; font-weight:700; color:var(--acc); }
   header .level small { color:var(--dim); font-weight:400; font-size:14px; margin-left:10px; }
-  main { display:grid; grid-template-columns: 960px 1fr; grid-template-rows: 1fr 300px; gap:14px; padding:14px 24px; height:1016px; }
+  main { display:grid; grid-template-columns: 960px 1fr; grid-template-rows: minmax(0, 1fr) 300px; gap:14px; padding:14px 24px; height:1016px; }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; overflow:hidden; }
   .panel h2 { margin:0 0 8px; font-size:13px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); font-weight:600; }
   #view { position:relative; }
   #frame { width:932px; height:699px; image-rendering:auto; background:#000; border-radius:6px; display:block; }
   #frameinfo { position:absolute; left:26px; bottom:22px; background:rgba(0,0,0,.55); padding:4px 8px; border-radius:4px; font-size:12px; color:#ccc; }
-  #right { display:grid; grid-template-rows: auto auto auto 1fr; gap:14px; }
+  /* minmax(0, ...): a long plan or a tall panel shrinks the last panel instead of pushing the bottom row off the page */
+  #right { display:grid; grid-template-rows: auto auto auto minmax(0, 1fr); gap:14px; min-height:0; }
   table { border-collapse:collapse; width:100%; }
   td { padding:3px 6px; border-bottom:1px solid #202737; font-variant-numeric: tabular-nums; }
   td.k { color:var(--dim); width:46%; }
@@ -121,9 +122,9 @@
       <h2>Level file (LOAD_WAD: switch the running game to an uplinked or installed WAD) <span id="wadloads" style="float:right"></span></h2>
       <div><span id="WAD" class="acc" style="font-size:18px;font-weight:600">&ndash;</span></div>
       <form id="wadform" autocomplete="off">
-        IWAD <input id="wadIwad" placeholder="freedoom2.wad" spellcheck="false">
-        PWAD <input id="wadPwad" placeholder="none" spellcheck="false">
-        map <input id="wadMap" placeholder="MAP01" spellcheck="false">
+        IWAD <input id="wadIwad" placeholder="freedoom2.wad" spellcheck="false" maxlength="38">
+        PWAD <input id="wadPwad" placeholder="none" spellcheck="false" maxlength="38">
+        map <input id="wadMap" placeholder="MAP01" spellcheck="false" maxlength="8">
         <button type="submit">Load</button>
       </form>
       <div id="wadsent"></div>
@@ -189,8 +190,10 @@ async function pollArchive() {
     const lines = (ev.event || []).filter(e => e.source !== "FprimePacketPreprocessor").slice(0, 9)
       .map(e => `${e.generationTime.substr(11, 8)} ${(e.severity || "").padEnd(8)} ${e.message}`);
     $("events").textContent = lines.join("\n");
-    const cm = await (await fetch("/api/archive/fprime-project/commands?limit=9&order=desc")).json();
-    $("cmds").textContent = (cm.entry || []).map(c => {
+    const cm = await (await fetch("/api/archive/fprime-project/commands?limit=40&order=desc")).json();
+    // An uplink is thousands of uplinkFilePacket commands (one per 512 bytes): show the commands people send
+    $("cmds").textContent = (cm.entry || cm.commands || []).filter(c => !c.commandId.commandName.endsWith("uplinkFilePacket"))
+      .slice(0, 9).map(c => {
       const args = (c.assignments || []).filter(a => a.userInput).map(a => `${a.name}=${val({engValue: a.value})}`).join(" ");
       return `${new Date(Number(c.commandId.generationTime)).toISOString().substr(11, 8)} ${c.commandId.commandName.split("/").pop().padEnd(9)} ${args}`;
     }).join("\n");
@@ -294,8 +297,9 @@ function engage() { drive.on = true; $("drive").classList.add("on"); renderHud()
 function letGo() { drive.on = false; held.clear(); $("drive").classList.remove("on"); sendControl(); }
 
 document.addEventListener("keydown", e => {
-  if (!drive.on || e.target.closest("#wadform")) return;   // typing a WAD name is not driving
+  if (!drive.on) return;
   if (e.code === "Escape") { letGo(); return; }
+  if (e.target.closest("#wadform")) return;   // typing a WAD name is not driving
   const k = KEYMAP[e.code], w = WEAPON_KEYS[e.code];
   if (!k && !w) return;
   e.preventDefault();
@@ -315,6 +319,7 @@ document.addEventListener("visibilitychange", () => { if (document.hidden && dri
 $("drive").addEventListener("mousedown", e => {
   if (e.target.id === "restart") return;
   e.preventDefault();
+  if (document.activeElement && document.activeElement.closest("#wadform")) document.activeElement.blur();   // keys drive again
   if (!drive.on) { engage(); return; }
   if (e.button === 0) { held.add("mouse"); sendControl(); }
 });
@@ -330,6 +335,7 @@ $("wadform").addEventListener("submit", async e => {
   e.preventDefault();
   const args = {iwad: $("wadIwad").value.trim(), pwad: $("wadPwad").value.trim(), map: $("wadMap").value.trim()};
   const said = `${args.pwad ? args.pwad + " over " : ""}${args.iwad} on ${args.map}`;
+  if (document.activeElement) document.activeElement.blur();
   try {
     await issue("LOAD_WAD", args);
     $("wadsent").textContent = `${new Date().toISOString().substr(11, 8)} LOAD_WAD ${said}: sent; the payload proves it before switching`;

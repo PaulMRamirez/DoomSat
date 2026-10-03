@@ -31,6 +31,7 @@ and the test set the shareware episode (charter 2.5), and this tool is not part 
 import argparse
 import base64
 import os
+import posixpath
 import statistics
 import struct
 import sys
@@ -39,11 +40,15 @@ import time
 from pathlib import Path
 
 from yamcs.client import YamcsClient
+from yamcs.client.core.exceptions import YamcsError
 
 ROOT = Path(__file__).resolve().parent.parent
-# Yamcs 5.12.8 caps a bucket upload over HTTP at 5 MiB (UploadObject's max_body_size in buckets.proto),
-# whatever the bucket's own size limit: doom1.wad (4.2 MB) goes, freedoom2.wad (28.8 MB) cannot.
-BUCKET_UPLOAD_MAX = 5 * 1024 * 1024
+sys.path.insert(0, str(ROOT / "payload"))
+import wad_uplink as wu  # noqa: E402  the payload's own name rules, so a bad name fails before the uplink
+# Yamcs 5.12.8 caps a bucket upload over HTTP at the larger of the server's maxContentLength and
+# UploadObject's own 5 MiB (buckets.proto). ground/yamcs/etc/yamcs.yaml raises the first to 32 MiB, room for a
+# whole IWAD; the multipart wrapping takes a little of it.
+BUCKET_UPLOAD_MAX = 32 * 1024 * 1024 - 64 * 1024
 DOOM = "/DoomSat_DoomSat/DoomSat/doom"
 CHUNK_HEADER = struct.Struct("!IHHH")   # seq, index, count, length: the FrameChunk header (Doom.fpp)
 WATCHED = ["WAD_IWAD", "WAD_PWAD", "WAD_LOADS", "EPISODE", "FRAMES_SENT", "CMDS_RECEIVED", "PAYLOAD_LINK",
@@ -143,16 +148,21 @@ class Link:
         return self.processor.issue_command(f"{DOOM}/{name}", args=args)
 
 
-def control_round_trip(link, timeout=5.0):
-    """Seconds from issuing CONTROL to the onboard command count arriving back on the ground one higher."""
+def control_round_trip(link, owed=0, timeout=5.0):
+    """Seconds from issuing CONTROL to the onboard command count arriving back on the ground one higher.
+
+    `owed` is how many earlier commands timed out and may still arrive: their counts must not be taken for
+    this one's. Returns (seconds or None, owed after this sample).
+    """
+    count = lambda: link.values.get("CMDS_RECEIVED", (0, None))[1]
     with link.lock:
-        before = link.values.get("CMDS_RECEIVED", (0, None))[1]
+        before = count()
     if before is None:
-        return None
+        return None, owed
     t0 = time.time()
     link.command("CONTROL", move=0, strafe=0, turn=0.0, fire=False, use=False, weapon="FIST")
-    ok = link.wait(lambda: (link.values.get("CMDS_RECEIVED", (0, -1))[1] or 0) > before, timeout)
-    return time.time() - t0 if ok else None
+    ok = link.wait(lambda: (count() or 0) >= before + owed + 1, timeout)
+    return (time.time() - t0, 0) if ok else (None, owed + 1)
 
 
 def latency_summary(label, samples):
@@ -165,18 +175,33 @@ def latency_summary(label, samples):
 
 
 def measure_latency(link, n, label, gap=0.5, stop=None):
-    samples = []
+    samples, owed = [], 0
     for _ in range(n):
         if stop is not None and stop():
             break
-        samples.append(control_round_trip(link))
+        rtt, owed = control_round_trip(link, owed)
+        samples.append(rtt)
         time.sleep(gap)
     say(latency_summary(label, samples))
     return samples
 
 
+def flight_home():
+    """Where the flight side is installed, found the way scripts/common.sh finds it: the environment, then the
+    repo's .env, then ~/doom. On a Windows ground with the flight side in WSL, give --remote-dir instead."""
+    if os.environ.get("DOOMSAT_HOME"):
+        return os.environ["DOOMSAT_HOME"]
+    env = ROOT / ".env"
+    if env.is_file():
+        for line in env.read_text(encoding="utf-8", errors="replace").splitlines():
+            k, _, v = line.partition("=")
+            if k.strip() == "DOOMSAT_HOME" and v.strip().strip("'\""):
+                return v.strip().strip("'\"")
+    return os.path.expanduser("~/doom")
+
+
 def main():
-    home = os.environ.get("DOOMSAT_HOME", os.path.expanduser("~/doom"))
+    home = flight_home()
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--wad", help="local WAD file to uplink (none: load files already on board)")
     p.add_argument("--as", dest="name", help="its name on the spacecraft (default: its own file name)")
@@ -190,7 +215,7 @@ def main():
     p.add_argument("--latency", type=int, default=0, help="CONTROL round trips to time before and during the uplink")
     p.add_argument("--latency-gap", type=float, default=0.5,
                    help="seconds between round trips during the uplink (spread them over it; default %(default)s)")
-    p.add_argument("--remote-dir", default=os.path.join(home, "wads", "uplink"),
+    p.add_argument("--remote-dir", default=posixpath.join(home, "wads", "uplink"),
                    help="the uplink directory on the spacecraft, as an absolute path (default %(default)s)")
     p.add_argument("--yamcs", default="localhost:8090")
     p.add_argument("--instance", default="fprime-project")
@@ -202,6 +227,17 @@ def main():
         p.error("--map is required (or --no-load)")
     if not a.wad and not a.iwad:
         p.error("give --wad (to uplink) and/or --iwad (to load)")
+    if a.wad and a.truncate is not None and not a.name:
+        a.name = "trunc-" + os.path.basename(a.wad)   # never under the real name, where it would shadow the good copy
+    name = (a.name or os.path.basename(a.wad)) if a.wad else None
+    # The payload's own rules, before anything goes up (an uplink can take minutes); --expect-fail is for
+    # sending bad names on purpose, so the payload can be seen refusing them
+    if not a.expect_fail:
+        loading = (a.iwad, name) if a.wad and a.iwad and a.iwad != name else ((name, "") if a.wad else (a.iwad, a.pwad))
+        problem = ((name and wu.name_problem(name, "uplinked file")) or (a.iwad and wu.name_problem(a.iwad, "IWAD"))
+                   or (loading[1] and wu.name_problem(loading[1], "PWAD")) or (not a.no_load and wu.map_problem(a.map)))
+        if problem:
+            p.error(problem)
 
     link = Link(a.yamcs.replace("http://", ""), a.instance)
     if not link.wait(lambda: "CMDS_RECEIVED" in link.values and "WAD_IWAD" in link.values, 15):
@@ -220,15 +256,20 @@ def main():
             content = content[:a.truncate]
         if len(content) > BUCKET_UPLOAD_MAX:
             say(f"{a.wad} is {len(content)} bytes; Yamcs takes at most {BUCKET_UPLOAD_MAX} in one bucket upload "
-                "over HTTP, so it cannot be uplinked this way (see docs/plans/wad-uplink-stage1.md)")
+                "over HTTP (maxContentLength in ground/yamcs/etc/yamcs.yaml), so it cannot be uplinked this way")
             return 2
-        name = a.name or os.path.basename(a.wad)
-        part = f"{name}.{int(time.time())}.part"
+        part = f"{name}.{time.time_ns() // 1000000}.part"
         remote = a.remote_dir.rstrip("/") + "/" + part
         storage = link.client.get_storage_client()
         if a.bucket not in [b.name for b in storage.list_buckets()]:
             storage.create_bucket(a.bucket)
-        storage.get_bucket(a.bucket).upload_object(part, content, content_type="application/octet-stream")
+        bucket = storage.get_bucket(a.bucket)
+        try:
+            bucket.upload_object(part, content, content_type="application/octet-stream")
+        except YamcsError as e:
+            say(f"Yamcs would not take {len(content)} bytes into bucket {a.bucket}: {e}. A bucket upload is capped at "
+                "maxContentLength (ground/yamcs/etc/yamcs.yaml) and the bucket at 100 MiB / 1000 objects")
+            return 2
         service = link.client.get_file_transfer_client(a.instance).get_service(a.service)
         updates = service.create_transfer_subscription()
         t0 = time.time()
@@ -283,6 +324,14 @@ def main():
         received = link.wait_event(t0, "[FileReceived]", timeout=1)
         say(f"event: {received}")
         say(f"event: {said}")
+        try:
+            bucket.delete_object(part)   # it has gone up; a bucket holds 1000 objects and 100 MiB
+        except YamcsError:
+            pass
+        if said and "[BadChecksum]" in said:
+            say("FAIL: the file arrived damaged. F' file packets are not retransmitted, so one packet lost on the "
+                f"command link fails the whole file; it stays a .part and cannot be loaded. Uplink it again")
+            return 1
         if not said or "[WadUplinked]" not in said:
             say("FAIL: the spacecraft did not confirm the file")
             return 1

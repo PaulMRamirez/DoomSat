@@ -42,7 +42,6 @@ import struct
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from collections import deque
 
@@ -703,6 +702,7 @@ class Payload:
         # LOAD_WAD: switches made, the request being proven in a child process, and reports for the flight
         # software that wait for the main loop (which holds the link).
         self.wad_loads, self.wad_job, self.outbox = 0, None, []
+        self.wad_serial, self.wad_pinned = 0, None   # LOAD_WAD's pinned links (wad_uplink.pin): the request, the one flying
         self.new_episode()
 
     @staticmethod
@@ -1290,6 +1290,15 @@ class Payload:
             print(f"[payload] LOAD_WAD {name}: {why}", flush=True)
             self.outbox.append(self.wad_report(wu.FAILED, name, why))
             return
+        # The child proves, and then this process loads, the same file: pin it (a hard link), or failing that
+        # remember what it was and check nothing was renamed over it in between.
+        self.wad_serial += 1
+        pinned = [wu.pin(p, self.wad_serial) if p else None for p in (ipath, ppath)]
+        if pinned[0] and (pinned[1] or not ppath):
+            ipath, ppath = pinned
+        else:
+            wu.unpin(self.wad_serial)
+        ident = (wu.identity(ipath), wu.identity(ppath) if ppath else None)
         cmd = [sys.executable, os.path.abspath(__file__), "--probe", "--wad", ipath, "--map", map_name,
                "--skill", str(self.args.skill), "--seed", str(self.args.seed), "--geometry", self.geometry]
         if ppath:
@@ -1299,7 +1308,7 @@ class Payload:
         # orphan, still loading, still growing), so it is the group that gets killed.
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                                 start_new_session=True)
-        request = dict(name=name, map=map_name, ipath=ipath, ppath=ppath)
+        request = dict(name=name, map=map_name, ipath=ipath, ppath=ppath, serial=self.wad_serial, ident=ident)
         self.wad_job = (proc, out, request, time.time())
         print(f"[payload] LOAD_WAD {name} on {map_name}: proving the game starts on it", flush=True)
 
@@ -1328,15 +1337,21 @@ class Payload:
             said = [ln for ln in said if ln != PROBE_LOADED]
             how = f"killed by signal {-code}" if code < 0 else f"exit {code}"
             why = f"the game would not start on it ({how}{': ' + said[-1][:60] if said else ''})"
+        elif (wu.identity(request["ipath"]), wu.identity(request["ppath"]) if request["ppath"] else None) != request["ident"]:
+            why = "the file changed while it was being proven (a new uplink of the same name?); send LOAD_WAD again"
         else:
             why = self.switch_wad(request["ipath"], request["ppath"], request["map"])
         if why is None:
+            if self.wad_pinned is not None:
+                wu.unpin(self.wad_pinned)               # the links of the WAD that just stopped flying
+            self.wad_pinned = request["serial"]
             self.wad_loads += 1
             self.outbox.append(self.wad_report(wu.LOADED, request["name"]))
             print(f"[payload] LOAD_WAD {request['name']}: now flying it on {self.map}", flush=True)
             return True
         print(f"[payload] LOAD_WAD {request['name']}: {why}", flush=True)
         self.outbox.append(self.wad_report(wu.FAILED, request["name"], why))
+        wu.unpin(request["serial"])
         return False
 
     def switch_wad(self, ipath, ppath, map_name):
@@ -1555,13 +1570,15 @@ def main():
                         "in a child process because a damaged WAD kills the process rather than raising")
     args = p.parse_args()
     if args.probe:
-        # If the payload that started this probe dies before it can, take the probe and its engine down
-        def _watchdog():
+        # If the payload that started this probe dies before it can, a watchdog takes the probe and its engine
+        # down. A process, not a thread: ViZDoom holds the GIL while it hangs, so a thread would never run.
+        # The payload's killpg when the probe ends takes the watchdog with it.
+        if os.getpgrp() == os.getpid() and os.fork() == 0:
             time.sleep(WAD_PROBE_TIMEOUT_S + 5)
             os.killpg(0, signal.SIGKILL)
-        if os.getpgrp() == os.getpid():
-            threading.Thread(target=_watchdog, daemon=True).start()
+            os._exit(0)
         sys.exit(Payload(args).probe())
+    wu.unpin()   # pinned links a previous flight left behind (only the flight payload pins or clears them)
     payload = Payload(args)
 
     def _stop(*_):

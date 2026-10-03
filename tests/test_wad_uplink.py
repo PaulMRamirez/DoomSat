@@ -222,5 +222,98 @@ class TestFindingTheFile(unittest.TestCase):
                                                 os.path.join(self.tmp.name, "wads")])
 
 
+class TestPinningTheProvenFile(unittest.TestCase):
+    """The probe proves a file and the payload then loads it: a hard link makes sure it is the same file."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.env = mock.patch.dict(os.environ, {"DOOMSAT_HOME": self.tmp.name})
+        self.env.start()
+        os.makedirs(wu.uplink_dir())
+        self.path = os.path.join(wu.uplink_dir(), "level.wad")
+        with open(self.path, "wb") as f:
+            f.write(b"\0" * 64)
+
+    def tearDown(self):
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def test_a_pin_is_the_same_file_under_the_same_name(self):
+        pinned = wu.pin(self.path, 7)
+        self.assertEqual(os.path.basename(pinned), "level.wad")
+        self.assertTrue(os.path.samefile(pinned, self.path))
+        self.assertIsNone(wu.name_problem(os.path.basename(pinned)))
+        # nothing LOAD_WAD can name reaches it: names are bare, and the directory starts with a dot
+        self.assertIn(os.sep + ".pinned" + os.sep, pinned)
+
+    def test_a_new_uplink_renamed_over_the_name_does_not_touch_the_pin(self):
+        pinned = wu.pin(self.path, 1)
+        before = wu.identity(pinned)
+        newer = self.path + ".123.part"
+        with open(newer, "wb") as f:
+            f.write(b"\1" * 32)
+        os.replace(newer, self.path)                     # what the Doom component does on fileAnnounce
+        self.assertEqual(wu.identity(pinned), before)
+        self.assertNotEqual(wu.identity(self.path), before)
+
+    def test_unpin_drops_the_links_and_keeps_the_files(self):
+        wu.pin(self.path, 1)
+        wu.pin(self.path, 2)
+        wu.unpin(1)
+        self.assertFalse(os.path.exists(os.path.join(wu.uplink_dir(), ".pinned", "1")))
+        self.assertTrue(os.path.exists(os.path.join(wu.uplink_dir(), ".pinned", "2", "level.wad")))
+        wu.unpin()
+        self.assertEqual(os.listdir(os.path.join(wu.uplink_dir(), ".pinned")), [])
+        self.assertTrue(os.path.isfile(self.path))
+
+    def test_a_pin_that_cannot_be_made_says_so(self):
+        self.assertIsNone(wu.pin(os.path.join(wu.uplink_dir(), "nothere.wad"), 3))
+        self.assertIsNone(wu.identity(os.path.join(wu.uplink_dir(), "nothere.wad")))
+
+
+class TestTheUplinkCodeKeepsTheCharter(unittest.TestCase):
+    """research/honesty.py scans a fixed PILOT_SIDE list that does not include payload/wad_uplink.py, and
+    research/ is not edited for this: hold the new code to the same patterns here (charter 2.4)."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, os.path.join(ROOT, "research"))
+        import honesty  # noqa: E402  its patterns only
+        cls.honesty = honesty
+        cls.src = _read("payload", "wad_uplink.py")
+
+    def test_it_never_reads_a_level_file(self):
+        for token in self.honesty.WAD_READING + self.honesty.CHEATS:
+            self.assertNotIn(token, self.src)
+        self.assertIsNone(re.search(r"\bopen\(", self.src), "LOAD_WAD hands paths to ViZDoom; it opens nothing")
+
+    def test_it_names_no_level(self):
+        for i, line in enumerate(self.src.splitlines(), 1):
+            self.assertIsNone(self.honesty.LEVEL_NAME.search(line), "line %d names a level: %s" % (i, line.strip()))
+
+    def test_it_imports_no_game(self):
+        self.assertIsNone(re.search(r"^\s*(import|from)\s+(vizdoom|numpy|PIL)\b", self.src, re.M))
+
+    def test_the_pilot_never_subscribes_to_the_wad_channels(self):
+        pilot = _read("ground", "pilot.py")
+        channels = pilot[pilot.index("STATUS_CHANNELS = ["):pilot.index("def _knowledge")]
+        self.assertNotIn("WAD_", channels)
+
+    def test_the_payload_has_one_game_and_sets_its_files_in_one_place(self):
+        make = "\n".join(self.honesty._method_body(PAYLOAD, "_make_game"))
+        self.assertEqual(PAYLOAD.count("vzd.DoomGame()"), 1)
+        for call in ("set_doom_game_path(", "set_doom_scenario_path("):
+            self.assertEqual(PAYLOAD.count(call), make.count(call), call)
+
+    def test_the_bench_can_still_build_a_payload(self):
+        """research/runner.py builds Payload from its own Namespace; every argument read without a default must be in it."""
+        cls = PAYLOAD[PAYLOAD.index("class Payload:"):PAYLOAD.index("\ndef main():")]
+        guarded = set(re.findall(r'getattr\((?:self\.)?args,\s*"(\w+)"', cls))
+        used = set(re.findall(r"\bargs\.(\w+)", cls)) - guarded
+        runner = _read("research", "runner.py")
+        passed = set(re.findall(r"(\w+)=", re.search(r"dp\.Payload\(_ap\.Namespace\((.*?)\)\)", runner, re.S).group(1)))
+        self.assertLessEqual(used, passed)
+
+
 if __name__ == "__main__":
     unittest.main()

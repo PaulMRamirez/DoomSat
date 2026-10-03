@@ -139,6 +139,51 @@ def find(name, dirs):
     return None, f"{name} is in neither the uplink nor the installed WAD directory"
 
 
+def pin(path, serial):
+    """A hard link to `path` under the uplink directory's `.pinned/<serial>/`, keeping its file name.
+
+    LOAD_WAD proves a file in a child process and then loads it in the payload. Between the two an uplink of
+    the same name can be renamed over it, and the game would then load a file nobody proved: a damaged one
+    kills the payload. A hard link holds the inode that was proven. Linking reads nothing. Returns None when
+    the link cannot be made (another file system, say); the caller then compares `identity()` instead.
+    """
+    d = os.path.join(uplink_dir(), ".pinned", str(serial))
+    try:
+        os.makedirs(d, exist_ok=True)
+        dest = os.path.join(d, os.path.basename(path))
+        if os.path.lexists(dest):
+            os.unlink(dest)
+        os.link(path, dest)
+        return dest
+    except OSError:
+        return None
+
+
+def unpin(serial=None):
+    """Drop the links for one request, or (serial None) every one: names only, the files stay where they are."""
+    root = os.path.join(uplink_dir(), ".pinned")
+    for d in ([os.path.join(root, str(serial))] if serial is not None else
+              [os.path.join(root, x) for x in (os.listdir(root) if os.path.isdir(root) else [])]):
+        for f in (os.listdir(d) if os.path.isdir(d) else []):
+            try:
+                os.unlink(os.path.join(d, f))
+            except OSError:
+                pass
+        try:
+            os.rmdir(d)
+        except OSError:
+            pass
+
+
+def identity(path):
+    """What says a path still names the same file: device, inode, size and modification time."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
+
+
 def resolve(iwad, pwad, map_name, dirs=None):
     """(iwad_path, pwad_path or None, None), or (None, None, why not) for a LOAD_WAD request."""
     dirs = dirs or search_dirs()

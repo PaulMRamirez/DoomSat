@@ -18,7 +18,11 @@ stop() {
   pkill -f "bin/DoomSa[t]" 2>/dev/null
   pkill -f "fprime-gd[s] " 2>/dev/null; pkill -f "fprime_gds[.]executables" 2>/dev/null   # flight.sh gds
   sleep 1
+  kill_hung_payload
 }
+# The payload closes its game on SIGTERM, but one stuck inside ViZDoom never gets to run that handler (the
+# engine holds the GIL): kill it outright rather than leave it holding port 4242.
+kill_hung_payload() { pkill -KILL -f "doom_payloa[d].py --fps" 2>/dev/null; }
 # Detached, so it outlives this shell. setsid -f in WSL: anything started with plain nohup inside a
 # `wsl bash -c` call dies when that call returns. macOS has no setsid; nohup is enough there.
 detach() {
@@ -38,7 +42,7 @@ start_yamcs() {
 case "${1:-start}" in
   stop) stop; echo stopped ;;
   payload)
-    pkill -f "doom_payloa[d].py --fps" 2>/dev/null; sleep 1
+    pkill -f "doom_payloa[d].py --fps" 2>/dev/null; sleep 1; kill_hung_payload
     start_payload; echo "payload restarted" ;;
   status)
     ps aux | grep -E "doom_payloa[d]|fprime_yamc[s]|YamcsServe[r]|bin/DoomSa[t]" | awk '{print $11, $12, $13}' | sort | uniq -c
