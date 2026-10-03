@@ -91,7 +91,7 @@ _Kept up to date by Claude during the session. Newest first within each section.
 - [x] Implementation
 - [x] End to end (below: acceptance criteria 1 to 5, and the optional large-file check)
 - [x] Docs (criterion 6)
-- [ ] Review pass, push, draft PR
+- [x] Review pass (two rounds, below), push, draft PR
 
 ### Cloud environment (checked 2026-10-03)
 
@@ -179,7 +179,8 @@ Flight/payload record layouts (big-endian, as every existing record):
 | 5. Commands during a multi-minute uplink | `CONTROL` round trip, measured as the time from issuing the command to `CMDS_RECEIVED` arriving back one higher (command response is not downlinked), no pilot. Idle: median 103 ms (78 to 164), 30/30. During a 167 s `doom1.wad` uplink, sampled every 5 s across it: median 107 ms (39 to 150), 30/30. A first run, 20 samples in the first 12 s of the uplink: 113 ms idle and 102 ms during. |
 | 6. Docs | README "Uplink a new level"; `docs/ARCHITECTURE.md` (what is proven, findings 7 to 10); CLAUDE.md (tables, a gotcha). |
 | Dashboard | Level file panel, checked headless with Playwright. The form's `LOAD_WAD freedoom2.wad on MAP01` gave `[WadLoaded] Now flying freedoom2.wad on MAP01`, and a missing name gave the reason. |
-| Optional: freedoom2.wad (28.8 MB) | **Cannot be uplinked through Yamcs's HTTP API.** Yamcs 5.12.8 caps a bucket upload at 5 MiB (`max_body_size: 5242880` on `UploadObject` in `buckets.proto`, independent of the bucket's 100 MB `maxSize`); the upload fails with HTTP 413. The demo now says so. Ways round it, not built: a filesystem-backed bucket (`buckets:` in `yamcs.yaml` with a `path`, filled by copying the file in), or splitting into 5 MiB parts and joining them on board. |
+| Optional: freedoom2.wad (28.8 MB), after raising `maxContentLength` | **Done while flying.** One code autopilot flew throughout. 28,787,748 bytes went up as `fd2up.wad` in 1149.9 s (19.2 min, 25.0 KB/s), and the md5 on board matches `freedoom2.wad`. `[WadLoaded] Now flying fd2up.wad on MAP01`. In those 19 minutes, about 56,000 file packets plus about 4,700 pilot commands produced 0 `UnexpectedSequenceCount`, 0 `PacketOutOfOrder` and 0 `BadChecksum` (with one space packet per TC frame). |
+| Optional, first attempt (before `maxContentLength`) | **Could not be uplinked through Yamcs's HTTP API.** Yamcs 5.12.8 caps a bucket upload at 5 MiB (`max_body_size: 5242880` on `UploadObject` in `buckets.proto`, independent of the bucket's 100 MB `maxSize`); the upload fails with HTTP 413. The demo now says so. Ways round it, not built: a filesystem-backed bucket (`buckets:` in `yamcs.yaml` with a `path`, filled by copying the file in), or splitting into 5 MiB parts and joining them on board. |
 
 ### Findings worth raising upstream
 
@@ -203,3 +204,47 @@ Flight/payload record layouts (big-endian, as every existing record):
   - Every `flight.sh stop` or restart orphaned the ViZDoom engine (twelve built up in one session); fixed by closing the game on SIGTERM.
   - `scripts/*.sh` are committed without the executable bit.
   - The committed reference XTCE was stale, missing `INTENT` and 15 channels.
+
+### Review (two rounds) and the final regression
+
+An adversarial review read the diff through four lenses (flight, payload, ground, spec compliance), and a
+second reader then tried to refute each finding. Every confirmed finding is fixed:
+- **Rename rule.** The rename cut at the first `.wad.`, so `e1m1.wad.fixed.wad.<nonce>.part` would have become
+  `e1m1.wad`. Fixed, and checked standalone against 11 paths.
+- **Probe and load raced.** The probe and the load could see different files if a re-uplink of the same name
+  landed in between. The proven file is now hard-linked into `uplink/.pinned/<n>/`.
+- **Watchdog.** It was a thread, and ViZDoom holds the GIL while it hangs (measured: a ticking thread printed
+  nothing for 6 s). It is now a forked process.
+- **Hung payload on stop.** A payload hung inside ViZDoom never runs its SIGTERM handler; stop now follows up
+  with SIGKILL.
+- **Dashboard.** Focus after using the form, and the page layout.
+- **Demo hygiene.** A `.env`-aware `--remote-dir`, names checked before the uplink, bucket objects deleted,
+  `--truncate` no longer shadowing a good WAD, latency after a timeout.
+
+The second round read HEAD and caught two regressions in the first round's fixes:
+- The demo reset `name` to `None`, so every file would have gone up as `None.<ms>.part`.
+- The latency fix over-corrected.
+
+Both are fixed. `tests/test_wad_uplink_demo.py` now runs the demo against a stand-in Yamcs, and the C++
+LOAD_WAD encoder and the WAD report's field use are pinned by tests. Reintroducing either defect fails them.
+
+The ground reading also found that Yamcs packs several commands into one TC frame while F´ reads only the first
+packet of a frame (see the departures table). Its upstream root causes are listed under "Findings worth
+raising upstream".
+
+**Final regression** on the deployed build, with one code autopilot flying:
+- basic.wad uplinked and loaded over freedoom2.wad (the frame is basic.wad's room).
+- A name with `.wad.` inside (`basic.wad.v2.wad`) renamed correctly and loaded over freedoom1.wad.
+- An IWAD swap to doom1.wad through a pinned link.
+- A truncated uplink (`trunc-doom1.wad`), a missing name, traversal and a wrong extension, all refused with
+  `WAD_IWAD`, `WAD_LOADS` and `EPISODE` unchanged and frames rising.
+
+Afterwards only the flying WAD's pin was left, and no ViZDoom engine was orphaned. 445 unit tests pass, and
+honesty plus the canary report 17 checks, 0 failed.
+
+### Suggested charter note (for the PR; the charter is not edited)
+
+> A flight in which `WAD_LOADS > 0` is a demonstration and is never scored. Its `out/decisions.jsonl` must
+> not be fed to `research/runner.py flight --from-log` or to the ledger: attempts are labelled with the launch
+> WAD, and a switch from level 2 or higher back to level 1 makes the pilot log a level row that did not happen.
+> The dev set stays Freedoom Phase 1 and the test set the shareware episode (2.5); an uplinked WAD is neither.
