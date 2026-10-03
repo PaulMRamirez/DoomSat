@@ -148,21 +148,29 @@ class Link:
         return self.processor.issue_command(f"{DOOM}/{name}", args=args)
 
 
-def control_round_trip(link, owed=0, timeout=5.0):
-    """Seconds from issuing CONTROL to the onboard command count arriving back on the ground one higher.
-
-    `owed` is how many earlier commands timed out and may still arrive: their counts must not be taken for
-    this one's. Returns (seconds or None, owed after this sample).
-    """
-    count = lambda: link.values.get("CMDS_RECEIVED", (0, None))[1]
+def control_round_trip(link, timeout=5.0):
+    """Seconds from issuing CONTROL to the onboard command count arriving back on the ground one higher."""
     with link.lock:
-        before = count()
+        before = link.values.get("CMDS_RECEIVED", (0, None))[1]
     if before is None:
-        return None, owed
+        return None
     t0 = time.time()
     link.command("CONTROL", move=0, strafe=0, turn=0.0, fire=False, use=False, weapon="FIST")
-    ok = link.wait(lambda: (count() or 0) >= before + owed + 1, timeout)
-    return (time.time() - t0, 0) if ok else (None, owed + 1)
+    ok = link.wait(lambda: (link.values.get("CMDS_RECEIVED", (0, -1))[1] or 0) > before, timeout)
+    return time.time() - t0 if ok else None
+
+
+def settle(link, quiet=5.0, limit=30.0):
+    """Wait until CMDS_RECEIVED has not moved for `quiet` seconds: after a CONTROL timed out, its late count
+    (if it ever comes) must land before the next sample reads its starting count, not after."""
+    end, last, since = time.time() + limit, link.value("CMDS_RECEIVED"), time.time()
+    while time.time() < end:
+        time.sleep(0.2)
+        now = link.value("CMDS_RECEIVED")
+        if now != last:
+            last, since = now, time.time()
+        elif time.time() - since >= quiet:
+            return
 
 
 def latency_summary(label, samples):
@@ -175,12 +183,14 @@ def latency_summary(label, samples):
 
 
 def measure_latency(link, n, label, gap=0.5, stop=None):
-    samples, owed = [], 0
+    samples = []
     for _ in range(n):
         if stop is not None and stop():
             break
-        rtt, owed = control_round_trip(link, owed)
+        rtt = control_round_trip(link)
         samples.append(rtt)
+        if rtt is None:
+            settle(link)
         time.sleep(gap)
     say(latency_summary(label, samples))
     return samples
@@ -249,7 +259,6 @@ def main():
     if a.latency:
         measure_latency(link, a.latency, "CONTROL round trip, link idle")
 
-    name = None
     if a.wad:
         content = Path(a.wad).read_bytes()          # ground tooling: the bytes go into the bucket, nothing more
         if a.truncate is not None:

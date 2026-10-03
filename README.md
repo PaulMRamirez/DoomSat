@@ -182,6 +182,10 @@ ground/.venv/bin/python tools/wad_uplink_demo.py --iwad freedoom1.wad --map E1M1
    (`WadLoaded`, `EPISODE` steps). If anything is wrong, it reports `WadLoadFailed` with the reason and
    carries on with the WAD it had.
 
+The demo takes the uplink directory from `DOOMSAT_HOME` (the environment, then `.env`), as the scripts do. With
+the ground on Windows and the flight side in WSL, pass the WSL path explicitly, for example
+`--remote-dir /home/you/doom/wads/uplink`.
+
 The dashboard's Level file panel shows the active WAD (`WAD_IWAD`, `WAD_PWAD`, `WAD_LOADS`) and the last
 result, and it can send `LOAD_WAD`. `scripts/flight.sh check` prints the WAD too.
 

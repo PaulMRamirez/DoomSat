@@ -80,6 +80,25 @@ class TestTheFlightSoftwareAgrees(unittest.TestCase):
         self.assertRegex(CPP, r"case %d:\s*\n\s*this->handleWad\(" % wu.KIND_WAD)
         self.assertIn("elif kind == wu.KIND_LOAD_WAD:", PAYLOAD)
 
+    def test_the_flight_software_packs_load_wad_the_way_the_payload_reads_it(self):
+        handler = CPP[CPP.index("void Doom ::LOAD_WAD_cmdHandler"):]
+        handler = handler[:handler.index("\n}\n")]
+        self.assertIn("names[3] = {&iwad, &pwad, &map};", handler, "the names go in the order decode_load_wad reads")
+        self.assertLess(handler.index("body[n++] = take;"), handler.index("std::memcpy(&body[n], name->toChar(), take);"),
+                        "each name is a length byte, then its bytes")
+        self.assertEqual(wu.decode_load_wad(wu.pack_texts("a.wad", "b.wad", "M")), ("a.wad", "b.wad", "M"))
+
+    def test_the_flight_software_puts_each_report_field_where_it_belongs(self):
+        handler = CPP[CPP.index("void Doom ::handleWad"):]
+        handler = handler[:handler.index("\n}\n")]
+        self.assertIn("this->m_wadIwad[i] = static_cast<U8>(i < textLen[IWAD] ? text[IWAD][i] : 0);", handler)
+        self.assertIn("this->m_wadPwad[i] = static_cast<U8>(i < textLen[PWAD] ? text[PWAD][i] : 0);", handler)
+        self.assertIn("this->m_wadLoads = loads;", handler)
+        self.assertRegex(handler, r"result == WAD_LOADED\) \{[^}]*log_ACTIVITY_HI_WadLoaded\(Fw::String\(text\[NAME\]\), "
+                                  r"Fw::String\(text\[MAP\]\)\)")
+        self.assertRegex(handler, r"result == WAD_FAILED\) \{\s*this->log_WARNING_HI_WadLoadFailed\(Fw::String\(text\[NAME\]\), "
+                                  r"Fw::String\(text\[REASON\]\)\)")
+
     def test_the_report_fields_come_in_the_order_the_flight_software_reads_them(self):
         order = re.search(r"enum \{ (IWAD, PWAD, NAME, MAP, REASON), TEXTS \}", CPP)
         self.assertIsNotNone(order, "handleWad's field list has changed")
