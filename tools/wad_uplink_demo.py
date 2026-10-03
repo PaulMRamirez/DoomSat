@@ -185,6 +185,8 @@ def main():
     p.add_argument("--load-early", action="store_true", help="issue LOAD_WAD while the file is still arriving")
     p.add_argument("--expect-fail", action="store_true", help="succeed only if LOAD_WAD is refused")
     p.add_argument("--latency", type=int, default=0, help="CONTROL round trips to time before and during the uplink")
+    p.add_argument("--latency-gap", type=float, default=0.5,
+                   help="seconds between round trips during the uplink (spread them over it; default %(default)s)")
     p.add_argument("--remote-dir", default=os.path.join(home, "wads", "uplink"),
                    help="the uplink directory on the spacecraft, as an absolute path (default %(default)s)")
     p.add_argument("--yamcs", default="localhost:8090")
@@ -249,7 +251,8 @@ def main():
         lat = []
         if a.latency:
             th = threading.Thread(target=lambda: lat.extend(
-                measure_latency(link, a.latency, "CONTROL round trip, during the uplink", stop=stop.is_set)), daemon=True)
+                measure_latency(link, a.latency, "CONTROL round trip, during the uplink", gap=a.latency_gap,
+                                stop=stop.is_set)), daemon=True)
             th.start()
         budget = len(content) / 15000 + 60     # ~25 KB/s at 512-byte chunks, with room
         last = 0

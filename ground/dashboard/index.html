@@ -20,7 +20,7 @@
   #view { position:relative; }
   #frame { width:932px; height:699px; image-rendering:auto; background:#000; border-radius:6px; display:block; }
   #frameinfo { position:absolute; left:26px; bottom:22px; background:rgba(0,0,0,.55); padding:4px 8px; border-radius:4px; font-size:12px; color:#ccc; }
-  #right { display:grid; grid-template-rows: auto auto 1fr; gap:14px; }
+  #right { display:grid; grid-template-rows: auto auto auto 1fr; gap:14px; }
   table { border-collapse:collapse; width:100%; }
   td { padding:3px 6px; border-bottom:1px solid #202737; font-variant-numeric: tabular-nums; }
   td.k { color:var(--dim); width:46%; }
@@ -52,6 +52,14 @@
   #restart { position:absolute; right:10px; bottom:10px; font:13px "Segoe UI", sans-serif; color:var(--fg); cursor:pointer;
     background:#2a3242; border:1px solid #3d4759; border-radius:5px; padding:5px 10px; }
   #restart:hover { background:#3a4458; }
+  /* the level file: which WAD the game runs, and LOAD_WAD */
+  #wadform { display:flex; align-items:center; gap:8px; margin-top:6px; color:var(--dim); font-size:13px; }
+  #wadform input { background:#1d2330; border:1px solid #3d4759; border-radius:4px; color:var(--fg); padding:3px 6px;
+    font: 13px Consolas, monospace; width:150px; }
+  #wadform input#wadMap { width:70px; }
+  #wadform button { font:13px "Segoe UI", sans-serif; color:var(--fg); cursor:pointer; background:#2a3242;
+    border:1px solid #3d4759; border-radius:5px; padding:3px 12px; }
+  #wadsent, #wadmsg { font: 12.5px Consolas, monospace; color:#cfd6e2; white-space:pre; overflow:hidden; margin-top:4px; }
 </style>
 </head>
 <body>
@@ -108,6 +116,18 @@
           <tr><td class="k">Game tic / frames sent</td><td><span id="TIC"></span> / <span id="FRAMES_SENT"></span></td></tr>
         </tbody></table>
       </div>
+    </section>
+    <section class="panel">
+      <h2>Level file (LOAD_WAD: switch the running game to an uplinked or installed WAD) <span id="wadloads" style="float:right"></span></h2>
+      <div><span id="WAD" class="acc" style="font-size:18px;font-weight:600">&ndash;</span></div>
+      <form id="wadform" autocomplete="off">
+        IWAD <input id="wadIwad" placeholder="freedoom2.wad" spellcheck="false">
+        PWAD <input id="wadPwad" placeholder="none" spellcheck="false">
+        map <input id="wadMap" placeholder="MAP01" spellcheck="false">
+        <button type="submit">Load</button>
+      </form>
+      <div id="wadsent"></div>
+      <div id="wadmsg"></div>
     </section>
     <section class="panel">
       <h2><span id="s1title">System One: jev (TypeSafe) &mdash; live decisions every ~0.5 s</span> <span id="s1lat" style="float:right"></span></h2>
@@ -181,6 +201,23 @@ async function pollArchive() {
     // names it would fail whole and blank the page.
     const r = await fetch("/api/processors/fprime-project/realtime/parameters" + G + "PilotMode");
     if (r.ok) applyMode(val(await r.json()));
+  } catch (e) { console.log(e); }
+  try {
+    // The level file, also asked on its own: a flight build from before LOAD_WAD has no WAD channels. The
+    // names come down as zero-padded bytes (F' string telemetry does not survive fprime-xtce).
+    const body = {id: ["WAD_IWAD", "WAD_PWAD", "WAD_LOADS"].map(n => ({name: SS + n}))};
+    const r = await fetch("/api/processors/fprime-project/realtime/parameters:batchGet", {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+    if (r.ok) {
+      const w = {}, name = b => b ? atob(b).replace(/\0+$/, "") : "";
+      for (const pv of ((await r.json()).value || [])) w[pv.id.name.split("/").pop()] = val(pv);
+      const iwad = name(w.WAD_IWAD), pwad = name(w.WAD_PWAD);
+      $("WAD").textContent = iwad ? (pwad ? `${pwad} over ${iwad}` : iwad) : "-";
+      $("wadloads").textContent = w.WAD_LOADS !== undefined && w.WAD_LOADS !== null ? `${w.WAD_LOADS} switched in flight` : "";
+    }
+    const ev = await (await fetch("/api/archive/fprime-project/events?limit=1&order=desc&q=Wad")).json();
+    const last = (ev.events || ev.event || [])[0];
+    if (last) $("wadmsg").textContent = `${last.generationTime.substr(11, 8)} ${last.message}`;
   } catch (e) { console.log(e); }
 }
 
@@ -257,7 +294,7 @@ function engage() { drive.on = true; $("drive").classList.add("on"); renderHud()
 function letGo() { drive.on = false; held.clear(); $("drive").classList.remove("on"); sendControl(); }
 
 document.addEventListener("keydown", e => {
-  if (!drive.on) return;
+  if (!drive.on || e.target.closest("#wadform")) return;   // typing a WAD name is not driving
   if (e.code === "Escape") { letGo(); return; }
   const k = KEYMAP[e.code], w = WEAPON_KEYS[e.code];
   if (!k && !w) return;
@@ -289,6 +326,15 @@ $("restart").addEventListener("click", async e => {
   try { await issue("RESET_GAME", {}); } catch (err) { drive.errors++; drive.err = String(err.message || err).slice(0, 90); renderHud(); }
 });
 setInterval(() => { if (drive.on && (held.size || Date.now() < drive.weaponUntil + REPEAT_MS)) sendControl(); }, REPEAT_MS);
+$("wadform").addEventListener("submit", async e => {
+  e.preventDefault();
+  const args = {iwad: $("wadIwad").value.trim(), pwad: $("wadPwad").value.trim(), map: $("wadMap").value.trim()};
+  const said = `${args.pwad ? args.pwad + " over " : ""}${args.iwad} on ${args.map}`;
+  try {
+    await issue("LOAD_WAD", args);
+    $("wadsent").textContent = `${new Date().toISOString().substr(11, 8)} LOAD_WAD ${said}: sent; the payload proves it before switching`;
+  } catch (err) { $("wadsent").textContent = `LOAD_WAD ${said}: refused by Yamcs, ${String(err.message || err).slice(0, 80)}`; }
+});
 
 // The page is laid out for 1920 x 1080; on a smaller screen, shrink it to fit rather than cut it off.
 function fit() {

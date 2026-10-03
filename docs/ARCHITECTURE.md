@@ -122,6 +122,12 @@ is built and what the numbers actually say, including where they say it is not f
   `goal`), ~460 ms median including the Yamcs round trip; every decision row in `out/decisions.jsonl` carries
   the TypeSafe request id **and the exact state that was sent**, so a run can be replayed against a new graph
   without the game (`tools/replay.py`).
+- File uplink and `LOAD_WAD` (3 October 2026, see the README's "Uplink a new level" and
+  `docs/plans/wad-uplink-stage1.md`): a WAD goes up as F´ file packets (fprime-yamcs `FprimeFilePacketService`,
+  APID 3, 512-byte chunks, about 25 KB/s) to `NAME.<nonce>.part`. FileUplink verifies the checksum and announces
+  the file on `fileAnnounce`, and the Doom component renames it to `NAME`. `LOAD_WAD` then has the payload prove
+  the game in a child process and rebuild its `DoomGame` in place. The F´ binary, Yamcs and the flight link stay
+  up throughout. Command round trips stay around 100 ms during an uplink.
 - Claude Sonnet 5 via the `claude` CLI as the after-action reviewer: one tool-free schema call per episode,
   returning the revised graph. The CLI runs with `DISABLE_NON_ESSENTIAL_MODEL_CALLS=1`, so no helper-model calls;
   `--system-two anthropic` uses the API directly.
@@ -139,6 +145,18 @@ Integration findings worth keeping:
    products are written into a ring of 20 names); the parameter WebSocket drops after a few minutes.
 6. The ViZDoom depth buffer is perpendicular (z) distance at 7.16 units per step, its value 0 is the sky, and the
    crosshair is drawn into it; the automap draws the player arrow over the lines beneath it.
+7. A truncated WAD does not raise in ViZDoom 1.3.0. `init()` prints "Failed to allocate memory from system heap"
+   and the process dies with SIGSEGV, which is why `LOAD_WAD` proves a WAD in a child process first.
+8. F´ v4.3.0 command string arguments are capped at `FW_CMD_STRING_MAX_SIZE` (40) on board, whatever
+   `string size N` declares. That includes FileManager's 240-character paths, which fail with FORMAT_ERROR above
+   40. Yamcs also counts the two-byte length tag against the declared size, so `string size 40` carries 38
+   characters.
+9. FileUplink opens its destination without truncating it, writes into it while it arrives, and keeps a file
+   that failed its checksum. F´ file packets are not retransmitted, so a single packet lost on the TC link
+   fails the whole file (seen: `PacketOutOfOrder`, then `BadChecksum`). Hence the fresh `.part` name per
+   uplink and the rename only on `fileAnnounce`.
+10. fprime-yamcs regenerates the XTCE from the build's dictionary every time it starts, so
+    `ground/yamcs/mdb/fprime.xtce.xml` is a reference copy that Yamcs does not load.
 
 ## Layout
 
