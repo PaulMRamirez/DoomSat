@@ -1562,7 +1562,20 @@ def main():
         if os.getpgrp() == os.getpid():
             threading.Thread(target=_watchdog, daemon=True).start()
         sys.exit(Payload(args).probe())
-    Payload(args).serve()
+    payload = Payload(args)
+
+    def _stop(*_):
+        # scripts/flight.sh stop and every restart send SIGTERM; without this the ViZDoom engine (and a
+        # LOAD_WAD probe's) outlives the payload, one more orphan per restart
+        if payload.wad_job is not None:
+            try:
+                os.killpg(payload.wad_job[0].pid, signal.SIGKILL)
+            except OSError:
+                pass
+        payload.game.close()
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, _stop)
+    payload.serve()
 
 
 if __name__ == "__main__":
