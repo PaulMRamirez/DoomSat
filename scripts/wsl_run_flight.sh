@@ -78,7 +78,9 @@ case "${1:-start}" in
   status)
     ps aux | grep -E "doom_payloa[d]|fprime_yamc[s]|YamcsServe[r]|bin/DoomSa[t]" | awk '{print $11, $12, $13}' | sort | uniq -c
     curl -s http://localhost:8090/api/instances | grep -c '"name": "fprime-project"' ;;
-  prmdb) build_prmdb; echo "built $RUN/PrmDb.dat" ;;
+  prmdb)
+    build_prmdb
+    if [ -f "$RUN/PrmDb.dat" ]; then echo "built $RUN/PrmDb.dat"; else echo "no PrmDb.dat: on the stock parameter defaults"; fi ;;
   start) stop; build_prmdb; start_payload; start_yamcs; echo "started; logs in $RUN; Yamcs on http://localhost:8090 in ~30 s" ;;
   yamcs) stop; build_prmdb; start_yamcs; echo "F´ + Yamcs started (no game); logs in $RUN; Yamcs on http://localhost:8090 in ~30 s" ;;
   *) echo "usage: $0 [start|yamcs|stop|status|payload|prmdb]"; exit 2 ;;

@@ -70,7 +70,7 @@ Source paths: `F´:` is `lib/fprime` in the F´ project (v4.3.0, `7d8f579`), `Y:
 **Ready to merge, Class 2 only. No upstream work is needed first, and waiting for a later F´ release would not
 help.** On the pinned versions the whole demonstration ran: CFDP Class 1 and Class 2 up and down, a 4.2 MB IWAD
 both ways, native file packets failing 3 of 3 at 5 % frame loss each way while CFDP Class 2 delivered every file
-whole, then `COMMIT_WAD` and `LOAD_WAD` with the level flying. The suite (465 tests) and the honesty suite pass.
+whole, then `COMMIT_WAD` and `LOAD_WAD` with the level flying. The suite (473 tests) and the honesty suite pass.
 
 What makes that true is six local workarounds, each small. Five are pinned by tests; the local instances only by
 the build:
@@ -79,10 +79,11 @@ the build:
 - `MaxPduSize` 1001 in place of a stock 1024 that asserts;
 - `OutgoingFileChunkSize` 981, because F´ sizes a PDU's data from an uninitialised header (F10);
 - 2048 receive chunks in place of 58, without which a lossy upload resends most of the file (F11);
-- a 42-line launcher wrapper, because fprime-yamcs sorts the keys of the instance YAML;
+- a small launcher wrapper (`ground/yamcs/launch.py`), because fprime-yamcs sorts the keys of the instance YAML;
 - `COMMIT_WAD`, because `cfdpManager` has no `fileAnnounce`. It carries the size and CFDP checksum of what was
   sent, and the Doom component renames only a file that has both. (The commit could also move on board with no
-  upstream work, through a guard component that watches the receiver's FIN: risk 3.)
+  upstream work, through a guard component that records each upload's destination from its Metadata and commits
+  on the receiver's FIN: risk 3.)
 
 The upstream drafts below would retire them, but none blocks. F´ v4.4.0 and `devel` (`55f597d`, 2 October 2026)
 still carry the `configure` bug, still have no reference wiring and still have no CFDP sandbox. For this work an
@@ -128,7 +129,7 @@ has one file output and CFDP and `Fw::FilePacket` both arrive on APID 3 (Q1). Th
 | Destination paths outside the uplink directory | Written; see "Destination paths" | ran |
 | Boot parameters (`flight/config/PrmDb.json` → `PrmDb.dat`) | `PrmFileLoadComplete`, 10 records, no warnings; the fast CRC pass with no `PRM_SET` sent | ran |
 | CONTROL round trips during Class 2 uplinks | Median 100 ms during the uplink at 10 ms and at 5 ms pacing; 100 and 108 ms with the link idle | ran |
-| Unit tests | 465 pass (412 before this stage, 434 before the review); honesty 8 checks and 17 with `--canary`, 0 failed | ran |
+| Unit tests | 473 pass (412 before this stage, 434 before the review); honesty 8 checks and 17 with `--canary`, 0 failed | ran |
 
 The relay's drops are seeded and reproducible. In the Class 1 runs on 4 October its TC drop list, replayed
 offline (`random.Random("11-TC")`), matched the `UnexpectedSequenceCount` gaps the flight software logged one for
@@ -317,10 +318,14 @@ order:
 2. **Class 1 is unsafe for WADs** (above). The demo defaults to Class 2 on this build.
 3. **Commands have no retransmission.** A lost `COMMIT_WAD` or `LOAD_WAD` needs a resend; the demo's `--tries`
    does it, and the dashboard's `LOAD_WAD` button does not. The commit itself need not be a ground command: a
-   guard component on `cfdpManager.dataOut` could see the receiver's own FIN and rename the file through the
-   unconnected `doom.fileAnnounce`, with no upstream work. It must key on condition code NO_ERROR and file status
-   RETAINED, not the delivery code (zeroed per transaction, so COMPLETE even on failure,
-   `TransactionRx.cpp:103`), and commit once per transaction, since FINs repeat [read]. Not built.
+   guard component spliced into both `fprimeRouter.fileOut -> cfdpManager.dataIn` and `cfdpManager.dataOut` could
+   do it with no upstream work. On the way up it records each Metadata PDU's destination against (source entity,
+   sequence number), because a FIN carries no file name. On the way down, at the receiver's own FIN for a recorded
+   transaction, it passes that destination to the unconnected `doom.fileAnnounce` and forgets the entry. It must
+   key on condition code NO_ERROR and file status RETAINED, not the delivery code (zeroed per transaction, so
+   COMPLETE even on failure, `TransactionRx.cpp:103`), and commit once per transaction, since FINs repeat [read].
+   It is the destination filter of "Destination paths" item 2 plus a transaction table, so more than that
+   filter's day. Not built.
 4. **The v4.3.0 framer stalls** when `commsBufferManager` runs dry: it drops the packet without a `comStatus`,
    and ComQueue then waits for ever (`F´:Svc/Ccsds/SpacePacketFramer/SpacePacketFramer.cpp:40-46`) [read; in the
    harness an unpaced burst ran the pool dry, the framer dropped a downlink packet, ComQueue overflowed and no
@@ -331,11 +336,13 @@ order:
 5. **Big downlinks hold up game frames** (Q4) [read]. Downlink large files while not flying.
 6. **The 40-character command string cap**: `COMMIT_WAD` carries `NAME.<13 digits>.part`, so an uplinked name can
    be at most 19 characters on this build (38 natively). The demo checks before anything goes up [ran].
+   `SendFile` paths are capped the same way [read].
 7. **A `COMMIT_WAD` sent between the last byte and the CRC pass** renames a whole file, but `r2CalcCrcChunk` then
    reopens the old `.part` name, fails, and the FIN reports a file-size error (`TransactionRx.cpp:903-918`)
-   [read]. Earlier than that the size or checksum differs and the commit is refused. With
-   `RxCrcCalcBytesPerCycle` at 16 MiB the window is one 1 Hz tick; the demo commits only after the FIN.
-   `SendFile` paths are capped the same way [read].
+   [read]. Earlier than that the size or checksum differs and the commit is refused [ran]. The CRC pass reopens
+   the file only on its first chunk, so `RxCrcCalcBytesPerCycle` does not change the window: with no loss it runs
+   up to two 1 Hz ticks past the EOF (the first tick sends only the EOF-ACK, `TransactionRx.cpp:273-296`), and
+   one after a NAK resend [read]. The demo commits only after the FIN.
 8. **Yamcs's sender inactivity timer never arms** (`eofAckReceived` is never set,
    `Y:cfdp/CfdpOutgoingTransfer.java:93`) [read]. If every FIN were lost the upload would stay RUNNING; F´ sends
    ten, so that needs ten in a row lost [inferred].
@@ -374,15 +381,34 @@ fixes that changed behaviour:
 - **The parameter file failed open.** If `PrmDb.dat` cannot be built the start now stops (opt in to the defaults
   with `DOOMSAT_PRM_DEFAULTS=1`). The path goes into the JSON escaped, so `&`, `#`, `\` and `"` survive.
   Leftover temp files are cleared at start; a planted one was gone after `flight.sh start` [ran].
-- **The demo**: no fixed time budget (it gives up when a transfer stops moving, then cancels it); the bucket
-  object is deleted on every exit; `--service cfdp` alone means class 2; `--tries` and `--pdu-delay` are
-  checked; no `PRM_SET`; an unconfirmed commit fails under `--no-load`, and a negative test refused only because
-  the file was never put in place fails; the telemetry stand-in for a lost `WadLoaded` must show this load.
+- **The demo**: no budget from the size. It gives up when a transfer stops moving: 90 s in the first pass, longer
+  at full size, where Yamcs shows no progress while NAK resends and the FIN are under way (`tail_limit`), and
+  not at all while it is queued behind another upload. A transfer left running is cancelled on every exit,
+  Ctrl-C included, and the bucket object is deleted; `--service cfdp` alone means class 2; `--tries` and `--pdu-delay` are
+  checked; no `PRM_SET`; a `COMMIT_WAD` with no answer at all fails (`LOAD_WAD` could otherwise fly an older
+  file of the same name), as does an unconfirmed one under `--no-load`; the telemetry stand-in for a lost
+  `WadLoaded` must show this load.
 - **`DOOMSAT_RELAY=0`** now means off.
 
 The rest were comments that no longer matched the code (the dedicated pool, the buffer count, `fileAnnounce`) and
 a relay test that could not pass on Windows. This document's claim that a failed receive is removed was wrong:
 nothing removes one (Destination paths).
+
+The fixes then had their own adversarial review: five reviewers by area and a skeptic for each finding. Of 22
+findings none was refuted, and they came down to 15 distinct problems, one of them medium. The first stall limit
+would have cancelled a healthy class 2 upload of a whole IWAD at 5 % loss, because Yamcs never counts resends:
+a simulation of the NAK tail, checked against the measured `doom1.wad` tail, puts `freedoom2.wad`'s at 96 to 243 s.
+The rest were low:
+- a `COMMIT_WAD` with no answer could let `LOAD_WAD` fly an older file of the same name;
+- a transfer was cancelled only on a stall;
+- two tests also passed on the code they were meant to catch;
+- the header test checked one direction only;
+- `DOOMSAT_PRM_DEFAULTS` did not reach WSL from Git Bash;
+- wording, including this document's risk 7 window and the guard sketch.
+
+All are fixed, and each new test was run against the previous code and fails there. On the live stack the class 2
+demo still ran to OK, and Ctrl-C during a `doom1.wad` upload cancelled the transfer (Yamcs: FAILED, "Cancel request
+received", at 103,272 bytes). The cancelled receive's `.part` stayed on board, as "Destination paths" says [ran].
 
 ### The reading notes at the top, checked
 

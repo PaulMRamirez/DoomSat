@@ -131,9 +131,11 @@ void Doom ::COMMIT_WAD_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, const Fw::Cmd
         path.format("%s/doom/wads/uplink/%s", (user != nullptr) ? user : "", part.toChar());
     }
     // cfdpManager writes the file in place and announces nothing, so check here that it is the whole file the
-    // ground sent before it gets its real name: a commit that came too early, or after a damaged Class 1
-    // upload, leaves a .part that LOAD_WAD will not use. A file that is not there at all (already committed by
-    // an earlier COMMIT_WAD whose answer was lost, say) is WadUplinkFailed, as before.
+    // ground sent before it gets its real name: a commit before the last byte has landed, or after a damaged
+    // Class 1 upload, leaves a .part that LOAD_WAD will not use. A file that is not there at all (already
+    // committed by an earlier COMMIT_WAD whose answer was lost, or not yet created) is WadUplinkFailed, as before.
+    // A commit between the last byte and cfdpManager's CRC pass does rename the whole file, and that transfer
+    // then ends with a file-size error, so the ground waits for the FIN.
     FwSizeType haveSize = 0;
     U32 haveSum = 0;
     if (!fileSum(path.toChar(), haveSize, haveSum)) {
@@ -151,8 +153,10 @@ void Doom ::COMMIT_WAD_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, const Fw::Cmd
 }
 
 bool Doom ::fileSum(const char* path, FwSizeType& size, U32& checksum) {
-    // One pass over the file on this component's thread: about 30 ms for a 28 MB WAD from the page cache,
-    // well inside the 0.5 s that a full run queue (10 at 20 Hz) allows.
+    // One pass over the file on this component's thread. The build is unoptimised: about 150 ms for a 28.8 MB WAD
+    // from the page cache, under 200 ms for the largest file Yamcs can uplink (a 32 MiB bucket upload). The doom
+    // queue (60 deep, run ticks at 20 Hz plus commands) fills in about 3 s, and a full queue is an FW_ASSERT in
+    // run_handlerBase.
     Os::File file;
     if (file.open(path, Os::File::OPEN_READ) != Os::File::OP_OK) {
         return false;
@@ -185,9 +189,9 @@ bool Doom ::placeWad(const Fw::StringBase& file_name) {
     if (destLen == 0) {
         return false;
     }
-    // A fresh .part name for every uplink, renamed over NAME.wad in the same directory: rename(2) is
-    // atomic, and the uplink service (FileUplink, or cfdpManager), which opens without truncating, never writes
-    // into an older file.
+    // A fresh .part name for every uplink, renamed over NAME.wad in the same directory: rename(2) is atomic,
+    // and neither uplink service ever writes into an older file (FileUplink opens without truncating and would
+    // leave an older file's tail; cfdpManager truncates and would destroy it).
     Fw::String dest;
     dest.format("%.*s", static_cast<int>(destLen), path);
     if (Os::FileSystem::rename(path, dest.toChar()) == Os::FileSystem::OP_OK) {

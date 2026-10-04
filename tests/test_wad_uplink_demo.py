@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import types
+from pathlib import Path
 import unittest
 from unittest import mock
 
@@ -36,11 +37,14 @@ def wad_bytes(name):
 class FakeStack:
     """Just enough of YamcsClient, a processor, the storage and file transfer clients."""
 
-    def __init__(self, refuse_load=False, cfdp=False, lose=(), damage=False, stall=False, pace_s=0.0):
+    def __init__(self, refuse_load=False, cfdp=False, lose=(), damage=False, stall=False, pace_s=0.0, hold_s=0.0,
+                 queued_s=0.0):
         self.refuse_load, self.cfdp = refuse_load, cfdp
         self.damage = damage      # the file lands on board with one byte wrong (class 1: no retransmission)
         self.stall = stall        # the transfer starts and never moves again
-        self.pace_s = pace_s      # the transfer takes this long, moving all the time
+        self.queued_s = queued_s  # it waits this long QUEUED behind another upload, at 0 bytes
+        self.pace_s = pace_s      # then takes this long, moving all the time
+        self.hold_s = hold_s      # then sits RUNNING at full size this long (NAK resends, the wait for the FIN)
         self.lose = list(lose)    # what a lossy link drops, once each: a command name, or an event's [Id]
         self.parts = {}           # with cfdp: .part files on board (name -> bytes), waiting for COMMIT_WAD
         self.placed = set()       # names put in place on board
@@ -105,6 +109,18 @@ class FakeStack:
     def cancel_transfer(self, transfer_id):
         self.cancelled.append(transfer_id)
 
+    def progress(self, size, elapsed):
+        if self.stall:
+            return "RUNNING", 10
+        if elapsed < self.queued_s:
+            return "QUEUED", 0
+        elapsed -= self.queued_s
+        if elapsed < self.pace_s:
+            return "RUNNING", int(size * elapsed / self.pace_s)
+        if elapsed < self.pace_s + self.hold_s:
+            return "RUNNING", size
+        return "COMPLETED", size
+
     @staticmethod
     def snapshot(state, size):
         done = state in ("COMPLETED", "FAILED")
@@ -115,12 +131,9 @@ class FakeStack:
         self.transfers.append((bucket, obj, remote))
         self.upload_kw = kw
         content = self.objects[obj]
-        if self.stall:
-            return self.snapshot("RUNNING", 10)
-        if self.pace_s:           # moving all the time, finished after pace_s
+        if self.stall or self.queued_s or self.pace_s or self.hold_s:   # on time.time(), which a test may fake
             t0 = time.time()
-            self.live = lambda: (self.snapshot("COMPLETED", len(content)) if time.time() - t0 >= self.pace_s
-                                 else self.snapshot("RUNNING", int((time.time() - t0) * 1e6)))
+            self.live = lambda: self.snapshot(*self.progress(len(content), time.time() - t0))
         if self.cfdp:             # cfdpManager writes the file in place and announces nothing
             onboard = bytes([content[0] ^ 0xFF]) + content[1:] if self.damage and content else content
             self.parts[obj] = onboard
@@ -190,6 +203,23 @@ class FakeStack:
         self.on_data(types.SimpleNamespace(parameters=[types.SimpleNamespace(name=DOOM + "FRAME_CHUNK", eng_value=chunk)]))
 
 
+class FakeClock:
+    """Real time plus whatever the code under test has slept: sleeps cost nothing, and deadlines measured in real
+    time (event waits) still pass."""
+
+    def __init__(self, interrupt_after=None):
+        self.real, self.slept, self.sleeps, self.interrupt_after = time.time, 0.0, 0, interrupt_after
+
+    def time(self):
+        return self.real() + self.slept
+
+    def sleep(self, s):
+        self.sleeps += 1
+        if self.interrupt_after is not None and self.sleeps > self.interrupt_after:
+            raise KeyboardInterrupt
+        self.slept += s
+
+
 @unittest.skipIf(demo is None, "yamcs-client is not installed (run with ground/.venv/bin/python)")
 class TestTheDemo(unittest.TestCase):
     def setUp(self):
@@ -201,11 +231,18 @@ class TestTheDemo(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_demo(self, stack, *argv, said=None):
+    def run_demo(self, stack, *argv, said=None, clock=None):
+        """clock: a FakeClock, so a transfer of many minutes runs in milliseconds (time.time() is faked for the
+        stand-in stack too); otherwise sleeps return at once and time is real."""
         argv = ["wad_uplink_demo.py", "--remote-dir", "/home/x/doom/wads/uplink", "--out", self.tmp.name, *argv]
         say = said.append if said is not None else (lambda *_: None)
-        with mock.patch.object(demo, "YamcsClient", stack), mock.patch.object(sys, "argv", argv), \
-                mock.patch.object(demo, "say", say), mock.patch.object(demo.time, "sleep", lambda _s: None):
+        with contextlib.ExitStack() as patches:
+            patches.enter_context(mock.patch.object(demo, "YamcsClient", stack))
+            patches.enter_context(mock.patch.object(sys, "argv", argv))
+            patches.enter_context(mock.patch.object(demo, "say", say))
+            patches.enter_context(mock.patch.object(demo.time, "sleep", clock.sleep if clock else lambda _s: None))
+            if clock:
+                patches.enter_context(mock.patch.object(demo.time, "time", clock.time))
             return demo.main()
 
     def names(self, stack):
@@ -248,7 +285,7 @@ class TestTheDemo(unittest.TestCase):
                                            "options": {"reliable": True, "pduDelay": 10}})
         # PrmDb.json sets the CRC pass rate at boot; the tool sends no parameter of its own
         self.assertEqual(self.names(stack), ["COMMIT_WAD", "LOAD_WAD"])
-        content = open(self.wad, "rb").read()
+        content = Path(self.wad).read_bytes()
         self.assertEqual(stack.commands[0][1], {"part": stack.transfers[0][1], "fileSize": len(content),
                                                 "checksum": demo.cfdp_checksum(content)})
         self.assertNotEqual(demo.cfdp_checksum(content), 0)
@@ -326,7 +363,7 @@ class TestTheDemo(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self.assertEqual(self.run_demo(FakeStack(), "--checksum", self.wad), 0)
-        content = open(self.wad, "rb").read()
+        content = Path(self.wad).read_bytes()
         self.assertEqual(out.getvalue().strip(), f"fileSize {len(content)} checksum {demo.cfdp_checksum(content)}")
 
     # -- what is sent, and how
@@ -385,22 +422,68 @@ class TestTheDemo(unittest.TestCase):
                                        "--cfdp", "1"), 0)
         self.assertEqual(self.names(stack), ["COMMIT_WAD", "LOAD_WAD"])
 
-    # -- how long an uplink may take
+    # -- how long an uplink may take (on a fake clock)
+    def big_wad(self, size=4_196_020):
+        path = os.path.join(self.tmp.name, "doom1.wad")
+        with open(path, "wb") as f:
+            f.write(bytes(size))
+        return path
+
     def test_a_stalled_transfer_is_cancelled_and_its_object_removed(self):
-        stack = FakeStack(cfdp=True, stall=True)
-        with mock.patch.object(demo, "STALL_S", 0.2):
-            self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--no-load", "--cfdp", "2"), 1)
+        stack, clock = FakeStack(cfdp=True, stall=True), FakeClock()
+        self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--no-load", "--cfdp", "2", clock=clock), 1)
         self.assertEqual(stack.cancelled, ["1"])
         self.assertEqual(stack.deleted, [stack.transfers[0][1]])
         self.assertNotIn("COMMIT_WAD", self.names(stack))
+        self.assertLess(clock.slept, demo.STALL_S + 5)
 
-    def test_a_slow_transfer_that_keeps_moving_is_not_given_up(self):
-        stack = FakeStack(cfdp=True, pace_s=0.6)
-        with mock.patch.object(demo, "STALL_S", 0.2):
-            self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--no-load", "--cfdp", "2", "--pdu-delay",
-                                           "100"), 0)
+    def test_a_transfer_longer_than_any_size_budget_is_not_given_up(self):
+        # doom1.wad at 100 ms a PDU: 4,226 PDUs, about 423 s, beyond the old budget of size / 15000 + 60 = 340 s
+        stack, clock = FakeStack(cfdp=True, pace_s=423.0), FakeClock()
+        self.assertEqual(self.run_demo(stack, "--wad", self.big_wad(), "--no-load", "--cfdp", "2", "--pdu-delay",
+                                       "100", clock=clock), 0)
+        self.assertGreater(clock.slept, 4_196_020 / 15000 + 60)
         self.assertEqual(stack.cancelled, [])
         self.assertEqual(self.names(stack), ["COMMIT_WAD"])
+
+    def test_the_nak_tail_at_full_size_is_not_a_stall(self):
+        # Yamcs counts first-pass bytes only: resends and the wait for the FIN show (RUNNING, size) unchanged
+        stack, clock = FakeStack(cfdp=True, pace_s=30.0, hold_s=150.0), FakeClock()
+        self.assertGreater(150.0, demo.STALL_S)
+        self.assertEqual(self.run_demo(stack, "--wad", self.big_wad(), "--no-load", "--cfdp", "2", clock=clock), 0)
+        self.assertEqual(stack.cancelled, [])
+
+    def test_a_tail_past_its_limit_is_given_up(self):
+        size = 4_196_020
+        stack, clock = FakeStack(cfdp=True, pace_s=30.0, hold_s=1e9), FakeClock()
+        self.assertEqual(self.run_demo(stack, "--wad", self.big_wad(size), "--no-load", "--cfdp", "2", clock=clock), 1)
+        self.assertEqual(stack.cancelled, ["1"])
+        self.assertLess(clock.slept, 30 + demo.tail_limit(size, demo.DEFAULT_PDU_DELAY_MS) + 5)
+
+    def test_the_tail_limit_covers_an_iwad_at_five_percent_loss(self):
+        # freedoom2.wad (28,787,748 B): about 28 NAK rounds at 5 % loss each way; median tails of 96 s to 243 s
+        # at 5 to 100 ms a PDU (the re-review's simulation, checked against the measured doom1.wad tail)
+        for pace, tail in ((5, 96), (10, 104), (40, 150), (100, 243)):
+            self.assertGreater(demo.tail_limit(28_787_748, pace), 2 * tail)
+
+    def test_waiting_in_the_queue_is_not_a_stall(self):
+        stack, clock = FakeStack(cfdp=True, queued_s=300.0, pace_s=10.0), FakeClock()
+        self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--no-load", "--cfdp", "2", clock=clock), 0)
+        self.assertEqual(stack.cancelled, [])
+
+    def test_ctrl_c_cancels_the_transfer_and_removes_the_object(self):
+        stack = FakeStack(cfdp=True, stall=True)
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_demo(stack, "--wad", self.wad, "--no-load", "--cfdp", "2", clock=FakeClock(interrupt_after=3))
+        self.assertEqual(stack.cancelled, ["1"])
+        self.assertEqual(stack.deleted, [stack.transfers[0][1]])
+
+    def test_a_failed_load_early_cancels_the_transfer(self):
+        stack = FakeStack(cfdp=True, stall=True, lose=["[WadLoadFailed]"])
+        with mock.patch.object(demo, "LOAD_ANSWER_S", 0.3):
+            self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--iwad", "freedoom2.wad", "--map", "MAP01",
+                                           "--cfdp", "2", "--load-early", clock=FakeClock()), 1)
+        self.assertEqual(stack.cancelled, ["1"])
 
     # -- a COMMIT_WAD nobody saw run
     def test_an_unconfirmed_commit_without_a_load_is_a_failure(self):
@@ -418,6 +501,17 @@ class TestTheDemo(unittest.TestCase):
                     self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--truncate", "100", "--map", "MAP01",
                                                    "--expect-fail", "--cfdp", "2", "--tries", str(tries)), 1)
                 self.assertEqual(len(stack.parts), 1)
+
+    def test_a_lost_commit_does_not_fly_an_older_file_of_the_same_name(self):
+        # With no answer at all, the COMMIT_WAD may never have arrived; LOAD_WAD would then use the older file
+        for extra, kw in (((), {}), (("--truncate", "100", "--expect-fail"), {"refuse_load": True})):
+            with self.subTest(extra=extra):
+                stack = FakeStack(cfdp=True, lose=["COMMIT_WAD"], **kw)
+                stack.placed.add("trunc-basic.wad" if extra else "basic.wad")
+                with mock.patch.object(demo, "COMMIT_ANSWER_S", 0.3):
+                    self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--iwad", "freedoom2.wad", "--map",
+                                                   "MAP01", "--cfdp", "2", *extra), 1)
+                self.assertNotIn("LOAD_WAD", self.names(stack))
 
     def test_a_negative_case_whose_commit_answer_alone_was_lost_still_passes(self):
         stack = FakeStack(cfdp=True, refuse_load=True, lose=["[WadUplinked]"])
@@ -442,10 +536,15 @@ class TestTheDemo(unittest.TestCase):
         stack.issue_command = issue
 
     def test_a_refused_load_is_not_stood_in_for_by_an_unrelated_count(self):
-        stack = FakeStack(refuse_load=True, lose=["[WadLoadFailed]", "[WadLoadFailed]"])
+        stack, said = FakeStack(refuse_load=True, lose=["[WadLoadFailed]", "[WadLoadFailed]"]), []
         self._concurrent_load(stack)
         with mock.patch.object(demo, "LOAD_RETRY_ANSWER_S", 0.3), mock.patch.object(demo, "TLM_STANDIN_S", 0.3):
-            self.assertEqual(self.run_demo(stack, "--iwad", "freedoom2.wad", "--map", "MAP01", "--tries", "2"), 1)
+            self.assertEqual(self.run_demo(stack, "--iwad", "freedoom2.wad", "--map", "MAP01", "--tries", "2",
+                                           said=said), 1)
+        # The other load's count never stands in, so the second LOAD_WAD still goes up (the later name check
+        # would also fail the run, which is why the rc alone does not show it)
+        self.assertFalse([m for m in said if "(event not seen" in m], said)
+        self.assertEqual(self.names(stack).count("LOAD_WAD"), 2)
 
     def test_no_stand_in_without_a_count_from_before(self):
         stack = FakeStack(lose=["[WadLoaded]"])

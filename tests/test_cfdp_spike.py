@@ -293,6 +293,7 @@ class TestTheParameterFileBuild(unittest.TestCase):
     def test_a_good_build_lands_in_run_and_bin_holds_only_the_binary(self):
         done = self.build(works=True)
         self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("built", done.stdout)
         self.assertTrue(os.path.isfile(os.path.join(self.run_dir, "PrmDb.dat")))
         self.assertFalse(os.path.exists(os.path.join(self.bin, "PrmDb.dat")))
         with open(os.path.join(self.run_dir, "PrmDb.json"), encoding="utf-8") as f:
@@ -314,6 +315,8 @@ class TestTheParameterFileBuild(unittest.TestCase):
         done = self.build(works=False, defaults="1")
         self.assertEqual(done.returncode, 0)
         self.assertIn("flying on parameter defaults", done.stderr)
+        self.assertNotIn("built", done.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "PrmDb.dat")))
 
 
 class TestTheRelay(unittest.TestCase):

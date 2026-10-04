@@ -187,8 +187,10 @@ module DoomMission {
         @ Put an uplinked WAD in place: rename UPLINK/NAME.wad.<nonce>.part to UPLINK/NAME.wad, where UPLINK is
         @ $DOOMSAT_HOME/wads/uplink. FileUplink's fileAnnounce does this by itself; CFDP has no such signal and
         @ writes in place, so the ground sends this once its Class 2 transfer has finished (FIN). The file is
-        @ renamed only if its size and CFDP checksum are the ones the ground sent, so a commit sent too early,
-        @ or after a damaged Class 1 upload, leaves it a .part (WadCommitRefused) and LOAD_WAD cannot use it.
+        @ renamed only if its size and CFDP checksum are the ones the ground sent: a commit sent before the whole
+        @ file is on board, or after a damaged Class 1 upload, leaves it a .part (WadCommitRefused; WadUplinkFailed
+        @ if no .part exists yet) and LOAD_WAD cannot use it. Wait for the FIN: a commit between the last byte and
+        @ cfdpManager's CRC pass renames the whole file, but the transfer then ends with a file-size error.
         async command COMMIT_WAD(
             part: string size 40  @< the bare name it was uplinked under: NAME.wad.<nonce>.part
             fileSize: U32  @< the size the ground sent, in bytes
