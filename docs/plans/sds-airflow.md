@@ -442,7 +442,7 @@ Baseline → plan → Airflow stack → product package and tests → Phase A (f
   CCSDS CFDP class 2 transfer that Yamcs's CfdpService saves in its bucket `cfdpDown`. An operator's manual
   `SendFile` of an 82 KB record on the live stack (15:59 UTC) showed the transfer's `remotePath` exactly as the source
   string sent, `COMPLETED` about 3 s after the command, and the object's bytes identical to the file on board. The
-  DAG itself has not run against the live stack yet.
+  DAG's own live runs are in the next entry.
   - The command is `/DoomSat_DoomSat/DoomSat/cfdpManager/SendFile` with all seven arguments, which Yamcs requires:
     channel 0, destination entity 100, `CLASS_2`, `KEEP` (`DELETE` would remove the record on board), priority 0, and
     the two paths, still at most 39 characters (40 on board). The task is still `send_SendFile_command`, checks
@@ -461,8 +461,8 @@ Baseline → plan → Airflow stack → product package and tests → Phase A (f
     and takes the newest transfer whose `remotePath` is the source, created at or after the command itself: Yamcs
     creates a downlink when its first PDU arrives, after F´ has the command, so an older transfer of the same path
     (possibly from another boot with the same transaction number, or in the list's 5 s slack) never stands in. Each
-    read gives up after 15 s without a byte, inside the poke's 2-minute execution timeout, which Airflow raises past
-    `silent_fail` (the first version had 1 minute against reads of up to 60 s). `COMPLETED`
+    read gives up after 15 s without a byte, inside the sensor's 4-minute execution timeout, which Airflow raises
+    past `silent_fail` (the first version had 1 minute against reads of up to 60 s). `COMPLETED`
     is received; `FAILED` with "File was received OK" is received with the finding `record_fin_unacknowledged`;
     any other `FAILED` is `record_transfer_failed`. cfdpManager answers OK once it has queued the send and opens the
     file later, so `TxFileOpenFailed`, `TxZeroLengthFile` or `SendFileInitiateFail` for this source (Yamcs then
@@ -479,3 +479,42 @@ Baseline → plan → Airflow stack → product package and tests → Phase A (f
     too and `record.compare` accepts the record's `reset` against them. `context wad` is held against the WAD
     flown, from telemetry, and the patch WAD is compared when both sides carry it. `qa_record_check` 1.3.0; its
     1.2.0 and 1.3.0 checksums for the fixture are both recorded. `l0_record` stays 1.0.0: its bytes are the file.
+- 2026-10-04, verified by running on the CFDP stack (flight software built from main 9070517c, the flight and the
+  SDS started from this branch, `RECORDS=on`, `DOOMSAT_SDS_RECORDS=on`, code autopilot with no System Two, flying
+  the level budget from fix PR #6 so episodes end within 180 s):
+  - Before the port, the merge alone (0abfafa7) processed its first episode on the new stack
+    (`20261004T160006Z-e0001`, died after 220 s): L1, the three L2s and the publish, context `freedoom1.wad E1M1
+    dev`. The links the quicklook reads are all still there; main adds `UDP_TC_OUT.vc2` (CFDP's uplink). Two L1s
+    flown on the old stack, rebuilt through main's Yamcs and its regenerated mission database, matched their
+    cataloged checksums exactly.
+  - Context from telemetry: the first episode under the new code has `wad` `freedoom1.wad`, `pwad` none,
+    `wad_loads` 0, `wad_launch` `freedoom1.wad`, `level_set` `dev`, source "telemetry WAD_IWAD, WAD_PWAD,
+    WAD_LOADS". An episode cut short by a payload restart kept its WAD (from telemetry) with the process gone; its
+    level set is `unknown`, because the map still needs the process.
+  - The in-flight switch: `tools/wad_uplink_demo.py --iwad freedoom2.wad --map MAP01` (an installed WAD, no uplink)
+    at 18:26:11. `WadLoaded` came 3 s later. The episode it ended (`20261004T182616Z-e0008`) is `wad_switch`,
+    closed by `EpisodeStarted`, with the old WAD (`freedoom1.wad`, `dev`). The next two (`e0009`, `e0010`) are
+    `freedoom2.wad MAP01`, `wad_loads` 1, `level_set` `other`, with `wad_launch` still `freedoom1.wad`.
+  - Phase D over CFDP: 44 records were requested with `cfdpManager.SendFile`, downlinked in class 2 into `cfdpDown`,
+    ingested and deleted from the bucket (it is empty after each), and compared with L1. All 44 runs succeeded in
+    the end. 35 agree on every check. The other 9 differ only in the first tic: one is a flight's first episode
+    (record 4, archive 259: Yamcs starts listening late), and in the other 8 the archive's first status is one
+    status period (3 tics) after the record's, because the episode's first status was one of those the link loses.
+    The three around the switch agree on everything, including the record's `reset` against the ground's
+    `wad_switch` and the patch WAD (none, both sides).
+  - Fail-fast: a record request for an episode flown before records were on (no file on board). cfdpManager
+    answered OK, then `TxFileOpenFailed` and `TxFileTransferFailed`; the sensor failed on its first poke, 1 s after
+    the command, with `record_unavailable`.
+  - Found and fixed live: the first version's sensor ran in reschedule mode with a 5 s poke. Four of the first
+    record runs failed although their transfers completed in under 3 s: Airflow 3.3.2's scheduler requeued the
+    sensor before it had handled the executor's report of the first poke, then failed it ("finished with state
+    success, but the task instance's state attribute is queued"). The sensor now pokes in place (one worker slot for
+    at most 120 s; execution timeout 4 minutes). The four runs were recovered by clearing only the sensor and what
+    follows it, so `SendFile` was not sent again; each found its completed transfer and ingested it. Their
+    `record_not_received` findings stay in the catalog as the record of those attempts.
+  - Fourth reprocessing campaign (`reprocess__cfdp-main-path-2.2-summary-1.3`), for `l2_path` 2.2.0 and
+    `l2_summary` 1.3.0: all 56 cataloged episodes' L1s were rebuilt through main's Yamcs and all 56 reproduced bit for
+    bit, the 2.45-hour one and those flown on the old stack included. 90 L2s were built, 78 were already current,
+    none stale. Afterwards every one of the 58 episodes (two more had closed meanwhile) is at `l2_path` 2.2.0 and
+    `l2_summary` 1.3.0, the bucket holds exactly three current objects per episode (174), and the rollup
+    (`l3_rollup` 1.1.0, 58 inputs) keeps `freedoom2.wad MAP01` apart from `freedoom1.wad E1M1`.
