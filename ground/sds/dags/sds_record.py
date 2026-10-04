@@ -104,18 +104,20 @@ def sds_record():
         return out
 
     # Read only, and every poke a fresh task process (reschedule): SendFile's answer, cfdpManager's events and
-    # Yamcs's CFDP transfer list. A read that fails is logged and the sensor pokes again (silent_fail); the
-    # verdicts that settle it are raised as AirflowFailException, which is never retried.
+    # Yamcs's CFDP transfer list. A read that fails is logged and the sensor pokes again (silent_fail). Each read
+    # gives up after record.POKE_READ_S without a byte, so three stalled reads still end well inside
+    # execution_timeout, which Airflow raises past silent_fail and which would fail the wait. The verdicts that
+    # settle it are raised as AirflowFailException, which is never retried.
     @task.sensor(poke_interval=5, timeout=120, mode="reschedule", silent_fail=True,
-                 execution_timeout=timedelta(minutes=1))
+                 execution_timeout=timedelta(minutes=2))
     def wait_for_downlinked_file(p: dict, command: dict):
         from airflow.sdk import PokeReturnValue
         from airflow.sdk.exceptions import AirflowFailException
         from doomsat_sds import config, pipeline, record
         from doomsat_sds.archive import YamcsArchive
         settings = config.Settings.from_env()
-        seen = record.observe(settings, YamcsArchive(settings.yamcs, settings.instance), p, command,
-                              pipeline.now_ms())
+        archive = YamcsArchive(settings.yamcs, settings.instance, read_s=record.POKE_READ_S)
+        seen = record.observe(settings, archive, p, command, pipeline.now_ms())
         print(seen["state"], seen["why"])
         if seen["state"] == "failed":
             raise AirflowFailException("%s: %s" % (seen["finding"], seen["why"]))
@@ -133,13 +135,10 @@ def sds_record():
         for e in seen["events"]:
             print(e)
         detail = {"command": command, "events": seen["events"], "why": seen["why"], "transfer": seen["transfer"]}
+        finding = record.downlink_finding(seen, received)
         with catalog:
-            if seen["state"] == "failed" or (received and seen["finding"]):
-                catalog.add_finding(seen["finding"], detail, episode_id=p["episode_id"])
-            elif not received:
-                # The wait ended with no verdict: nothing failed that the ground saw, and nothing arrived in time.
-                # A transfer that finished since then is not ingested; its object stays in cfdpDown.
-                catalog.add_finding("record_not_received", detail, episode_id=p["episode_id"])
+            if finding:
+                catalog.add_finding(finding, detail, episode_id=p["episode_id"])
         return seen["events"]
 
     @task(**RETRY)

@@ -10,7 +10,8 @@ list of files (PILOT_SIDE) and cannot see ground/sds at all, so these tests draw
 3. nothing in the SDS opens a WAD (only research/grader may, CLAUDE.md);
 4. the SDS is read-only by default: its one command is cfdpManager SendFile (class 2, keeping the file on board),
    sent from a module named for it; of CFDP it only reads the transfer list and the cfdpDown bucket, and deletes the
-   one object it has ingested;
+   one object it has ingested, in record.forget_downlinked alone (a URL is followed through the module's helpers
+   and record's BUCKET and object_url, not only through the strings in a call);
 5. its processes survive research/preflight.py --kill and the flight side's pkill, which both match by command
    line, and its own stop cannot take down the flight;
 6. its DAGs and its package import nothing from the pilot.
@@ -254,35 +255,132 @@ def command_findings(name, text):
 TRANSFER_STARTS = ("upload", "download")
 TRANSFER_CONTROL = ("cancel_transfer", "pause_transfer", "resume_transfer", "run_file_action")
 HTTP_WRITES = ("post", "put", "patch", "delete")
+# yamcs-client's storage writes (StorageClient, Bucket): writes like the HTTP ones, a finding when they name cfdpDown
+STORAGE_WRITES = ("upload_object", "delete_object", "create_bucket", "remove_bucket")
+NEEDLES = ("/filetransfer", "cfdpDown")
 
 
-def _strings_in(node):
-    return [n.value for n in ast.walk(node) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+def _bound_here(tree):
+    """Every name a module binds itself: assignments, functions, classes, imports and arguments."""
+    out = set()
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            out.add(n.name)
+        elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+            out.add(n.id)
+        elif isinstance(n, ast.alias):
+            out.add((n.asname or n.name).split(".")[0])
+        elif isinstance(n, ast.arg):
+            out.add(n.arg)
+    return out
+
+
+def _own_nodes(scope):
+    """The nodes of a module or function that are not inside a function defined in it."""
+    stack, out = list(ast.iter_child_nodes(scope)), []
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        out.append(node)
+        stack.extend(ast.iter_child_nodes(node))
+    return out
+
+
+FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
+ANSWERS = ("get", "head", "options", "request") + HTTP_WRITES     # what these return is an answer, not an address
+
+
+def standing_for(tree, needle, from_record=frozenset()):
+    """(names, holds) for one module: the module-level names that stand for `needle` (the endpoint or the bucket),
+    and holds(node, function=None), whether an expression in that function (or at module level) does.
+
+    A name stands for it when it is assigned a value that holds it (in its own scope), or is a function that
+    returns one, followed through each other until nothing new turns up: so record.object_url, which builds its
+    URL from BUCKET, stands for cfdpDown. What a request returns does not (r = http.get(url) is an answer).
+    `from_record` are the top-level names that stand for it in record.py: they count here as record.X, when
+    imported from record, and bare when this module does not bind the name itself (publish.py has a BUCKET and an
+    object_url of its own, for the doomsat-sds bucket)."""
+    names = {n for n in from_record if n not in _bound_here(tree)}
+    aliases = {"record"}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ImportFrom):
+            aliases.update(a.asname or a.name for a in n.names if a.name == "record")
+            if n.module and n.module.split(".")[-1] == "record":
+                names.update(a.asname or a.name for a in n.names if a.name in from_record)
+    functions = [f for f in ast.walk(tree) if isinstance(f, FUNCTIONS)]
+    local = {id(f): set() for f in functions}
+    hidden = {id(f): {a.arg for a in ast.walk(f.args) if isinstance(a, ast.arg)} for f in functions}
+
+    def holds(node, function=None, value=False):
+        """`value`: node is a value being assigned or returned, which a request's answer never stands for."""
+        mine = local[id(function)] if function is not None else set()
+        seen = (names - hidden[id(function)]) | mine if function is not None else names
+        stack = [node]
+        while stack:
+            m = stack.pop()
+            if (value or m is not node) and isinstance(m, ast.Call) and isinstance(m.func, ast.Attribute) \
+                    and m.func.attr in ANSWERS:
+                continue
+            if isinstance(m, ast.Constant) and isinstance(m.value, str) and needle in m.value:
+                return True
+            if isinstance(m, ast.Name) and m.id in seen:
+                return True
+            if isinstance(m, ast.Attribute) and m.attr in from_record and (
+                    (isinstance(m.value, ast.Name) and m.value.id in aliases)
+                    or (isinstance(m.value, ast.Attribute) and m.value.attr == "record")):
+                return True
+            stack.extend(ast.iter_child_nodes(m))
+        return False
+
+    def assigned(scope, into, function=None):
+        for n in _own_nodes(scope):
+            if isinstance(n, (ast.Assign, ast.AnnAssign)) and n.value is not None and holds(n.value, function, True):
+                into.update(t.id for t in (n.targets if isinstance(n, ast.Assign) else [n.target])
+                            if isinstance(t, ast.Name))
+
+    while True:
+        before = len(names) + sum(len(v) for v in local.values())
+        assigned(tree, names)
+        for f in functions:
+            assigned(f, local[id(f)], f)
+            if any(isinstance(r, ast.Return) and r.value is not None and holds(r.value, f, True)
+                   for r in _own_nodes(f)):
+                names.add(f.name)
+        if len(names) + sum(len(v) for v in local.values()) == before:
+            return names, holds
+
+
+def _record_exports():
+    """The top-level names of record.py that stand for each needle (BUCKET and object_url for cfdpDown)."""
+    tree = ast.parse(read("ground/sds/doomsat_sds/record.py"))
+    top = {t.id for n in tree.body if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)}
+    top |= {n.name for n in tree.body if isinstance(n, FUNCTIONS)}
+    return {needle: frozenset(standing_for(tree, needle)[0] & top) for needle in NEEDLES}
+
+
+RECORD_EXPORTS = _record_exports()
 
 
 def file_transfer_findings(name, text):
     """Everything in one SDS source file that could start, steer or cancel a CFDP transfer, or write to cfdpDown.
 
-    Allowed: GETs of /filetransfer (the transfer list) and of /storage/buckets/cfdpDown (the downlinked record), and
-    one DELETE of a cfdpDown object, in a record module (the ingested record, on the opt-in Phase D path). A write
-    names the endpoint or the bucket when a string in the call does, or a variable assigned from one. upload and
-    download count as yamcs-client's unless the module defines a method of that name (publish.Publisher.upload
-    writes the doomsat-sds bucket).
+    A write is an HTTP POST, PUT, PATCH or DELETE (as a method, or named to .request) or one of yamcs-client's
+    storage writes. It names /filetransfer or cfdpDown when anything in the call stands for it (standing_for): a
+    string, a variable or a function of the module, or record's BUCKET and object_url. Allowed: GETs of both, and
+    one DELETE of a cfdpDown object, in record.forget_downlinked (the ingested record, on the opt-in Phase D path).
+    upload and download count as yamcs-client's unless the module defines a method of that name
+    (publish.Publisher.upload writes the doomsat-sds bucket).
     """
     out = []
     base = os.path.basename(name)
     tree = ast.parse(text)
-    own = {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-    bound = {"/filetransfer": set(), "cfdpDown": set()}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for needle, names in bound.items():
-                if any(needle in s for s in _strings_in(node.value)):
-                    names.update(t.id for t in node.targets if isinstance(t, ast.Name))
-
-    def names(call, needle):
-        return (any(needle in s for s in _strings_in(call))
-                or any(isinstance(n, ast.Name) and n.id in bound[needle] for n in ast.walk(call)))
+    own = {n.name for n in ast.walk(tree) if isinstance(n, FUNCTIONS)}
+    holds = {needle: standing_for(tree, needle, RECORD_EXPORTS[needle])[1] for needle in NEEDLES}
+    enclosing = {}
+    for f in ast.walk(tree):                     # outer functions come first, so the innermost one is kept
+        if isinstance(f, FUNCTIONS):
+            enclosing.update({id(c): f for c in ast.walk(f) if isinstance(c, ast.Call)})
 
     for call in ast.walk(tree):
         if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)):
@@ -292,15 +390,17 @@ def file_transfer_findings(name, text):
             out.append("line %d calls %s, which steers a file transfer" % (call.lineno, attr))
         elif attr in TRANSFER_STARTS and attr not in own:
             out.append("line %d calls %s, which starts a file transfer" % (call.lineno, attr))
-        method = attr if attr in HTTP_WRITES else None
+        method = attr if attr in HTTP_WRITES + STORAGE_WRITES else None
         if attr == "request" and call.args and isinstance(call.args[0], ast.Constant) \
                 and str(call.args[0].value).lower() in HTTP_WRITES:
             method = str(call.args[0].value).lower()
         if method is None:
             continue
-        if names(call, "/filetransfer"):
+        function = enclosing.get(id(call))
+        if holds["/filetransfer"](call, function):
             out.append("line %d sends %s to /filetransfer" % (call.lineno, method.upper()))
-        if names(call, "cfdpDown") and not (method == "delete" and "record" in base):
+        forget = method == "delete" and base == "record.py" and getattr(function, "name", None) == "forget_downlinked"
+        if holds["cfdpDown"](call, function) and not forget:
             out.append("line %d sends %s to the cfdpDown bucket" % (call.lineno, method.upper()))
     if "record" not in base and re.search(r"\bforget_downlinked\s*\(", text):
         out.append("deletes the ingested cfdpDown object (forget_downlinked) outside a record module")
@@ -585,31 +685,69 @@ class SdsIsReadOnlyByDefault(unittest.TestCase):
         self.assertEqual([os.path.basename(u) for u in users], ["record.py"])
 
     def test_canary_planted_transfer_writes_are_caught(self):
-        planted = {
-            "record.py": 'requests.post("%s/api/filetransfer/%s/cfdp/transfers" % (url, inst), json=req)',
-            "record_x.py": 'url = base + "/api/filetransfer/fprime-project/cfdp/transfers/3:cancel"\nhttp.post(url)',
-            "pipeline.py": 'self.http.request("PUT", base + "/filetransfer/fprime-project/cfdp/transfers/3")',
-            "capture.py": 'svc = client.get_file_transfer_client(inst).get_service("cfdp")\nsvc.upload("b", "o")',
-            "quicklook.py": 'svc.download("cfdpDown", "rec_x.json")',
-            "store.py": "svc.cancel_transfer(t.id)",
-            "catalog.py": "svc.pause_transfer(t.id)",
-            "context.py": "svc.resume_transfer(t.id)",
-            "frames.py": "svc.run_file_action(t.id, 'x')",
-            "publish.py": 'requests.delete("%s/api/storage/buckets/cfdpDown/objects/%s" % (url, n), timeout=10)',
-            "record_y.py": 'requests.post(base + "/api/storage/buckets/cfdpDown/objects/x", data=b"")',
-            "lineage.py": "ref = record.forget_downlinked(settings, t)",
-        }
-        for name, text in planted.items():
+        planted = [
+            ("record.py", 'requests.post("%s/api/filetransfer/%s/cfdp/transfers" % (url, inst), json=req)'),
+            ("record_x.py", 'url = base + "/api/filetransfer/fprime-project/cfdp/transfers/3:cancel"\nhttp.post(url)'),
+            ("pipeline.py", 'self.http.request("PUT", base + "/filetransfer/fprime-project/cfdp/transfers/3")'),
+            ("capture.py", 'svc = client.get_file_transfer_client(inst).get_service("cfdp")\nsvc.upload("b", "o")'),
+            ("quicklook.py", 'svc.download("cfdpDown", "rec_x.json")'),
+            ("store.py", "svc.cancel_transfer(t.id)"),
+            ("catalog.py", "svc.pause_transfer(t.id)"),
+            ("context.py", "svc.resume_transfer(t.id)"),
+            ("frames.py", "svc.run_file_action(t.id, 'x')"),
+            ("publish.py", 'requests.delete("%s/api/storage/buckets/cfdpDown/objects/%s" % (url, n), timeout=10)'),
+            ("record_y.py", 'requests.post(base + "/api/storage/buckets/cfdpDown/objects/x", data=b"")'),
+            ("lineage.py", "ref = record.forget_downlinked(settings, t)"),
+            # the URL from a helper that builds it, record's own or one of the module's
+            ("pipeline.py", "http.delete(record.object_url(settings, t['objectName']))"),
+            ("pipeline.py", "http.post(object_url(settings, name), data=data)"),
+            ("pipeline.py", "from .record import object_url as where\nhttp.put(where(s, n), data=b'')"),
+            ("capture.py", "from doomsat_sds import record as r\nhttp.delete(r.object_url(s, n))"),
+            ("lineage.py", 'http.request("DELETE", record.object_url(s, n))'),
+            ("record.py", "def ingest(settings, name, data, http=None):\n"
+                          "    _http(http).put(object_url(settings, name), data=data)"),
+            ("record.py", 'BUCKET = "cfdpDown"\n'
+                          "def where(s, n):\n"
+                          "    return '%s/api/storage/buckets/%s/objects/%s' % (s.yamcs_url, BUCKET, n)\n"
+                          "def keep(s, n, http):\n    http.put(where(s, n), data=b'')"),
+            ("record.py", "def _turl(s):\n"
+                          "    return '%s/api/filetransfer/%s/cfdp/transfers' % (s.yamcs_url, s.instance)\n"
+                          "def stop(s, http):\n    http.post(_turl(s) + '/3:cancel')"),
+            # yamcs-client's storage writes
+            ("pipeline.py", "client.get_storage_client().get_bucket('cfdpDown').delete_object(name)"),
+            ("publish.py", "client.get_storage_client().upload_object('cfdpDown', name, data)"),
+            ("store.py", "client.get_storage_client().remove_bucket('cfdpDown')"),
+            ("catalog.py", "client.get_storage_client().create_bucket(record.BUCKET)"),
+            ("pipeline.py", "b = client.get_storage_client().get_bucket(record.BUCKET)\nb.delete_object(n)"),
+            # the one DELETE allowed is forget_downlinked's, in record.py, and nothing else there
+            ("record.py", "def ingest(s, t, http):\n    http.delete(object_url(s, t['objectName']))"),
+            ("record.py", "def forget_downlinked(s, t, http):\n    http.post(object_url(s, t['objectName']))"),
+            ("sds_record.py", "requests.delete(record.object_url(s, n))"),
+            ("record_x.py", "def forget_downlinked(s, t, http):\n    http.delete(object_url(s, t['objectName']))"),
+        ]
+        for name, text in planted:
             self.assertTrue(file_transfer_findings(name, text), "not caught in %s: %s" % (name, text))
-        ok = {
-            "record.py": 'r = http.get("%s/api/filetransfer/%s/cfdp/transfers" % (u, i), params={})\n'
-                         'requests.delete(base + "/api/storage/buckets/cfdpDown/objects/x", timeout=10)\n'
-                         'requests.get(base + "/api/storage/buckets/cfdpDown/objects/x")',
-            "publish.py": "class P:\n    def upload(self, name, data):\n        pass\nyamcs.upload('x', b'')",
-            "sds_record.py": "ref = record.forget_downlinked(settings, t)",
-        }
-        for name, text in ok.items():
-            self.assertEqual(file_transfer_findings(name, text), [], name)
+        ok = [
+            ("record.py", 'r = http.get("%s/api/filetransfer/%s/cfdp/transfers" % (u, i), params={})\n'
+                          'requests.get(base + "/api/storage/buckets/cfdpDown/objects/x")\n'
+                          "def forget_downlinked(settings, transfer, http=None):\n"
+                          "    r = _http(http).delete(object_url(settings, transfer['objectName']), timeout=10)\n"
+                          "    r.raise_for_status()"),
+            ("publish.py", "class P:\n    def upload(self, name, data):\n        pass\nyamcs.upload('x', b'')"),
+            # publish.py's own BUCKET and object_url are the doomsat-sds bucket's
+            ("publish.py", 'BUCKET = "doomsat-sds"\n'
+                           "def object_url(s, n):\n"
+                           "    return '%s/api/storage/buckets/%s/objects/%s' % (s.yamcs_url, BUCKET, n)\n"
+                           "http.put(object_url(s, n), data=b'')\n"
+                           "http.post('%s/storage/buckets' % base, json={'name': BUCKET})"),
+            ("sds_record.py", "ref = record.ingest(settings, c, p, cmd, t)\n"
+                              "ref['deleted'] = record.forget_downlinked(settings, t)"),
+            # what a GET returns is the record, not the bucket's address
+            ("pipeline.py", "r = http.get(record.object_url(s, n))\nhttp.post(other_url, data=r.content)"),
+        ]
+        for name, text in ok:
+            self.assertEqual(file_transfer_findings(name, text), [], "%s: %s" % (name, text))
+        self.assertLessEqual({"BUCKET", "object_url"}, RECORD_EXPORTS["cfdpDown"])     # read from record.py
 
     @unittest.skipUnless(os.path.exists(os.path.join(REPO, "ground", "sds", "dags", "sds_record.py")),
                          "Phase D (the record DAG) is not in this tree")

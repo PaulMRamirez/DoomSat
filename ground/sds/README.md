@@ -29,7 +29,9 @@ together with the rest of the boundary:
 - nothing is written under `out/frames/`, which the pilot reads;
 - the only command the SDS can send is cfdpManager `SendFile`, from one task named for it, and only when
   record requests are switched on (Phase D). Of CFDP it only reads Yamcs's transfer list and the `cfdpDown`
-  bucket, and deletes the one object it has ingested.
+  bucket, and deletes the one object it has ingested. The guard finds a write to either through the strings in
+  the call, the module's own variables and URL helpers, and `record.BUCKET` and `record.object_url`, and allows
+  the one `DELETE` only in `record.forget_downlinked`.
 
 Nothing here is part of a graded run. Fly demonstration episodes on the dev set (`WAD=freedoom1.wad`).
 
@@ -216,7 +218,11 @@ There is no file on disk to wait for, so `wait_for_downlinked_file` is a sensor 
 minutes at most) that reads three things and writes nothing: `SendFile`'s answer (Yamcs's acknowledgements, then the
 F´ dispatcher's `OpCodeCompleted` or `OpCodeError`), cfdpManager's events, and
 `GET /api/filetransfer/fprime-project/cfdp/transfers?direction=DOWNLOAD&start=<command time - 5 s>`, from which it
-takes the newest transfer whose `remotePath` is the source path sent. `COMPLETED` is a record received. `FAILED`
+takes the newest transfer whose `remotePath` is the source path sent and that Yamcs created at or after the command
+(it creates a downlink when the first PDU arrives, after F´ has the command). Each read gives up after 15 s without a
+byte, so a stalled Yamcs costs one poke, which the sensor logs and repeats, rather than the whole wait (Airflow
+fails a sensor whose poke outlasts its execution timeout, whatever `silent_fail` says). `COMPLETED` is a record
+received. `FAILED`
 with a reason starting "File was received OK" is one too: the checksum-verified file is in the bucket, only F´'s
 acknowledgement of Yamcs's Finished PDU was lost, and the finding `record_fin_unacknowledged` says so. When no
 record comes, `report_downlink_events` says why: `record_unavailable` (`SendFile` refused, or `TxFileOpenFailed`,

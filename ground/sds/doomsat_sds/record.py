@@ -27,7 +27,8 @@ What the flight software and Yamcs do, which shapes the code:
   object in the bucket all the same: it is ingested, and the lost acknowledgement is recorded as a finding.
 - F' events carry the spacecraft's time, about 0.9 s ahead of Yamcs's clock, which stamps the command and the
   transfer; F' numbers transactions from 1 at every boot. So a transfer is found by its source path and the
-  time Yamcs created it, and the event window opens a little before the command.
+  time Yamcs created it, and the event window opens a little before the command. Yamcs creates a downlink when
+  its first PDU arrives, after F' has the command, so this request's transfer is never older than the command.
 """
 from __future__ import annotations
 
@@ -54,8 +55,11 @@ SENDFILE_ARGS = {
 CFDP_SERVICE = "cfdp"               # Yamcs's CfdpService in instance fprime-project
 BUCKET = "cfdpDown"                 # where it saves downlinked files
 RECEIVED_OK = "File was received OK"    # how Yamcs's failure reason starts when only the FIN's ACK was lost
-TRANSFER_SLACK_MS = 5_000           # transfers Yamcs created up to this long before the command are looked at
-EVENT_SLACK_MS = 2_000              # and events from this long before it
+TRANSFER_SLACK_MS = 5_000           # the transfer list is asked from this long before the command
+EVENT_SLACK_MS = 2_000              # and the events
+# A poke's three reads (events, command history, transfer list) each give up after this long without a byte, so a
+# stalled Yamcs fails the poke, which the sensor logs and repeats, well inside the poke's execution_timeout.
+POKE_READ_S = 15
 DOWNLINK_EVENTS = tuple("DoomSat.cfdpManager." + n for n in (
     "TxFileQueued", "TxFileTransferStarted", "TxFileTransferCompleted", "TxFileTransferFailed", "TxFileOpenFailed",
     "TxZeroLengthFile", "TxFileSeekFailed", "TxSendMetadataFailed", "TxAckLimitReached", "TxInactivityTimeout",
@@ -193,7 +197,7 @@ def command_answer(command_id: str, commands: list[dict], events: list[dict]) ->
 
 
 def find_transfer(transfers: list[dict], source: str, since_ms: int) -> dict | None:
-    """The newest download Yamcs lists for `source`, created at or after since_ms, or None.
+    """The newest download Yamcs lists for `source`, created at or after since_ms (the command's time), or None.
 
     remotePath is the source path exactly as sent. An older transfer of the same path (an earlier request, or an
     earlier flight) must not stand in for this one, whatever its transaction number."""
@@ -248,19 +252,34 @@ def verdict(source: str, since_ms: int, command_id: str, commands: list[dict], e
 def list_transfers(settings: Settings, since_ms: int, http=None) -> list[dict]:
     """Yamcs's CFDP downloads created since since_ms: a GET, and the only call this module makes to /filetransfer."""
     r = _http(http).get("%s/api/filetransfer/%s/%s/transfers" % (settings.yamcs_url, settings.instance, CFDP_SERVICE),
-                        params={"direction": "DOWNLOAD", "start": iso(since_ms)}, timeout=(10, 30))
+                        params={"direction": "DOWNLOAD", "start": iso(since_ms)}, timeout=(5, POKE_READ_S))
     r.raise_for_status()
     return r.json().get("transfers", [])
 
 
 def observe(settings: Settings, archive, p: dict, command: dict, now_ms: int, http=None) -> dict:
     """verdict() on what the archive and Yamcs show now, read only: the command's acknowledgements, the events
-    from just before the command to now (F' time runs ahead of the ground's), and the transfer list."""
+    from just before the command to now (F' time runs ahead of the ground's), and the transfer list. Of the
+    transfers listed, only one created at or after the command can be this request's."""
     issued = command["issued_ms"]
     events = archive.events(issued - EVENT_SLACK_MS, now_ms + 5_000, types=list(DOWNLINK_EVENTS + ANSWER_EVENTS))
     commands = archive.commands(issued - 1_000, issued + 1_000)
     transfers = list_transfers(settings, issued - TRANSFER_SLACK_MS, http)
-    return verdict(p["source"], issued - TRANSFER_SLACK_MS, command["command_id"], commands, events, transfers)
+    return verdict(p["source"], issued, command["command_id"], commands, events, transfers)
+
+
+def downlink_finding(seen: dict, received: dict | None) -> str | None:
+    """The finding report_downlink_events records once the wait is over, or None. `seen` is observe() after the
+    wait, `received` the sensor's answer: its verdict when it saw the record, None when it failed or timed out.
+
+    A verdict that failed is its own finding; a record received with a finding (record_fin_unacknowledged) keeps
+    it. A wait that ended without the record is record_not_received, even if the transfer has finished since: the
+    run does not ingest it, and its object stays in cfdpDown."""
+    if seen["state"] == "failed" or (received and seen["finding"]):
+        return seen["finding"]
+    if not received:
+        return "record_not_received"
+    return None
 
 
 def object_url(settings: Settings, name: str) -> str:

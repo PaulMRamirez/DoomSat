@@ -10,6 +10,7 @@ The wait is judged from what Yamcs and the archive show, in canned shapes taken 
 The comparison is the point of the phase: every disagreement must show up as agree=False, and things the archive
 can legitimately miss (a late start, a lost status) must not.
 """
+import ast
 import copy
 import datetime as dt
 import hashlib
@@ -239,7 +240,6 @@ class TestPlan(unittest.TestCase):
     def test_the_watch_asks_for_every_episode_the_payload_wrote_a_record_for(self):
         # Read from the DAG's source: importing it needs Airflow. An interrupted episode never wrote a record; a WAD
         # switch did (the payload writes it as a reset). Each name must be one episodes.py spells.
-        import ast
         tree = ast.parse(Path(SDS, "dags", "sds_record.py").read_text(encoding="utf-8"))
         found = [ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
                  and any(getattr(t, "id", None) == "REQUESTABLE" for t in n.targets)]
@@ -265,7 +265,7 @@ def ms(text):
 SRC = "/root/doom/run/rec/2-98749.json"
 DEST = "rec_probe_2-98749.json"
 ISSUED = ms("2026-10-04T15:59:39.900Z")       # Yamcs's clock, as cmd.generation_time gives it
-SINCE = ISSUED - record.TRANSFER_SLACK_MS
+SINCE = ISSUED                                # a transfer created before the command is not this request's
 COMMAND = {"command_id": "1791129579900-127.0.0.1-1", "issued_ms": ISSUED}
 OPCODE = str(config.SENDFILE_OPCODE)          # the event's Opcode argument, as Yamcs's event extra holds it
 # The transfer Yamcs listed for the live downlink (int64 fields come back as JSON strings)
@@ -478,11 +478,107 @@ class TestObserve(unittest.TestCase):
         v = record.observe(s, archive, {"source": SRC}, COMMAND, now, http=yamcs)
         self.assertEqual(v["state"], "received")
         self.assertEqual(yamcs.calls, [("GET", "http://localhost:8090/api/filetransfer/fprime-project/cfdp/transfers",
-                                        {"direction": "DOWNLOAD", "start": iso(SINCE)})])
+                                        {"direction": "DOWNLOAD", "start": iso(ISSUED - record.TRANSFER_SLACK_MS)})])
         kinds = {r[0]: r for r in archive.reads}
         self.assertEqual(kinds["events"][1:3], (ISSUED - record.EVENT_SLACK_MS, now + 5_000))
         self.assertEqual(set(kinds["events"][3]), set(record.DOWNLINK_EVENTS + record.ANSWER_EVENTS))
         self.assertEqual(kinds["commands"][1:], (ISSUED - 1_000, ISSUED + 1_000))
+
+
+    def test_a_transfer_the_list_returns_from_before_the_command_is_not_this_one(self):
+        # The list is asked from TRANSFER_SLACK_MS before the command, but Yamcs creates this request's transfer only
+        # when its first PDU arrives, after F' has the command: an earlier one of the same path in that slack (a
+        # request cleared and sent again) must not settle this one.
+        s = config.Settings(home=Path("/x/sds"), doomsat_home=Path("/root/doom"))
+        earlier = transfer(id="5", state="FAILED", failureReason="Checksum does not match",
+                           creationTime=iso(ISSUED - 100), startTime=iso(ISSUED - 98))
+        now = ms("2026-10-04T15:59:45.000Z")
+        v = record.observe(s, FakeArchive(LIVE_EVENTS[:2]), {"source": SRC}, COMMAND, now, http=FakeYamcs([earlier]))
+        self.assertEqual((v["state"], v["transfer"]), ("waiting", None))
+        v = record.observe(s, FakeArchive(LIVE_EVENTS), {"source": SRC}, COMMAND, now,
+                           http=FakeYamcs([earlier, LIVE_TRANSFER]))
+        self.assertEqual((v["state"], v["transfer"]["id"]), ("received", "0"))
+
+    def test_a_poke_gives_up_on_a_stalled_transfer_list_quickly(self):
+        seen = []
+
+        class Http:
+            def get(self, url, params=None, timeout=None):
+                seen.append(timeout)
+                return Response(data={"transfers": []})
+
+        record.list_transfers(config.Settings(home=Path("/x/sds"), doomsat_home=Path("/root/doom")), ISSUED, Http())
+        self.assertEqual(seen, [(5, record.POKE_READ_S)])
+
+
+def dag_function(name):
+    """A task function of the record DAG, from its source: importing the DAG needs Airflow."""
+    tree = ast.parse(Path(SDS, "dags", "sds_record.py").read_text(encoding="utf-8"))
+    return next(f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and f.name == name)
+
+
+def calls_in(func):
+    return [n for n in ast.walk(func) if isinstance(n, ast.Call)]
+
+
+class TestAfterTheWait(unittest.TestCase):
+    """What the record DAG decides around the wait: which finding report_downlink_events records
+    (record.downlink_finding, pure), and, read from the DAG's source, the sensor's settings, its one raise and the
+    delete after ingest."""
+
+    def test_the_finding_for_each_way_the_wait_can_end(self):
+        received = judge([LIVE_TRANSFER], LIVE_EVENTS)
+        unacked = judge([transfer(state="FAILED", failureReason="File was received OK but the Finished PDU has not "
+                                                                "been acknowledged")], LIVE_EVENTS)
+        failed = judge([transfer(state="FAILED", failureReason="Checksum does not match")], LIVE_EVENTS[:3])
+        unavailable = judge([], OPEN_FAILED)
+        waiting = judge([], LIVE_EVENTS[:2])
+        # the sensor failed on a verdict and left no answer: the verdict, observed again, says why
+        self.assertEqual(record.downlink_finding(failed, None), "record_transfer_failed")
+        self.assertEqual(record.downlink_finding(unavailable, None), "record_unavailable")
+        # the record came: clean, or with F' never acknowledging the Finished PDU
+        self.assertIsNone(record.downlink_finding(received, received))
+        self.assertEqual(record.downlink_finding(unacked, unacked), "record_fin_unacknowledged")
+        # the wait timed out with no answer: nothing settled yet, or the transfer finished since (not ingested)
+        self.assertEqual(record.downlink_finding(waiting, None), "record_not_received")
+        self.assertEqual(record.downlink_finding(received, None), "record_not_received")
+
+    def test_the_sensor_pokes_again_after_a_failed_read_and_stops_on_a_verdict(self):
+        f = dag_function("wait_for_downlinked_file")
+        [deco] = f.decorator_list
+        self.assertEqual(ast.unparse(deco.func), "task.sensor")
+        self.assertEqual({k.arg: ast.unparse(k.value) for k in deco.keywords},
+                         {"poke_interval": "5", "timeout": "120", "mode": "'reschedule'", "silent_fail": "True",
+                          "execution_timeout": "timedelta(minutes=2)"})
+        # Airflow raises an execution_timeout past silent_fail: a poke's three reads, each giving up after
+        # POKE_READ_S without a byte (connect 10 s for the archive's two, 5 s for the list), must end well before it.
+        [arch] = [c for c in calls_in(f) if ast.unparse(c.func) == "YamcsArchive"]
+        self.assertEqual({k.arg: ast.unparse(k.value) for k in arch.keywords}, {"read_s": "record.POKE_READ_S"})
+        self.assertLess(2 * (10 + record.POKE_READ_S) + (5 + record.POKE_READ_S), 120)
+        ifs = [n for n in ast.walk(f) if isinstance(n, ast.If)]
+        self.assertEqual([ast.unparse(n.test) for n in ifs], ["seen['state'] == 'failed'"])
+        self.assertIsInstance(ifs[0].body[0], ast.Raise)
+        self.assertEqual(ast.unparse(ifs[0].body[0].exc.func), "AirflowFailException")
+        [ret] = [n for n in ast.walk(f) if isinstance(n, ast.Return)]
+        self.assertEqual(ast.unparse(ret.value),
+                         "PokeReturnValue(is_done=seen['state'] == 'received', xcom_value=seen)")
+
+    def test_the_finding_is_recorded_after_the_wait_whatever_its_end(self):
+        f = dag_function("report_downlink_events")
+        trigger = [k for k in f.decorator_list[0].keywords if k.arg == "trigger_rule"]
+        self.assertEqual([ast.unparse(k.value) for k in trigger], ["'all_done'"])
+        found = [c for c in calls_in(f) if ast.unparse(c.func) == "record.downlink_finding"]
+        self.assertEqual([[ast.unparse(a) for a in c.args] for c in found], [["seen", "received"]])
+        adds = [c for c in calls_in(f) if ast.unparse(c.func) == "catalog.add_finding"]
+        self.assertEqual([ast.unparse(c.args[0]) for c in adds], ["finding"])
+
+    def test_the_ingested_object_and_only_after_ingest_is_deleted(self):
+        f = dag_function("ingest_record")
+        order = [ast.unparse(c.func) for c in sorted(calls_in(f), key=lambda c: (c.lineno, c.col_offset))]
+        self.assertIn("record.forget_downlinked", order)
+        self.assertLess(order.index("record.ingest"), order.index("record.forget_downlinked"))
+        [forget] = [c for c in calls_in(f) if ast.unparse(c.func) == "record.forget_downlinked"]
+        self.assertEqual(ast.unparse(forget.args[1]), "received['transfer']")
 
 
 class TestIngest(unittest.TestCase):

@@ -105,6 +105,26 @@ class TestReadTimeout(unittest.TestCase):
         session.request("GET", "http://x/api", timeout=5)
         self.assertEqual(seen, [(10, archive.READ_TIMEOUT_S), 5])
 
+    def test_an_archive_can_be_given_a_shorter_one(self):
+        # The record wait's sensor reads with 15 s, so a stalled Yamcs fails one poke and not the whole wait.
+        from unittest import mock
+        seen = []
+
+        class Client:
+            def __init__(self, address):
+                self.ctx = SimpleNamespace(session=SimpleNamespace(
+                    request=lambda method, url, **kw: seen.append(kw.get("timeout"))))
+
+            def get_archive(self, instance):
+                return None
+
+        fake = SimpleNamespace(YamcsClient=Client)
+        with mock.patch.dict(sys.modules, {"yamcs": SimpleNamespace(), "yamcs.client": fake}):
+            for kw, want in (({}, archive.READ_TIMEOUT_S), ({"read_s": 15}, 15)):
+                a = archive.YamcsArchive("localhost:8090", **kw)
+                a.client.ctx.session.request("GET", "http://x/api")
+                self.assertEqual(seen.pop(), (10, want))
+
 
 if __name__ == "__main__":
     unittest.main()

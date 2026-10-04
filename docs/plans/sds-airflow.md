@@ -448,20 +448,29 @@ Baseline → plan → Airflow stack → product package and tests → Phase A (f
     the two paths, still at most 39 characters (40 on board). The task is still `send_SendFile_command`, checks
     `ENABLED` first and is never retried. The guard pins the new path, checks the arguments `record.request` really
     hands yamcs-client, and flags any write to `/filetransfer`, any yamcs-client transfer call (upload, download,
-    cancel, pause, resume, file actions) and any write to `cfdpDown` other than the ingested object's DELETE in a
-    record module.
+    cancel, pause, resume, file actions) and any write to `cfdpDown` (HTTP, or yamcs-client's storage calls) other
+    than the ingested object's DELETE in `record.forget_downlinked`. A call names the endpoint or the bucket through
+    a string in it, a variable or URL helper of its module that holds one, or record's `BUCKET` and `object_url`.
+    (As first committed it saw only strings in the call, or variables assigned one, and allowed a DELETE anywhere in
+    a module named for records; the review's mutations through `object_url`, a helper and yamcs-client's storage
+    calls got past it.)
   - Deviation: the brief's FileSensor is gone (and with it the `fs_default` connection in `scripts/sds.sh`). There
     is no file to watch: `cfdpDown` is a RocksDB bucket inside Yamcs. `wait_for_downlinked_file` is a `@task.sensor`
     (poke 5 s, reschedule, 120 s, which covers Yamcs's 30 s FIN-ACK limit and inactivity timer). Each poke reads
     `SendFile`'s answer, cfdpManager's events and `GET .../cfdp/transfers?direction=DOWNLOAD&start=<command - 5 s>`,
-    and takes the newest transfer whose `remotePath` is the source, created after that start (so an older transfer
-    of the same path, possibly from another boot with the same transaction number, never stands in). `COMPLETED`
+    and takes the newest transfer whose `remotePath` is the source, created at or after the command itself: Yamcs
+    creates a downlink when its first PDU arrives, after F´ has the command, so an older transfer of the same path
+    (possibly from another boot with the same transaction number, or in the list's 5 s slack) never stands in. Each
+    read gives up after 15 s without a byte, inside the poke's 2-minute execution timeout, which Airflow raises past
+    `silent_fail` (the first version had 1 minute against reads of up to 60 s). `COMPLETED`
     is received; `FAILED` with "File was received OK" is received with the finding `record_fin_unacknowledged`;
     any other `FAILED` is `record_transfer_failed`. cfdpManager answers OK once it has queued the send and opens the
     file later, so `TxFileOpenFailed`, `TxZeroLengthFile` or `SendFileInitiateFail` for this source (Yamcs then
     never lists a transfer), or a non-OK answer (a Yamcs acknowledgement, or the dispatcher's `OpCodeError` for
     SendFile's opcode 0x10006000), fail the wait at once as `record_unavailable`. A wait that ends with nothing
-    settled is `record_not_received`, which replaces `record_not_mirrored`. A timeout cancels nothing.
+    settled is `record_not_received`, which replaces `record_not_mirrored`. A timeout cancels nothing. Which finding
+    is recorded after the wait is `record.downlink_finding`, pure and tested; the DAG's sensor settings, its raise
+    and the delete after ingest are pinned from its source.
   - Ingest reads `GET /api/storage/buckets/cfdpDown/objects/<objectName>`, with the name from the transfer (a taken
     name gets `(1)`), checks the transfer's size and the record format, records bucket, object, transfer id and
     transaction id in the inputs instead of the mirror path, and then deletes that object only.

@@ -100,10 +100,11 @@ def with_read_timeout(session, read_s: float = READ_TIMEOUT_S):
 class YamcsArchive:
     """The live archive through yamcs-client (imported here, so nothing else needs it)."""
 
-    def __init__(self, address: str = "localhost:8090", instance: str = config.INSTANCE):
+    def __init__(self, address: str = "localhost:8090", instance: str = config.INSTANCE,
+                 read_s: float = READ_TIMEOUT_S):
         from yamcs.client import YamcsClient
         self.client = YamcsClient(address)
-        with_read_timeout(self.client.ctx.session)
+        with_read_timeout(self.client.ctx.session, read_s)
         self.archive = self.client.get_archive(instance)
         self.instance = instance
 
