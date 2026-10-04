@@ -63,7 +63,10 @@ class EpisodeRecorder:
         if self.cur is None:
             self._start(o)
         c = self.cur
-        c["statuses_sent"] += 1
+        # The death or exit path sends last_obs once more; when the last periodic status was that same tic, it is
+        # the same status again, and the ground (which counts distinct tics) would never see it as a second one.
+        if "last" not in c or int(o["tic"]) != c["last"]["tic"]:
+            c["statuses_sent"] += 1
         c["last"] = {"tic": int(o["tic"]), "health": int(o["health"]), "kills": int(o["kills"]),
                      "x": f32(o["x"]), "y": f32(o["y"]), "explored": int(o["explored"]), "keys": int(o["keys"]),
                      "level": int(o["level"]), "dead": int(o["dead"]), "level_done": int(o["level_done"])}

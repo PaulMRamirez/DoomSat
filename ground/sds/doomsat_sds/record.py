@@ -9,7 +9,9 @@ The payload (payload/episode_record.py, with --records on) writes $DOOMSAT_HOME/
 when an episode ends. The ground knows both numbers without asking: the episode from L1, the last tic from the
 PlayerDied/LevelFinished event (or, after a reset, from the last TIC sample, which only works if that status
 reached the ground). FprimeFilePacketService puts the downlinked file in the `fprimeFilesIn` bucket and mirrors it
-to $FPRIME_DOWNLINK_DIR ($DOOMSAT_HOME/run/downlink); the mirror cannot make subdirectories, so names are flat.
+to $DOOMSAT_HOME/run/downlink (wsl_run_flight.sh sets FPRIME_DOWNLINK_DIR so); the mirror cannot make
+subdirectories, so names are flat. Once ingested, the bucket copy is deleted: that bucket holds 1000 objects, and
+when it is full the service stops mirroring files without saying so on board.
 
 Two limits from the flight software shape the paths:
 - F' command strings hold at most 39 characters (FW_CMD_STRING_MAX_SIZE = 40), although the dictionary says 100;
@@ -112,6 +114,16 @@ def ingest(settings: Settings, catalog: Catalog, p: dict, command: dict, run_id:
                      path=episode_product_path(settings, eid, "l0_record", ver, "json"), data=data,
                      inputs=[{"source": "downlink", "mirror": p["mirror_path"], "bucket": "fprimeFilesIn/" + p["dest"],
                               "on_board": p["source"], "command_id": command.get("command_id")}], run_id=run_id)
+
+
+def forget_downlinked(settings: Settings, p: dict) -> bool:
+    """Delete the ingested file's copy in fprimeFilesIn (the product store has it now). True if one was there."""
+    import requests
+    r = requests.delete("%s/api/storage/buckets/fprimeFilesIn/objects/%s" % (settings.yamcs_url, p["dest"]), timeout=10)
+    if r.status_code == 404:
+        return False
+    r.raise_for_status()
+    return True
 
 
 def _check(name: str, record_value, archive_value, agree, note: str = "") -> dict:

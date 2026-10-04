@@ -76,6 +76,13 @@ class TestNaming(unittest.TestCase):
         with self.assertRaises(ValueError):
             record.source_path(s, "12345-4294967295-and-more.json")
 
+    def test_the_mirror_is_where_the_flight_launcher_puts_it_whatever_the_environment_says(self):
+        # wsl_run_flight.sh always gives Yamcs FPRIME_DOWNLINK_DIR=$RUN/downlink; an SDS that followed its own
+        # environment's FPRIME_DOWNLINK_DIR would watch a directory nothing is written to.
+        s = config.Settings(home=Path("/x/sds"), doomsat_home=Path("/x"))
+        with mock.patch.dict(os.environ, {"FPRIME_DOWNLINK_DIR": "/somewhere/else"}):
+            self.assertEqual(s.downlink, Path("/x/run/downlink"))
+
     def test_destination_names_fit_and_are_flat(self):
         d = record.dest_name(episodes.episode_id(1791074807184, 65535))
         self.assertLessEqual(len(d), record.MAX_CMD_STRING)

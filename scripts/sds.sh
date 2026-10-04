@@ -20,7 +20,7 @@ case "$(uname -s)" in
     PASS=()
     [ -n "${DOOMSAT_HOME:-}" ] && PASS+=("DOOMSAT_HOME=$DOOMSAT_HOME")   # a WSL path, if set by hand
     . "$HERE/common.sh"
-    for v in SDS_PORT DOOMSAT_YAMCS; do [ -n "${!v:-}" ] && PASS+=("$v=${!v}"); done
+    for v in SDS_PORT DOOMSAT_YAMCS DOOMSAT_SDS_RECORDS; do [ -n "${!v:-}" ] && PASS+=("$v=${!v}"); done
     WSL=(-d "${DOOMSAT_WSL_DISTRO:-Ubuntu}")
     [ -n "${DOOMSAT_WSL_USER:-}" ] && WSL+=(-u "$DOOMSAT_WSL_USER")
     REPO_WIN="$(cd "$HERE/.." && pwd -W)"
@@ -61,10 +61,11 @@ sds_env() {
   export DOOMSAT_SDS_HOME="$SDS_HOME"
   export DOOMSAT_YAMCS="${DOOMSAT_YAMCS:-localhost:8090}"
   export PYTHON_YAMCS_CLIENT_UTC=1
-  # Phase D: ask the payload for its episode records with SendFile (the SDS's only command). Off by default.
-  # Only episodes that ended after requests were first switched on are asked for: earlier ones have no record.
+  # Phase D: ask the payload for its episode records with SendFile (the SDS's only command). Off by default, and
+  # only for episodes whose payload ran with --records on (the episode's context says so).
   export DOOMSAT_SDS_RECORDS="${DOOMSAT_SDS_RECORDS:-off}"
-  [ -f "$SDS_HOME/run/records_since_ms" ] && export DOOMSAT_SDS_RECORDS_SINCE_MS="$(cat "$SDS_HOME/run/records_since_ms")"
+  # The FileSensor's connection (Airflow 3 no longer creates fs_default).
+  export AIRFLOW_CONN_FS_DEFAULT='{"conn_type": "fs", "extra": {"path": "/"}}'
 }
 
 say() { printf '\n== %s\n' "$*"; }
@@ -146,15 +147,9 @@ stop() {
 }
 
 start() {
-  installed
-  mkdir -p "$SDS_HOME/logs" "$SDS_HOME/run"
-  if [ "${DOOMSAT_SDS_RECORDS:-off}" = on ]; then
-    [ -f "$SDS_HOME/run/records_since_ms" ] || date +%s%3N > "$SDS_HOME/run/records_since_ms"
-  else
-    rm -f "$SDS_HOME/run/records_since_ms"
-  fi
-  sds_env
+  installed; sds_env
   stop
+  mkdir -p "$SDS_HOME/logs" "$SDS_HOME/run"
   "$VENV/bin/airflow" db migrate > "$SDS_HOME/logs/migrate.log" 2>&1 || { tail -20 "$SDS_HOME/logs/migrate.log"; exit 1; }
   for c in $COMPONENTS; do
     # --skip-serve-logs: the log servers would listen on every interface; one machine shares the log files anyway

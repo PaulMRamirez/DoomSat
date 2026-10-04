@@ -159,6 +159,17 @@ with a deferrable FileSensor, ingests it as `l0_record` and compares it with L1:
 kills, cells, final health and position, positions along the path, context, and how many of the statuses sent
 reached the archive. Every disagreement becomes a catalog finding.
 
+Only episodes whose payload ran with `--records on` are asked for (the episode's cataloged context records the
+payload's arguments), so turning either switch on in either order is safe. The command is never resent
+automatically: a failed `rec__` run is re-requested by hand (clear it in the UI). When no file comes,
+`report_downlink_events` says why: a `FileOpenError` on board (`record_unavailable`), or a `FileSent` whose file
+never reached the mirror (`record_not_mirrored`). After ingest, the copy in the `fprimeFilesIn` bucket is
+deleted, because that bucket holds 1000 objects and stops mirroring, silently, when it is full.
+
+Positions are compared only where the archive can attribute them. Two statuses can share an F´ time tag, and a
+channel can lose one of the pair on board, so a time tag with fewer positions than tics is reported as
+unattributable, neither agreement nor disagreement.
+
 The flight software sets two traps here, both handled: F´ command strings hold at most 39 characters (the
 dictionary says 100), so paths are kept short, relative to the F´ binary's directory when the absolute one is too
 long; and `SendFile` answers OK even when it cannot open the file, so success is judged by the `FileSent` event.

@@ -82,6 +82,18 @@ class TestTheRecord(unittest.TestCase):
         self.assertEqual(tics[-1], 200)                       # the final position is always in the path
         self.assertTrue(all(b - a >= er.PATH_EVERY_TICS for a, b in zip(tics[:-2], tics[1:-1])))
 
+    def test_a_final_status_that_repeats_the_last_one_is_not_counted_twice(self):
+        # Review finding: when the last tic was also a periodic send, the death path sends that same status again;
+        # counting it made a perfect downlink read as 99.997% (the ground counts distinct tics).
+        for tic in (3, 6, 9):
+            self.rec.status(obs(1, tic))
+        self.rec.status(obs(1, 9, dead=1))               # the final status, same tic as the last periodic one
+        self.rec.close("died")
+        with open(os.path.join(self.tmp.name, "1-9.json")) as f:
+            r = json.load(f)
+        self.assertEqual(r["statuses_sent"], 3)
+        self.assertEqual(r["final"]["dead"], 1)          # but its values are the final ones
+
     def test_positions_are_rounded_as_an_F32_channel_rounds_them(self):
         self.rec.status(obs(1, 3, x=10.123456789, y=0.1))
         self.rec.close("died")

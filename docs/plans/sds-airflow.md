@@ -364,3 +364,30 @@ Baseline → plan → Airflow stack → product package and tests → Phase A (f
   - Every episode was republished. The bucket went from 45 objects to 24 (the 21 superseded copies from before
     the pruning fix are gone), three current ones per episode. All 8 Timeline items link to 1.2.0, and the
     rollup was rebuilt by asset trigger over 8 `l2_summary@1.2.0` inputs.
+- Phase D, verified:
+  - With `RECORDS=on`, the payload wrote `run/rec/1-4247.json` when the episode died. `sds_record` sent
+    `SendFile`, the file arrived in `fprimeFilesIn` and in the mirror `run/downlink`, which only works since
+    the yaml fix (`downlinkMirror=/root/doom/run/downlink` in yamcs.log). The deferrable FileSensor fired, the
+    record was ingested as `l0_record` and compared.
+  - 15 of the 16 checks then made agreed exactly, including last tic, kills, cells, final health, final position, and 89 path
+    positions at 0.0 units. The one disagreement is a finding: the record's first tic is 4, the archive's 712.
+    Of the statuses sent while the archive was listening, 95.8% arrived.
+  - On the way, the record watcher first asked for records of episodes flown before records were on. Each got
+    a `FileOpenError` (found from the events, since `SendFile` itself answered OK) and a `record_unavailable`
+    finding. Requests are now limited to episodes whose payload ran with `--records on`, from the episode's
+    cataloged context.
+  - A second record, from a 46-minute episode, showed a 30-unit "disagreement" at one tic.
+    - The cause was two statuses (tics 29308 and 29311) sharing an F´ time tag, with the first one's position lost
+      on board, so the comparison paired the second position with the first tic. Positions are now compared only
+      at time tags the archive can attribute.
+    - Result: 2366 positions compared, all exactly equal, and 149 unattributable. 30082 of 32917 statuses
+      (91.4%) reached the archive. `qa_record_check` is 1.2.0.
+  - From the review:
+    - The recorder counted a final status that repeated the last periodic one twice.
+    - The record watch gated on a switch-on time, using GNU-only `date`. It now gates on the episode's own
+      context.
+    - The command's neighbours had no retries.
+    - A file sent but never mirrored went unreported.
+    - Every record stayed in the `fprimeFilesIn` bucket, which holds 1000.
+    - The SDS's downlink directory followed its own environment rather than the launcher's.
+    All six are fixed.

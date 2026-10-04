@@ -2,16 +2,20 @@
 
     sds_record_watch (every 2 minutes)  -> one sds_record run per recent episode, run id rec__<episode id>
     sds_record:  plan_request -> send_SendFile_command -> wait_for_downlinked_file -> ingest_record -> compare_with_l1
-                                                     \\-> report_downlink_events (always, says why if no file came)
+                                                                               \\-> report_downlink_events (always)
 
 This is the one place the data system commands anything, and the only command is FileDownlink's SendFile: the
 task that sends it is named for it. It is off unless scripts/sds.sh runs with DOOMSAT_SDS_RECORDS=on, and it
 only finds a file if the flight runs with RECORDS=on (payload/episode_record.py).
 
-Only episodes that closed after record requests were first switched on, and in the last two hours, are asked for:
-an earlier episode has no record to send, and the payload names records by episode and last tic, with the
-episode number restarting with the payload, so a much older request could find a different file (the comparison
-would say so, but there is no point asking). Switch the flight's RECORDS=on first, then the SDS's.
+Only episodes whose payload ran with --records on (the episode's cataloged context says so) and that closed in
+the last two hours are asked for: any other episode has no record to send, and the payload names records by
+episode and last tic, with the episode number restarting with the payload, so a much older request could find a
+different file (the comparison would say so, but there is no point asking).
+
+The command is never retried by itself: a failed run is re-requested by hand (clear it in the UI). The tasks
+around it retry, and report_downlink_events says why no file came: a FileOpenError on board (record_unavailable),
+or a FileSent whose file never reached the mirror (record_not_mirrored, e.g. a full fprimeFilesIn bucket).
 """
 import os
 import sys
@@ -26,7 +30,7 @@ from airflow.providers.standard.sensors.filesystem import FileSensor
 from airflow.sdk import dag, task
 
 ENABLED = os.environ.get("DOOMSAT_SDS_RECORDS", "off") == "on"
-SINCE_MS = int(os.environ.get("DOOMSAT_SDS_RECORDS_SINCE_MS") or 0)   # when requests were first switched on
+RETRY = {"retries": 2, "retry_delay": timedelta(seconds=20)}          # for the idempotent tasks, not the command
 MAX_AGE_S = 2 * 3600
 REQUESTABLE = ("died", "level_finished", "reset")      # an interrupted episode never wrote a record
 
@@ -48,10 +52,11 @@ def sds_record_watch():
             return []
         from doomsat_sds import pipeline
         _, _, catalog = pipeline.open_env(archive=False)
-        cutoff = max(pipeline.now_ms() - MAX_AGE_S * 1000, SINCE_MS)
+        cutoff = pipeline.now_ms() - MAX_AGE_S * 1000
         with catalog:
             todo = [e["episode_id"] for e in catalog.episodes()
                     if e["outcome"] in REQUESTABLE and e["closing_ms"] >= cutoff
+                    and e["context"].get("records") == "on"
                     and catalog.current(e["episode_id"], "l1_episode") is not None
                     and catalog.current(e["episode_id"], "l0_record") is None]
         print("records to ask for: %s" % todo)
@@ -73,7 +78,7 @@ def sds_record_watch():
     doc_md=__doc__,
 )
 def sds_record():
-    @task(multiple_outputs=True)            # so the sensor can take p["mirror_path"] as its own XCom key
+    @task(multiple_outputs=True, **RETRY)   # so the sensor can take p["mirror_path"] as its own XCom key
     def plan_request(**context) -> dict:
         from doomsat_sds import pipeline, record
         settings, _, catalog = pipeline.open_env(archive=False)
@@ -92,32 +97,38 @@ def sds_record():
         print(out)
         return out
 
-    @task(trigger_rule="all_done")
+    @task(trigger_rule="all_done", **RETRY)
     def report_downlink_events(p: dict, command: dict) -> list:
-        import time
+        """After the wait, whatever its outcome: what FileDownlink said, and whether the file reached the mirror."""
+        import os
         from doomsat_sds import pipeline, record
         if not command:
             return []
-        time.sleep(5)
         settings, archive, catalog = pipeline.open_env()
         events = record.downlink_events(archive, command["issued_ms"] - 2000, pipeline.now_ms() + 5000)
         for e in events:
             print(e)
-        if not any(e["type"] == "FileSent" for e in events):
-            with catalog:
+        sent = any(e["type"] == "FileSent" for e in events)
+        arrived = os.path.exists(p["mirror_path"])
+        with catalog:
+            if not sent:
                 catalog.add_finding("record_unavailable", {"command": command, "events": events},
                                     episode_id=p["episode_id"])
-        catalog.close()
+            elif not arrived:
+                catalog.add_finding("record_not_mirrored", {"command": command, "events": events,
+                                                            "mirror": p["mirror_path"]}, episode_id=p["episode_id"])
         return events
 
-    @task
+    @task(**RETRY)
     def ingest_record(p: dict, command: dict, **context) -> dict:
         from doomsat_sds import pipeline, record
         settings, _, catalog = pipeline.open_env(archive=False)
         with catalog:
-            return record.ingest(settings, catalog, p, command, run_id=context["run_id"])
+            ref = record.ingest(settings, catalog, p, command, run_id=context["run_id"])
+        ref["bucket_copy_deleted"] = record.forget_downlinked(settings, p)
+        return ref
 
-    @task
+    @task(**RETRY)
     def compare_with_l1(p: dict, l0_ref: dict, **context) -> dict:
         from doomsat_sds import pipeline, record
         settings, _, catalog = pipeline.open_env(archive=False)
@@ -130,8 +141,7 @@ def sds_record():
     command = send_SendFile_command(p)
     wait = FileSensor(task_id="wait_for_downlinked_file", filepath=p["mirror_path"], fs_conn_id="fs_default",
                       deferrable=True, poke_interval=5, timeout=90)
-    command >> wait
-    report_downlink_events(p, command)
+    command >> wait >> report_downlink_events(p, command)
     l0 = ingest_record(p, command)
     wait >> l0
     compare_with_l1(p, l0)

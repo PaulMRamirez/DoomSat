@@ -20,7 +20,7 @@ from .config import Settings
 
 LOG_START = re.compile(r"^\[payload\] episode (\d+) started on (\S+) \(level (\d+)\)")
 PAYLOAD_DEFAULTS = {"--wad": "doom1.wad", "--map": "E1M1", "--skill": "2", "--seed": "7",   # doom_payload.py argparse
-                    "--geometry": "off", "--oracle": "off"}
+                    "--geometry": "off", "--oracle": "off", "--records": "off"}
 
 
 def _boot_time() -> float | None:
@@ -123,7 +123,7 @@ def capture(settings: Settings, number: int, start_ms: int, procs: list[dict] | 
     payload = _find(procs, "doom_payload.py")
     if payload and payload["start_s"] is not None and payload["start_s"] <= started:
         opts = _options(payload["argv"])
-        for key in ("--wad", "--skill", "--seed", "--geometry", "--oracle"):
+        for key in ("--wad", "--skill", "--seed", "--geometry", "--oracle", "--records"):
             ctx[key[2:]] = opts.get(key, PAYLOAD_DEFAULTS.get(key))
         ctx["sources"]["payload"] = "arguments of the running payload (pid %d)" % payload["pid"]
         if log_text is None:
@@ -142,7 +142,7 @@ def capture(settings: Settings, number: int, start_ms: int, procs: list[dict] | 
             ctx["map"] = None
             ctx["sources"]["map"] = "unknown"
     else:
-        for key in ("wad", "skill", "seed", "geometry", "oracle", "map"):
+        for key in ("wad", "skill", "seed", "geometry", "oracle", "records", "map"):
             ctx[key] = None
         ctx["sources"]["payload"] = "unknown: no payload process that was running when the episode began"
 
