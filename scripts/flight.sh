@@ -33,6 +33,7 @@ case "${1:-start}" in
   gds)
     . "$HERE/common.sh"
     bash "$HERE/wsl_run_flight.sh" stop >/dev/null
+    bash "$HERE/wsl_run_flight.sh" prmdb >/dev/null || exit 1
     cd "$PROJ" && . fprime-venv/bin/activate && exec fprime-gds -d "$DEPLOY" --app "$DEPLOY/bin/DoomSat" --gui-addr 0.0.0.0 ;;
   *)       exec bash "$HERE/wsl_run_flight.sh" "${1:-start}" ;;
 esac

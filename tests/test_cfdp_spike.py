@@ -1,15 +1,18 @@
 """The CFDP spike's ground plumbing, pinned: what took a live run to find out stays found out.
 
 No network beyond 127.0.0.1, no game, no flight software, no Yamcs: the YAML and SQL are read as text, the
-launcher wrapper runs against a stand-in fprime_yamcs, and the relay forwards between local sockets.
+launcher wrapper runs against a stand-in fprime_yamcs, the relay forwards between local sockets, and the run
+script builds its parameter file with stand-ins for the F' venv's tools.
 """
 import importlib.util
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -31,6 +34,11 @@ SQL = _read("ground", "yamcs", "etc", "cfdp_streams.sql")
 CFDP_CFG = _read("flight", "config", "CfdpCfg.fpp")
 CFDP_HPP = _read("flight", "config", "CfdpCfg.hpp")
 FPP = _read("flight", "Components", "Doom", "Doom.fpp")
+CPP = _read("flight", "Components", "Doom", "Doom.cpp")
+TOPOLOGY_CPP = _read("flight", "DoomSat", "Top", "DoomSatTopology.cpp")
+RUN_SCRIPT = _read("scripts", "wsl_run_flight.sh")
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+import prmdb  # noqa: E402
 PRM = json.loads(_read("flight", "config", "PrmDb.json"))["DoomSat.cfdpManager"]
 
 
@@ -112,21 +120,65 @@ class TestTheFlightSide(unittest.TestCase):
         self.assertLessEqual(PRM["OutgoingFileChunkSize"] + 4 + 4 + 4 + 4 + 4, size)
 
     def test_cfdp_temp_files_stay_in_the_uplink_directory(self):
-        # wsl_run_flight.sh replaces @UPLINK@ with $DOOMSAT_HOME/wads/uplink, makes the directory, and builds
-        # PrmDb.dat from the result. Do the same substitution here and check what the flight software would get.
-        script = _read("scripts", "wsl_run_flight.sh")
-        sed = re.search(r'sed "s#@UPLINK@#([^#]*)#g" "\$REPO/flight/config/PrmDb.json" > "(\$RUN/PrmDb.json)"', script)
-        self.assertIsNotNone(sed, "the script fills in @UPLINK@ into $RUN/PrmDb.json")
-        self.assertIn('fprime-prm-write dat "$RUN/PrmDb.json"', script, "and builds PrmDb.dat from that copy")
-        self.assertIn('mkdir -p "$WADS/uplink/.cfdp-tmp"', script)
-        wads = "/home/someone/doom/wads"
-        built = json.loads(_read("flight", "config", "PrmDb.json").replace("@UPLINK@", sed.group(1).replace("$WADS", wads)))
-        for channel in built["DoomSat.cfdpManager"]["ChannelConfig"]:
-            self.assertEqual(channel["tmp_dir"], wads + "/uplink/.cfdp-tmp")
-            # F' v4.3.0 renames a failed poll file onto fail_dir itself, so a directory there only means "delete";
-            # empty says so (and DoomSat runs no polls)
-            self.assertEqual(channel["fail_dir"], "")
-            self.assertEqual(channel["move_dir"], "")
+        # wsl_run_flight.sh fills $DOOMSAT_HOME/wads/uplink in for @UPLINK@ (tools/prmdb.py), makes the directory,
+        # and builds PrmDb.dat from the result. Do the same here and check what the flight software would get, for
+        # paths a sed replacement or a bare string in JSON would get wrong.
+        self.assertIn('fprime-venv/bin/python "$REPO/tools/prmdb.py" "$REPO/flight/config/PrmDb.json" "$WADS/uplink"',
+                      RUN_SCRIPT)
+        self.assertIn('fprime-prm-write dat "$RUN/PrmDb.json"', RUN_SCRIPT, "and builds PrmDb.dat from that copy")
+        self.assertIn('mkdir -p "$WADS/uplink/.cfdp-tmp"', RUN_SCRIPT)
+        for uplink in ("/home/someone/doom/wads/uplink", "/home/u/R&D/doom/wads/uplink", "/a#b/wads/uplink",
+                       "/a\\x41b/wads/uplink", '/a"b/wads/uplink', "/a\\1b/wads/uplink"):
+            with self.subTest(uplink=uplink):
+                built = json.loads(prmdb.render(_read("flight", "config", "PrmDb.json"), uplink))
+                for channel in built["DoomSat.cfdpManager"]["ChannelConfig"]:
+                    self.assertEqual(channel["tmp_dir"], uplink + "/.cfdp-tmp")
+                    # F' v4.3.0 renames a failed poll file onto fail_dir itself, so a directory there only means
+                    # "delete"; empty says so (and DoomSat runs no polls)
+                    self.assertEqual(channel["fail_dir"], "")
+                    self.assertEqual(channel["move_dir"], "")
+        with self.assertRaises(ValueError):
+            prmdb.render(_read("flight", "config", "PrmDb.json"), "doom/wads/uplink")
+
+    def test_leftover_temp_files_are_cleared_while_nothing_runs(self):
+        # A receive that ends before its metadata leaves <tmp_dir>/<eid>:<seq>.tmp, and F' never removes it. The
+        # run script clears them before it starts the flight software, after stop.
+        body = RUN_SCRIPT[RUN_SCRIPT.index("start_yamcs() {"):]
+        body = body[:body.index("\n}\n")]
+        clear = body.index('rm -f "$WADS/uplink/.cfdp-tmp/"*.tmp')
+        self.assertLess(body.index('mkdir -p "$WADS/uplink/.cfdp-tmp"'), clear)
+        self.assertLess(clear, body.index("detach "))
+        for arm in ("start", "yamcs"):
+            line = re.search(rf"^\s*{arm}\) (.*)$", RUN_SCRIPT, re.M).group(1)
+            self.assertLess(line.index("stop;"), line.index("start_yamcs"), arm)
+
+    def test_the_parameter_file_lives_outside_bin(self):
+        # A second file in bin/ stops fprime-gds's find_app guessing the binary (and broke the native branch on a
+        # shared install): the flight software reads $DOOMSAT_HOME/run/PrmDb.dat, and the script writes it there
+        self.assertNotIn('configure("PrmDb.dat")', TOPOLOGY_CPP)
+        self.assertIn('getenv("DOOMSAT_HOME")', TOPOLOGY_CPP)
+        self.assertIn('prmFile.format("%s/run/PrmDb.dat", home)', TOPOLOGY_CPP)
+        self.assertIn('prmFile.format("%s/doom/run/PrmDb.dat"', TOPOLOGY_CPP)
+        self.assertIn('-o "$RUN/PrmDb.dat"', RUN_SCRIPT)
+        self.assertNotIn('-o "$DEPLOY/bin/', RUN_SCRIPT)
+        self.assertIn('rm -f "$DEPLOY/bin/PrmDb.dat"', RUN_SCRIPT, "the file earlier versions left in bin/")
+        for arm in ("start", "yamcs"):
+            line = re.search(rf"^\s*{arm}\) (.*)$", RUN_SCRIPT, re.M).group(1)
+            self.assertLess(line.index("build_prmdb"), line.index("start_yamcs"), arm)
+        start = re.search(r"^\s*start\) (.*)$", RUN_SCRIPT, re.M).group(1)
+        self.assertLess(start.index("build_prmdb"), start.index("start_payload"), "a failed build starts nothing")
+        self.assertIn("wsl_run_flight.sh\" prmdb", _read("scripts", "flight.sh"), "flight.sh gds builds it too")
+
+    def test_no_file_packet_leftovers_in_the_run_script(self):
+        # FPRIME_DOWNLINK_DIR fed FprimeFilePacketService's downlink mirror, which the CFDP instance does not run
+        self.assertNotIn("FPRIME_DOWNLINK_DIR", RUN_SCRIPT)
+
+    def test_the_cfdp_pool_never_overflows_the_file_queue(self):
+        count = int(re.search(r"CFDP_BUFFER_COUNT = (\d+)", TOPOLOGY_CPP).group(1))
+        per_cycle = [c["max_outgoing_pdus_per_cycle"] for c in PRM["ChannelConfig"]]
+        self.assertGreaterEqual(count, max(per_cycle), "one channel alone never runs out")
+        self.assertLessEqual(count, 100, "ComCcsdsConfig.QueueDepths.file: a full pool fits the FILE queue")
+        self.assertIn("static_assert(CFDP_BUFFER_COUNT <= ComCcsdsConfig::QueueDepths::file", TOPOLOGY_CPP)
 
     def test_a_lossy_receive_remembers_what_it_already_has(self):
         # Stock F' tracks NakMaxSegments (58) received runs per transaction and forgets data past that, so a lossy
@@ -138,9 +190,23 @@ class TestTheFlightSide(unittest.TestCase):
         self.assertIn('"${CMAKE_CURRENT_LIST_DIR}/CfdpCfg.hpp"', _read("flight", "config", "CMakeLists.txt"))
         self.assertIn("$SRC/config/CfdpCfg.hpp", _read("scripts", "wsl_sync.sh"))
 
-    def test_commit_wad_takes_a_bare_name(self):
-        self.assertRegex(FPP, r"async command COMMIT_WAD\(\s*part: string size 40")
-        self.assertIn(") opcode 0x07", FPP[FPP.index("async command COMMIT_WAD("):][:600])
+    def test_commit_wad_takes_a_bare_name_and_what_was_sent(self):
+        command = FPP[FPP.index("async command COMMIT_WAD("):]
+        command = command[:command.index(") opcode 0x07") + len(") opcode 0x07")]
+        args = re.findall(r"^\s*(\w+): ([\w ]+?)\s*(?:@<.*)?$", command, re.M)
+        self.assertEqual(args, [("part", "string size 40"), ("fileSize", "U32"), ("checksum", "U32")])
+
+    def test_commit_wad_checks_the_file_before_it_gets_its_name(self):
+        # cfdpManager writes in place and announces nothing: the rename waits for the size and CFDP checksum the
+        # ground sent, so a commit sent early, or after a damaged class 1 upload, leaves a .part
+        handler = CPP[CPP.index("void Doom ::COMMIT_WAD_cmdHandler("):]
+        handler = handler[:handler.index("\n}\n")]
+        self.assertLess(handler.index("fileSum("), handler.index("placeWad("))
+        self.assertIn("log_WARNING_HI_WadCommitRefused", handler)
+        self.assertIn("CFDP::Checksum", CPP)
+        self.assertIn("CFDP_Checksum", _read("flight", "Components", "Doom", "CMakeLists.txt"))
+        self.assertRegex(FPP, r"event WadCommitRefused\(")
+        self.assertNotIn("becomes NAME.wad only here", FPP, "fileAnnounce is not the only rename any more")
 
 
 class TestTheLauncher(unittest.TestCase):
@@ -180,6 +246,74 @@ class TestTheLauncher(unittest.TestCase):
             data = yaml.safe_load(mod.safe_dump(self.config()))
         ports = {link["name"]: link["port"] for link in data["dataLinks"]}
         self.assertEqual(ports, {"UDP_TM_IN": 51000, "UDP_TC_OUT": 51001, "UDP_TM_SPLIT_IN": 50002})
+
+    def test_the_relay_setting_means_what_it_says(self):
+        # common.sh exports every DOOMSAT_* line from .env, so 0 or false there (or on the command line) must be off
+        mod = self.load()
+        for value, moved in (("0", False), ("false", False), ("no", False), ("off", False), ("", False),
+                             (" 0 ", False), ("OFF", False), ("1", True), ("true", True), ("yes", True)):
+            with self.subTest(value=value), mock.patch.dict(os.environ, {"DOOMSAT_RELAY": value}):
+                data = yaml.safe_load(mod.safe_dump(self.config()))
+                ports = {link["name"]: link["port"] for link in data["dataLinks"]}
+                self.assertEqual(ports, {"UDP_TM_IN": 51000 if moved else 50000,
+                                         "UDP_TC_OUT": 51001 if moved else 50001, "UDP_TM_SPLIT_IN": 50002})
+
+
+@unittest.skipIf(os.name == "nt" or not shutil.which("bash"), "runs scripts/wsl_run_flight.sh under bash")
+class TestTheParameterFileBuild(unittest.TestCase):
+    """`wsl_run_flight.sh prmdb` with stand-ins for the F' venv's python and fprime-prm-write."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = os.path.join(self.tmp.name, "R&D #1", "doom")   # characters sed would have got wrong
+        venv = os.path.join(self.home, "DoomSat", "fprime-venv", "bin")
+        self.bin = os.path.join(self.home, "DoomSat", "build-artifacts", os.uname().sysname, "DoomSat", "bin")
+        os.makedirs(venv)
+        os.makedirs(self.bin)
+        self.write(os.path.join(venv, "python"), f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+        self.prm_write = os.path.join(venv, "fprime-prm-write")
+        self.run_dir = os.path.join(self.home, "run")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write(self, path, text):
+        with open(path, "w") as f:
+            f.write(text)
+        os.chmod(path, 0o755)
+
+    def build(self, works, defaults="0"):
+        self.write(self.prm_write, '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done\n'
+                                   + ('printf prm > "$out"\n' if works else 'echo "no such parameter" >&2; exit 1\n'))
+        self.write(os.path.join(self.bin, "PrmDb.dat"), "left by an earlier version")
+        env = dict(os.environ, DOOMSAT_HOME=self.home, DOOMSAT_PRM_DEFAULTS=defaults)
+        return subprocess.run(["bash", os.path.join(ROOT, "scripts", "wsl_run_flight.sh"), "prmdb"], env=env,
+                              capture_output=True, text=True, timeout=60)
+
+    def test_a_good_build_lands_in_run_and_bin_holds_only_the_binary(self):
+        done = self.build(works=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertTrue(os.path.isfile(os.path.join(self.run_dir, "PrmDb.dat")))
+        self.assertFalse(os.path.exists(os.path.join(self.bin, "PrmDb.dat")))
+        with open(os.path.join(self.run_dir, "PrmDb.json"), encoding="utf-8") as f:
+            built = json.load(f)
+        for channel in built["DoomSat.cfdpManager"]["ChannelConfig"]:
+            self.assertEqual(channel["tmp_dir"], os.path.join(self.home, "wads", "uplink", ".cfdp-tmp"))
+
+    def test_a_failed_build_stops_the_start(self):
+        os.makedirs(self.run_dir)
+        self.write(os.path.join(self.run_dir, "PrmDb.dat"), "the last start's file")
+        done = self.build(works=False)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("not starting", done.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "PrmDb.dat")), "never the last start's file")
+        with open(os.path.join(self.run_dir, "prmdb.log")) as f:
+            self.assertIn("no such parameter", f.read())
+
+    def test_flying_on_defaults_takes_an_explicit_yes(self):
+        done = self.build(works=False, defaults="1")
+        self.assertEqual(done.returncode, 0)
+        self.assertIn("flying on parameter defaults", done.stderr)
 
 
 class TestTheRelay(unittest.TestCase):
@@ -227,13 +361,15 @@ class TestTheRelay(unittest.TestCase):
 
     def test_no_loss_is_a_pass_through(self):
         self.assertEqual(self.run_relay(0), list(range(200)))
-        self.assertIn("TM sent 200 dropped 0", self.final, "SIGTERM still prints the final counts")
+        if os.name != "nt":   # Popen.terminate is TerminateProcess on Windows: no handler runs, no final report
+            self.assertIn("TM sent 200 dropped 0", self.final, "SIGTERM still prints the final counts")
 
     def test_loss_drops_about_that_share_and_never_reorders(self):
         got = self.run_relay(20, n=500)
         self.assertEqual(got, sorted(got))
         self.assertTrue(330 < len(got) < 470, len(got))
-        self.assertIn(f"TM sent {len(got)} dropped {500 - len(got)}", self.final)
+        if os.name != "nt":   # as above: the final counts need SIGTERM
+            self.assertIn(f"TM sent {len(got)} dropped {500 - len(got)}", self.final)
 
 
 if __name__ == "__main__":

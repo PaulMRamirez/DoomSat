@@ -119,6 +119,11 @@ def search_dirs():
     return [uplink_dir(), wads_dir()]
 
 
+# find()'s reasons for a file that is not in place, which tools/wad_uplink_demo.py tells apart from a refused file
+NOT_FINISHED = "has not finished its uplink"
+NOT_FOUND = "is in neither the uplink nor the installed WAD directory"
+
+
 def find(name, dirs):
     """(path, None) for a loadable file, or (None, why not). Existence and size only; nothing is read."""
     for d in dirs:
@@ -135,8 +140,8 @@ def find(name, dirs):
         arriving = [f for f in (os.listdir(d) if os.path.isdir(d) else [])
                     if f.startswith(name + ".") and f.endswith(PART)]
         if arriving:
-            return None, f"{name} has not finished its uplink ({arriving[0]} so far)"
-    return None, f"{name} is in neither the uplink nor the installed WAD directory"
+            return None, f"{name} {NOT_FINISHED} ({arriving[0]} so far)"
+    return None, f"{name} {NOT_FOUND}"
 
 
 def pin(path, serial):

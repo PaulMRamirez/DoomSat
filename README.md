@@ -175,9 +175,12 @@ ground/.venv/bin/python tools/wad_uplink_demo.py --iwad freedoom1.wad --map E1M1
    about 180 KB/s. The spacecraft asks again for anything lost on the way (NAK), so a lossy link costs time, not
    the file. Commands go up on their own virtual channel ahead of the file, so they keep flowing alongside it.
 2. **Into place.** When the spacecraft has the whole file it says so (the class 2 FIN), and the tool sends
-   `COMMIT_WAD(NAME.<nonce>.part)`: the Doom component renames it to `NAME` in the uplink directory
-   (`WadUplinked`) and nowhere else. A file that is still arriving, or never arrived whole, stays a `.part` and
-   can't be loaded. From the Yamcs web UI, send `COMMIT_WAD` yourself once the transfer shows completed.
+   `COMMIT_WAD(NAME.<nonce>.part, fileSize, checksum)` with the size and CFDP checksum of what it sent. The Doom
+   component checks both against the file on board and only then renames it to `NAME` in the uplink directory
+   (`WadUplinked`), and nowhere else. A file that is still arriving, or never arrived whole, stays a `.part`
+   (`WadCommitRefused`) and can't be loaded. From the Yamcs web UI, send `COMMIT_WAD` yourself once a **class 2**
+   transfer shows completed (Yamcs calls a class 1 transfer completed even when the file arrived damaged), with
+   the numbers `tools/wad_uplink_demo.py --checksum FILE` prints.
 3. **`LOAD_WAD(iwad, pwad, map)`.** It names bare `.wad` files in the uplink directory or `~/doom/wads`. The
    payload first proves the game starts on them in a separate process, because a damaged WAD kills ViZDoom
    rather than raising an error. Only then does it rebuild its game and start a fresh episode
@@ -191,7 +194,8 @@ packets instead, which are not retransmitted: there one lost packet fails the fi
 **A lossy link.** `DOOMSAT_RELAY=1 scripts/flight.sh start` puts Yamcs's frame links behind
 `python3 tools/lossy_relay.py --loss 5`, which drops that share of frames each way (`--seed` repeats a run).
 Add `--tries 3` to the demo there: a command is one frame, and the tool resends `COMMIT_WAD` and `LOAD_WAD`
-when no answer comes back.
+when no answer comes back. Keep `--pdu-delay` at 5 ms or more (the tool refuses less): faster, the uplinked
+PDUs can use up the buffers the downlink also needs.
 
 **What the transfer does not restrict.** CFDP writes wherever the ground's destination path points (F´ file
 packets did too on the native build, which never set FileUplink's write directory): anyone who can command the spacecraft through Yamcs can write (or overwrite) any file the flight

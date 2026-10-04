@@ -10,6 +10,10 @@
 
 // Necessary project-specified types
 #include <Fw/Types/MallocAllocator.hpp>
+#include <Fw/Types/String.hpp>
+#include <Svc/Subtopologies/ComCcsds/ComCcsdsConfig/FppConstantsAc.hpp>
+
+#include <cstdlib>
 
 // Allows easy reference to objects in FPP/autocoder required namespaces
 using namespace DoomSat;
@@ -32,8 +36,13 @@ enum TopologyConstants {
     CFDP_FILE_IN_QUEUE_DEPTH = 10,   // fileIn (DpCatalog) requests waiting for the next run1Hz
     CFDP_BUFFER_MANAGER_ID = 400,    // distinct from commsBufferManager (200) and dpBufferManager (300)
     CFDP_BUFFER_SIZE = 1024,         // >= CfdpCfg MaxPduSize + 2-byte packet descriptor
-    CFDP_BUFFER_COUNT = 96,          // > 2 channels' per-cycle PDU limit in flight to ComQueue
+    // >= one channel's per-cycle PDU limit (max_outgoing_pdus_per_cycle 64) and <= ComQueue's FILE depth (100), so
+    // a full pool can never overflow that queue. With both channels sending (128 a cycle) channel 1 gets the other
+    // 32 and logs BuffersExhausted; it slows down, nothing is lost.
+    CFDP_BUFFER_COUNT = 96,
 };
+static_assert(CFDP_BUFFER_COUNT <= ComCcsdsConfig::QueueDepths::file,
+              "cfdpManager's pool must not hold more PDUs than ComQueue's FILE queue");
 
 /**
  * \brief configure/setup components in project-specific way
@@ -50,8 +59,18 @@ void configureTopology() {
     // Command sequencer needs to allocate memory to hold contents of command sequences
     cmdSeq.allocateBuffer(0, mallocator, 5 * 1024);
 
-    // Parameter database is configured with a database file name, and that file must be initially read.
-    prmDb.configure("PrmDb.dat");
+    // Parameter database: $DOOMSAT_HOME/run/PrmDb.dat, which scripts/wsl_run_flight.sh builds from
+    // flight/config/PrmDb.json before each start. Not a relative name: that resolves to the binary's directory
+    // (the launchers run it from bin/), and a second file there stops fprime-gds from finding the binary.
+    const char* const home = std::getenv("DOOMSAT_HOME");
+    const char* const user = std::getenv("HOME");
+    Fw::String prmFile;
+    if (home != nullptr && home[0] != '\0') {
+        prmFile.format("%s/run/PrmDb.dat", home);
+    } else {
+        prmFile.format("%s/doom/run/PrmDb.dat", (user != nullptr) ? user : "");
+    }
+    prmDb.configure(prmFile.toChar());  // copies the name
 
     // CFDP engine (transaction pools, chunk lists, histories) comes from the heap, plus the fileIn handoff queue
     cfdpManager.configure(mallocator, CFDP_FILE_IN_QUEUE_DEPTH);

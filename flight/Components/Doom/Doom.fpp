@@ -117,9 +117,9 @@ module DoomMission {
         @ Image product packets (FrameChunk telemetry records) sent straight to the com queue
         output port frameOut: Fw.Com
 
-        @ FileUplink announces each file whose checksum it has verified. An uplinked WAD arrives as
-        @ NAME.wad.<anything>.part and becomes NAME.wad only here, so LOAD_WAD can never start the game on a
-        @ file that is still arriving, or that arrived damaged.
+        @ FileUplink announces each file whose checksum it has verified: an uplinked WAD arrives as
+        @ NAME.wad.<anything>.part and becomes NAME.wad here. Unconnected on the CFDP build, where cfdpManager
+        @ has no such output and COMMIT_WAD does the rename after its own check of the file.
         sync input port fileAnnounce: Svc.FileAnnounce
 
         # ----------------------------------------------------------------------
@@ -186,10 +186,13 @@ module DoomMission {
 
         @ Put an uplinked WAD in place: rename UPLINK/NAME.wad.<nonce>.part to UPLINK/NAME.wad, where UPLINK is
         @ $DOOMSAT_HOME/wads/uplink. FileUplink's fileAnnounce does this by itself; CFDP has no such signal and
-        @ writes in place, so the ground sends this once its Class 2 transfer has finished (FIN), when the file
-        @ is known to be whole.
+        @ writes in place, so the ground sends this once its Class 2 transfer has finished (FIN). The file is
+        @ renamed only if its size and CFDP checksum are the ones the ground sent, so a commit sent too early,
+        @ or after a damaged Class 1 upload, leaves it a .part (WadCommitRefused) and LOAD_WAD cannot use it.
         async command COMMIT_WAD(
             part: string size 40  @< the bare name it was uplinked under: NAME.wad.<nonce>.part
+            fileSize: U32  @< the size the ground sent, in bytes
+            checksum: U32  @< the CFDP modular checksum of what the ground sent (the one its EOF carries)
         ) opcode 0x07
 
         # ----------------------------------------------------------------------
@@ -317,6 +320,7 @@ module DoomMission {
         event WadLoadFailed(name: string size 90, reason: string size 120) severity warning high id 13 format "Could not load {}: {}"
         event WadUplinked(fileName: string size 120) severity activity high id 14 format "Uplinked WAD ready to load: {}"
         event WadUplinkFailed(fileName: string size 120) severity warning high id 15 format "Uplinked WAD could not be renamed into place: {}"
+        event WadCommitRefused(fileName: string size 120, haveSize: U64, haveChecksum: U32, wantSize: U32, wantChecksum: U32) severity warning high id 16 format "Uplinked WAD not committed, it is not the file the ground sent: {} has {} bytes, checksum 0x{x}; expected {} bytes, checksum 0x{x}"
 
         # ----------------------------------------------------------------------
         # Standard ports

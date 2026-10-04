@@ -80,7 +80,9 @@ the build:
 - `OutgoingFileChunkSize` 981, because F´ sizes a PDU's data from an uninitialised header (F10);
 - 2048 receive chunks in place of 58, without which a lossy upload resends most of the file (F11);
 - a 42-line launcher wrapper, because fprime-yamcs sorts the keys of the instance YAML;
-- `COMMIT_WAD`, because `cfdpManager` has no `fileAnnounce`.
+- `COMMIT_WAD`, because `cfdpManager` has no `fileAnnounce`. It carries the size and CFDP checksum of what was
+  sent, and the Doom component renames only a file that has both. (The commit could also move on board with no
+  upstream work, through a guard component that watches the receiver's FIN: risk 3.)
 
 The upstream drafts below would retire them, but none blocks. F´ v4.4.0 and `devel` (`55f597d`, 2 October 2026)
 still carry the `configure` bug, still have no reference wiring and still have no CFDP sandbox. For this work an
@@ -93,7 +95,8 @@ Two conditions come with the merge:
 
 1. **WADs go Class 2.** Class 1 has no retransmission, and F´ keeps a Class 1 file whose checksum failed and
    reports it completed [ran]. The demo defaults to Class 2 on this build and refuses to commit a Class 1 file
-   after `RxCrcMismatch`, but at 5 % downlink loss that event can itself be lost [inferred].
+   after `RxCrcMismatch`. That event can itself be lost on the downlink, but the file still does not get its
+   name: `COMMIT_WAD` checks its size and checksum on board and refuses it (`WadCommitRefused`).
 2. **Destination paths are not sandboxed.** They were not on the Stage 1 build either, though FileUplink could
    have been (it has `configure(directory)`; Stage 1 never called it). What is and is not restricted is set out
    below. That is acceptable for a demonstration stack; anything more needs the guard
@@ -260,9 +263,10 @@ the next thing to look at for a lossy link, not CFDP.
 
 Restricted [ran]:
 
-- `COMMIT_WAD(part)` renames only a bare `NAME.wad[.<nonce>].part` inside `$DOOMSAT_HOME/wads/uplink`
-  (`flight/Components/Doom/Doom.cpp:112-131`): any `/` is a VALIDATION_ERROR, and a missing file an
-  EXECUTION_ERROR.
+- `COMMIT_WAD(part, fileSize, checksum)` renames only a bare `NAME.wad[.<nonce>].part` inside
+  `$DOOMSAT_HOME/wads/uplink`, and only when the file's size and CFDP modular checksum are the ones the ground
+  sent (`flight/Components/Doom/Doom.cpp:115-180`): any `/` is a VALIDATION_ERROR, a missing file an
+  EXECUTION_ERROR with `WadUplinkFailed`, and a file that differs an EXECUTION_ERROR with `WadCommitRefused`.
 - `LOAD_WAD` names only bare `.wad` files in `wads/uplink` and `wads/`, refuses `.part` names, and proves the
   file in a child process before the game switches (Stage 1).
 
@@ -279,7 +283,9 @@ Not restricted, because `cfdpManager` uses the metadata's destination path as it
   `keep` DELETE, and polling always deletes once a file is sent. A failed poll file is meant to move to
   `fail_dir`, but F´ v4.3.0 renames it onto the `fail_dir` path itself (`Engine.cpp:1155-1156`), so with a
   directory there the move fails and the file is deleted (`1164-1169`); `move_dir` has the same bug (`1135`,
-  `1143-1148`; F12) [read]. Neither applies to a received file, which is only ever removed (`1173-1179`).
+  `1143-1148`; F12) [read]. Neither applies to a received file. Nothing removes one either: `m_keep` is KEEP for
+  every receive (`TransactionRx.cpp:71, 96`), so `handleNotKeepFile` never runs for one, and a receive that fails
+  stays where it is, as a `.part` at its destination or as `<eid>:<seq>.tmp` in `tmp_dir` [read].
 - All test files were removed afterwards.
 
 The component offers no hook to restrict the destination path. The one receive path it does let a deployment
@@ -288,7 +294,9 @@ choose is `ChannelConfig.tmp_dir`: when Class 2 file data arrives before its met
 1094-1097`) [read]. That happened once at 5 % loss, into `/tmp` (`RxTempFileCreated ... /tmp/100:23.tmp`) [ran].
 `PrmDb.json` now sets `tmp_dir` to `<uplink>/.cfdp-tmp` (filled in per machine at start), where it worked at 50 %
 TC loss [ran], and leaves `fail_dir` and `move_dir` empty, which F´ treats as "delete" (DoomSat runs no polls).
-That, and `COMMIT_WAD`, is all the component allows.
+F´ never removes a temp file whose receive ended before its metadata arrived, so the run script clears
+`.cfdp-tmp/*.tmp` before each start, while nothing on board runs. That, and `COMMIT_WAD`, is all the component
+allows.
 
 F´ file packets on the Stage 1 build were open too, but only because that build never confined them: FileUplink
 writes through `Os::SandboxedFile` and has `configure(directory)` (`F´:Svc/FileUplink/FileUplink.hpp:192-201`),
@@ -308,22 +316,33 @@ order:
 1. **No destination sandbox** (above).
 2. **Class 1 is unsafe for WADs** (above). The demo defaults to Class 2 on this build.
 3. **Commands have no retransmission.** A lost `COMMIT_WAD` or `LOAD_WAD` needs a resend; the demo's `--tries`
-   does it, and the dashboard's `LOAD_WAD` button does not.
+   does it, and the dashboard's `LOAD_WAD` button does not. The commit itself need not be a ground command: a
+   guard component on `cfdpManager.dataOut` could see the receiver's own FIN and rename the file through the
+   unconnected `doom.fileAnnounce`, with no upstream work. It must key on condition code NO_ERROR and file status
+   RETAINED, not the delivery code (zeroed per transaction, so COMPLETE even on failure,
+   `TransactionRx.cpp:103`), and commit once per transaction, since FINs repeat [read]. Not built.
 4. **The v4.3.0 framer stalls** when `commsBufferManager` runs dry: it drops the packet without a `comStatus`,
    and ComQueue then waits for ever (`F´:Svc/Ccsds/SpacePacketFramer/SpacePacketFramer.cpp:40-46`) [read; in the
    harness an unpaced burst ran the pool dry, the framer dropped a downlink packet, ComQueue overflowed and no
    later FIN reached the ground]. Fixed in v4.4.0 [read]. It applies to the current stack too,
-   CFDP or not [inferred]. Keep PDU pacing at 5 ms or more.
+   CFDP or not [inferred]. The dedicated pool covers only what `cfdpManager` allocates: each uplinked PDU still
+   holds a `commsBufferManager` buffer until `cfdpManager`'s async `dataIn` takes it [read]. Keep PDU pacing at
+   5 ms or more; the demo refuses less.
 5. **Big downlinks hold up game frames** (Q4) [read]. Downlink large files while not flying.
 6. **The 40-character command string cap**: `COMMIT_WAD` carries `NAME.<13 digits>.part`, so an uplinked name can
    be at most 19 characters on this build (38 natively). The demo checks before anything goes up [ran].
+7. **A `COMMIT_WAD` sent between the last byte and the CRC pass** renames a whole file, but `r2CalcCrcChunk` then
+   reopens the old `.part` name, fails, and the FIN reports a file-size error (`TransactionRx.cpp:903-918`)
+   [read]. Earlier than that the size or checksum differs and the commit is refused. With
+   `RxCrcCalcBytesPerCycle` at 16 MiB the window is one 1 Hz tick; the demo commits only after the FIN.
    `SendFile` paths are capped the same way [read].
-7. **Yamcs's sender inactivity timer never arms** (`eofAckReceived` is never set,
+8. **Yamcs's sender inactivity timer never arms** (`eofAckReceived` is never set,
    `Y:cfdp/CfdpOutgoingTransfer.java:93`) [read]. If every FIN were lost the upload would stay RUNNING; F´ sends
    ten, so that needs ten in a row lost [inferred].
-8. **Channel 1 is wired but must not carry Class 2**: its ACK, NAK and FIN would come back on `dataIn[0]`
-   [inferred]. Everything here uses channel 0.
-9. **Cosmetic**: one command-history entry per transfer, rewritten for every PDU; APID 3 packets archived with a
+9. **Channel 1 is wired but must not carry Class 2**: its ACK, NAK and FIN would come back on `dataIn[0]`
+   [inferred]. Everything here uses channel 0. Both channels sending at once share the 96-buffer pool: channel 0
+   takes its 64 a cycle, channel 1 gets the other 32 and logs `BuffersExhausted` [read].
+10. **Cosmetic**: one command-history entry per transfer, rewritten for every PDU; APID 3 packets archived with a
    1970 gentime; the XTCE decodes CFDP PDUs as file-packet noise [read].
 
 ### The reading notes at the top, checked
@@ -375,7 +394,8 @@ Written for you to file. Each says what ran and what was only read.
 > (`Engine.cpp:1006-1019`); keep is KEEP from reset (`TransactionRx.cpp:96`), so nothing removes the file. Suggest:
 > treat a checksum failure as a failed transaction (condition code "file checksum failure"), report
 > `RxFileTransferFailed`, and delete the file. (`fail_dir` does not apply: it is used only for a failed send from a
-> polled directory; for a receive, `handleNotKeepFile` just removes the destination file, `Engine.cpp:1173-1179`.)
+> polled directory. `handleNotKeepFile`'s receive branch removes the destination file, `Engine.cpp:1173-1179`, but
+> no receive reaches it today, since keep is always KEEP.)
 
 **F4. Metadata PDU: closure-requested is written at bit 0x80, not 0x40**
 > `Svc/Ccsds/CfdpManager/Types/MetadataPdu.cpp:123` shifts `closureRequested` by 7 and line 180 reads it from bit
@@ -508,19 +528,24 @@ Written for you to file. Each says what ran and what was only read.
   `flight/DoomSat/Top/instances.fpp` (queue 200; async inputs assert when the queue is full) and wired in
   `topology.fpp` to the com queue's FILE slot, the router's `fileOut`, the 1 Hz group and `dpCat`.
   `DoomSatTopologyDefs.hpp` is committed because the generated one names FileHandling. `MaxPduSize` 1001
-  (`CfdpCfg.fpp`) and 2048 receive chunks (`CfdpCfg.hpp`). `COMMIT_WAD` in the Doom component. Boot parameters in
-  `flight/config/PrmDb.json`: the data cap, the fast CRC pass, KEEP, the entity ids, and the temp directory
-  under the uplink directory.
+  (`CfdpCfg.fpp`) and 2048 receive chunks (`CfdpCfg.hpp`). `COMMIT_WAD(part, fileSize, checksum)` in the Doom
+  component, which checks the file before it renames it. Boot parameters in `flight/config/PrmDb.json`: the data
+  cap, the fast CRC pass, KEEP, the entity ids, and the temp directory under the uplink directory. `prmDb` reads
+  them from `$DOOMSAT_HOME/run/PrmDb.dat`, outside `bin/`.
 - **Ground**: `CfdpService` in `ground/yamcs/etc/yamcs.fprime-project.yaml` with TC virtual channel 2,
   `cfdp_streams.sql`, `ground/yamcs/launch.py`.
 - **Tools**: `tools/lossy_relay.py`; `tools/wad_uplink_demo.py` uses CFDP Class 2 when Yamcs offers it, with
-  `--cfdp 1|2`, `--pdu-delay`, `--tries`.
+  `--cfdp 1|2`, `--pdu-delay` (5 ms or more), `--tries`, and `--checksum FILE` for a commit by hand. It gives up
+  on a transfer only when it stops moving, and then cancels it. `tools/prmdb.py` fills the uplink directory into
+  `PrmDb.json`.
 - **Scripts**: `wsl_sync.sh` also copies `CfdpCfg.fpp`, `CfdpCfg.hpp` and `DoomSatTopologyDefs.hpp`, and
-  `flight/config/CMakeLists.txt` registers the two config overrides; `wsl_run_flight.sh` builds `PrmDb.dat` from
-  `PrmDb.json` at each start and starts Yamcs through `launch.py` with `--app`; `flight.sh` passes `DOOMSAT_RELAY*`
-  into WSL and gives `fprime-gds` `--app`.
-- **Tests**: `tests/test_cfdp_spike.py` (YAML, SQL, PDU sizes, boot parameters, `COMMIT_WAD`, the launcher, the
-  relay) and the demo's CFDP and lossy paths in `tests/test_wad_uplink_demo.py`.
+  `flight/config/CMakeLists.txt` registers the two config overrides; `wsl_run_flight.sh` builds
+  `$RUN/PrmDb.dat` from `PrmDb.json` before each start, and stops if it cannot (`DOOMSAT_PRM_DEFAULTS=1` to fly on
+  the defaults), then starts Yamcs through `launch.py` with `--app`; `flight.sh` passes `DOOMSAT_RELAY*` into WSL,
+  builds the parameter file for `gds` too, and gives `fprime-gds` `--app`.
+- **Tests**: `tests/test_cfdp_spike.py` (YAML, SQL, PDU sizes, boot parameters and how they are built,
+  `COMMIT_WAD`, the launcher, the relay), the demo's CFDP and lossy paths in `tests/test_wad_uplink_demo.py`, and
+  the topology header and launchers in `tests/test_flight_scripts.py` (shared with `feature/wad-uplink`).
 - **Docs**: README "Uplink a new level", `docs/ARCHITECTURE.md`, CLAUDE.md.
 
 ### Not done

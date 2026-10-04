@@ -78,7 +78,8 @@ module DoomSat {
       cfdpManager.dataInReturn[0] -> ComCcsds.fprimeRouter.fileBufferReturnIn
       cfdpManager.dataInReturn[1] -> ComCcsds.fprimeRouter.fileBufferReturnIn
 
-      # PDU buffers come from a dedicated pool, not ComCcsds.commsBufferManager
+      # PDU buffers cfdpManager allocates (downlinked file data, ACK/NAK/FIN) come from a dedicated pool, not
+      # ComCcsds.commsBufferManager. Uplinked PDUs still sit in commsBufferManager buffers until dataIn takes them.
       cfdpManager.bufferAllocate[0]   -> cfdpBufferManager.bufferGetCallee
       cfdpManager.bufferAllocate[1]   -> cfdpBufferManager.bufferGetCallee
       cfdpManager.bufferDeallocate[0] -> cfdpBufferManager.bufferSendIn
@@ -99,8 +100,9 @@ module DoomSat {
       comDriver.ready         -> ComCcsds.comStub.drvConnected
     }
 
-    # FileHandling_Doom is gone: CfdpManager has no fileAnnounce-style output, so doom.fileAnnounce
-    # is left unconnected (it is a sync input, so that is legal) and the rename-on-arrival needs a new trigger.
+    # FileHandling_Doom is gone: CfdpManager has no fileAnnounce-style output, so doom.fileAnnounce is left
+    # unconnected (it is a sync input, so that is legal). The ground's COMMIT_WAD renames the .part once the
+    # Class 2 transfer has its FIN, and only if the file's size and checksum are the ones the ground sent.
 
     connections Cfdp_DataProducts {
       # Data Products downlink over CFDP (channel, class, keep, priority and destination entity

@@ -118,12 +118,19 @@ for the dev set. The shareware `doom1.wad` E1M1 is the test level.
 - openmct-yamcs asks for Node ≥ 24.14.1. The setup turns engine-strict off, so 24.14.0 works.
 - F´ `fprime-xtce` comes from a PR branch (for `!binary`). pip warns that it conflicts with fprime-yamcs's pin.
   Expect that warning and ignore it.
-- Uplinked WADs land in `$DOOMSAT_HOME/wads/uplink` as `NAME.<nonce>.part`, and `COMMIT_WAD` renames them once
-  the CFDP class 2 transfer has finished. Use absolute paths: F´ command strings hold 40 characters on board,
-  and a relative path lands in the flight binary's working directory (`build-artifacts/Linux/DoomSat/bin`).
+- Uplinked WADs land in `$DOOMSAT_HOME/wads/uplink` as `NAME.<nonce>.part`, and `COMMIT_WAD(part, fileSize,
+  checksum)` renames them once the CFDP class 2 transfer has finished, and only if the size and CFDP checksum
+  match (`wad_uplink_demo.py --checksum FILE` prints both). Use absolute paths: F´ command strings hold 40
+  characters on board, and a relative path lands in the flight binary's working directory
+  (`build-artifacts/Linux/DoomSat/bin`).
 - Yamcs starts through `ground/yamcs/launch.py`, not `fprime-yamcs` itself: fprime-yamcs writes the instance YAML
-  back with sorted keys, which breaks the CFDP stream SQL. With `PrmDb.dat` in `bin/`, both fprime-yamcs and
-  `fprime-gds` need `--app` (the scripts pass it), or they refuse to guess which file is the binary.
+  back with sorted keys, which breaks the CFDP stream SQL. The parameter file is `$DOOMSAT_HOME/run/PrmDb.dat`,
+  built at every start; if it cannot be built the start stops (`DOOMSAT_PRM_DEFAULTS=1` flies on F´'s defaults).
+  Keep `bin/` to the binary alone: fprime-gds exits when it finds two files there and no `--app` (the scripts
+  pass `--app` anyway).
+- `feature/wad-uplink` (the native build) and this branch share `$DOOMSAT_HOME/DoomSat`. Each commits its own
+  `DoomSatTopologyDefs.hpp` and `wsl_sync.sh` copies it, so after switching branches `scripts/flight.sh build` is
+  enough.
 - CFDP class 1 has no retransmission, and F´ keeps a class 1 file whose checksum failed and calls it completed.
   Send WADs as class 2.
 
