@@ -14,6 +14,8 @@ REPO=$DOOMSAT_REPO
 # DOOMSAT_RELAY=1  Yamcs's TM/TC links behind tools/lossy_relay.py (ground/yamcs/launch.py); off by default.
 # DOOMSAT_PRM_DEFAULTS=1  start even if PrmDb.dat cannot be built, on the stock parameter defaults (not safe
 #                  for uplinks: see build_prmdb).
+# RECORDS=on    the payload writes a record of each episode to $RUN/rec for the ground's science data system to
+#               downlink (payload/episode_record.py; ground/sds). Off by default.
 mkdir -p "$RUN" "$REPO/out" "$WADS/uplink"   # uplink: where an uplinked WAD lands (LOAD_WAD, README)
 stop() {
   pkill -f "doom_payloa[d].py --fps" 2>/dev/null
@@ -39,7 +41,7 @@ start_payload() {
   # --skill must match research/levels.yaml run.skill, or the bench and the flight stack are playing
   # different games and their numbers cannot be compared. tests/test_runner.py pins the two together.
   cd "$PROJ" || exit 1
-  detach "'$PAYLOAD_PY' '$REPO'/payload/doom_payload.py --fps ${FPS:-10} --quality ${QUALITY:-45} --skill ${SKILL:-3} --wad ${WAD:-doom1.wad} --map ${MAP:-E1M1} --geometry ${GEOMETRY:-off} --oracle ${ORACLE:-off} --map-png '$REPO/out/payload_map.png' > '$RUN/payload.log' 2>&1"
+  detach "'$PAYLOAD_PY' '$REPO'/payload/doom_payload.py --fps ${FPS:-10} --quality ${QUALITY:-45} --skill ${SKILL:-3} --wad ${WAD:-doom1.wad} --map ${MAP:-E1M1} --geometry ${GEOMETRY:-off} --oracle ${ORACLE:-off} --records ${RECORDS:-off} --map-png '$REPO/out/payload_map.png' > '$RUN/payload.log' 2>&1"
 }
 # Parameters the flight software loads at boot: $RUN/PrmDb.dat (DoomSatTopology.cpp builds the same path from
 # DOOMSAT_HOME). Built from flight/config/PrmDb.json before every start, so the repo is what holds; a PRM_SAVE on
