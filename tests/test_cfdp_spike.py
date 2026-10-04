@@ -106,18 +106,27 @@ class TestTheFlightSide(unittest.TestCase):
 
     def test_a_downlinked_pdu_fits_whatever_its_transaction_number(self):
         # F' sizes file data from a header it has not filled in yet (TransactionTx.cpp sSendFileData), so MaxPduSize
-        # alone lets a PDU grow by a byte once the transaction number needs two. Cap the data instead: fixed
-        # header 4 + entity ids 1 + 1 (42 and 100) + transaction number up to 4 + offset 4.
+        # alone does not bound a PDU. Cap the data for the worst header: fixed 4, both entity ids sized from the larger
+        # (SendFile takes any destId, up to 4 bytes each), transaction number up to 4, and the 4-byte offset.
         size = int(re.search(r"^\s*constant MaxPduSize = (\d+)", CFDP_CFG, re.M).group(1))
-        self.assertLessEqual(PRM["OutgoingFileChunkSize"] + 4 + 1 + 4 + 1 + 4, size)
-        self.assertLessEqual(max(PRM["LocalEid"], PRM["FileInDefaultDestEntityId"]), 255)
+        self.assertLessEqual(PRM["OutgoingFileChunkSize"] + 4 + 4 + 4 + 4 + 4, size)
 
     def test_cfdp_temp_files_stay_in_the_uplink_directory(self):
-        # wsl_run_flight.sh replaces @UPLINK@ with $DOOMSAT_HOME/wads/uplink before building PrmDb.dat
-        for channel in PRM["ChannelConfig"]:
-            self.assertTrue(channel["tmp_dir"].startswith("@UPLINK@/"), channel)
-            self.assertTrue(channel["fail_dir"].startswith("@UPLINK@/"), channel)
-        self.assertIn('s#@UPLINK@#$WADS/uplink#g', _read("scripts", "wsl_run_flight.sh"))
+        # wsl_run_flight.sh replaces @UPLINK@ with $DOOMSAT_HOME/wads/uplink, makes the directory, and builds
+        # PrmDb.dat from the result. Do the same substitution here and check what the flight software would get.
+        script = _read("scripts", "wsl_run_flight.sh")
+        sed = re.search(r'sed "s#@UPLINK@#([^#]*)#g" "\$REPO/flight/config/PrmDb.json" > "(\$RUN/PrmDb.json)"', script)
+        self.assertIsNotNone(sed, "the script fills in @UPLINK@ into $RUN/PrmDb.json")
+        self.assertIn('fprime-prm-write dat "$RUN/PrmDb.json"', script, "and builds PrmDb.dat from that copy")
+        self.assertIn('mkdir -p "$WADS/uplink/.cfdp-tmp"', script)
+        wads = "/home/someone/doom/wads"
+        built = json.loads(_read("flight", "config", "PrmDb.json").replace("@UPLINK@", sed.group(1).replace("$WADS", wads)))
+        for channel in built["DoomSat.cfdpManager"]["ChannelConfig"]:
+            self.assertEqual(channel["tmp_dir"], wads + "/uplink/.cfdp-tmp")
+            # F' v4.3.0 renames a failed poll file onto fail_dir itself, so a directory there only means "delete";
+            # empty says so (and DoomSat runs no polls)
+            self.assertEqual(channel["fail_dir"], "")
+            self.assertEqual(channel["move_dir"], "")
 
     def test_a_lossy_receive_remembers_what_it_already_has(self):
         # Stock F' tracks NakMaxSegments (58) received runs per transaction and forgets data past that, so a lossy

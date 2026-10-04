@@ -35,9 +35,11 @@ namespace Cfdp {
  *
  */
 // DoomSat: 2048 on channel 0 (stock: NakMaxSegments, 58). With 58, a receive that loses more than about 57 runs of
-// PDUs forgets data it already has, and the next NAK asks for the rest of the file again: a 4.2 MB upload at 5 %
-// loss resent 5,590 PDUs to cover 238 lost. 2048 covers a 28.8 MB IWAD at 5 % loss; each NAK still carries the
-// first NakMaxSegments gaps, and the next one the rest. 2048 x 8 bytes x 50 transactions: about 800 KB.
+// PDUs forgets data it already has, and a later NAK (once the gaps it can still see are refilled) asks for the rest
+// of the file again: a 4.2 MB upload at 5 % loss was sent about 5,590 more PDUs to cover 238 lost. 2048 covers a
+// 28.8 MB IWAD at 5 % loss. Each NAK still carries at most NakMaxSegments gaps, so k gaps take about k / 58 rounds,
+// each after an ack_timer with no data; and cfdpManager's sentNakSegmentRequests then counts the gaps found per NAK,
+// not the segments sent (TransactionRx.cpp rSubstateSendNak). 2048 x 8 bytes x 50 transactions: about 800 KB.
 #define CFDP_CHANNEL_NUM_RX_CHUNKS_PER_TRANSACTION {2048, NakMaxSegments}
 
 /**
