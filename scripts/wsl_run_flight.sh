@@ -43,7 +43,10 @@ start_yamcs() {
   # Parameters the flight software loads at boot (prmDb reads PrmDb.dat from the binary's directory). Built from
   # flight/config/PrmDb.json at every start, so the repo is what holds; a PRM_SAVE on board lasts until then.
   # With a second file in bin/, the launchers can no longer guess the app: both are given --app.
-  fprime-venv/bin/fprime-prm-write dat "$REPO/flight/config/PrmDb.json" -d "$DEPLOY/dict/DoomSatTopologyDictionary.json" \
+  # @UPLINK@ is this machine's uplink directory: cfdpManager's temp and fail directories live under it, not in /tmp.
+  mkdir -p "$WADS/uplink/.cfdp-tmp" "$WADS/uplink/.cfdp-fail"
+  sed "s#@UPLINK@#$WADS/uplink#g" "$REPO/flight/config/PrmDb.json" > "$RUN/PrmDb.json"
+  fprime-venv/bin/fprime-prm-write dat "$RUN/PrmDb.json" -d "$DEPLOY/dict/DoomSatTopologyDictionary.json" \
     -o "$DEPLOY/bin/PrmDb.dat" > "$RUN/prmdb.log" 2>&1 || echo "PrmDb.dat not built (see $RUN/prmdb.log); flying on parameter defaults"
   detach "cd '$PROJ' && . fprime-venv/bin/activate && export FPRIME_DOWNLINK_DIR='$RUN/downlink' && python '$REPO/ground/yamcs/launch.py' --deployment $DEPLOY --app $DEPLOY/bin/DoomSat --skip-browser-open --yamcs-config-dir '$REPO/ground/yamcs' --yamcs-data-dir '$RUN/yamcs-data' --yamcs-realtime-only-channels DoomSat.doom.FRAME_CHUNK > '$RUN/yamcs.log' 2>&1"
 }

@@ -29,6 +29,7 @@ def _read(*parts):
 INSTANCE = yaml.safe_load(_read("ground", "yamcs", "etc", "yamcs.fprime-project.yaml"))
 SQL = _read("ground", "yamcs", "etc", "cfdp_streams.sql")
 CFDP_CFG = _read("flight", "config", "CfdpCfg.fpp")
+CFDP_HPP = _read("flight", "config", "CfdpCfg.hpp")
 FPP = _read("flight", "Components", "Doom", "Doom.fpp")
 PRM = json.loads(_read("flight", "config", "PrmDb.json"))["DoomSat.cfdpManager"]
 
@@ -102,6 +103,31 @@ class TestTheFlightSide(unittest.TestCase):
         self.assertEqual(PRM["FileInDefaultKeep"], "KEEP", "DELETE removes a file once downlinked")
         self.assertEqual(PRM["FileInDefaultClass"], "CLASS_2")
         self.assertEqual(len(PRM), 10, "every cfdpManager parameter, or prmDb warns PrmIdNotFound at boot")
+
+    def test_a_downlinked_pdu_fits_whatever_its_transaction_number(self):
+        # F' sizes file data from a header it has not filled in yet (TransactionTx.cpp sSendFileData), so MaxPduSize
+        # alone lets a PDU grow by a byte once the transaction number needs two. Cap the data instead: fixed
+        # header 4 + entity ids 1 + 1 (42 and 100) + transaction number up to 4 + offset 4.
+        size = int(re.search(r"^\s*constant MaxPduSize = (\d+)", CFDP_CFG, re.M).group(1))
+        self.assertLessEqual(PRM["OutgoingFileChunkSize"] + 4 + 1 + 4 + 1 + 4, size)
+        self.assertLessEqual(max(PRM["LocalEid"], PRM["FileInDefaultDestEntityId"]), 255)
+
+    def test_cfdp_temp_files_stay_in_the_uplink_directory(self):
+        # wsl_run_flight.sh replaces @UPLINK@ with $DOOMSAT_HOME/wads/uplink before building PrmDb.dat
+        for channel in PRM["ChannelConfig"]:
+            self.assertTrue(channel["tmp_dir"].startswith("@UPLINK@/"), channel)
+            self.assertTrue(channel["fail_dir"].startswith("@UPLINK@/"), channel)
+        self.assertIn('s#@UPLINK@#$WADS/uplink#g', _read("scripts", "wsl_run_flight.sh"))
+
+    def test_a_lossy_receive_remembers_what_it_already_has(self):
+        # Stock F' tracks NakMaxSegments (58) received runs per transaction and forgets data past that, so a lossy
+        # upload is mostly resent. The override has to be built (CMakeLists) and copied (wsl_sync.sh) to count.
+        rx = re.search(r"^#define CFDP_CHANNEL_NUM_RX_CHUNKS_PER_TRANSACTION \{(\d+),", CFDP_HPP, re.M)
+        self.assertIsNotNone(rx, "channel 0's RX chunk count is a number in flight/config/CfdpCfg.hpp")
+        self.assertGreaterEqual(int(rx.group(1)), 1024)
+        self.assertLess(int(rx.group(1)), 65536, "ChunkIdx is a U16")
+        self.assertIn('"${CMAKE_CURRENT_LIST_DIR}/CfdpCfg.hpp"', _read("flight", "config", "CMakeLists.txt"))
+        self.assertIn("$SRC/config/CfdpCfg.hpp", _read("scripts", "wsl_sync.sh"))
 
     def test_commit_wad_takes_a_bare_name(self):
         self.assertRegex(FPP, r"async command COMMIT_WAD\(\s*part: string size 40")
