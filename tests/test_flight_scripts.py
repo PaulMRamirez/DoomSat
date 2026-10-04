@@ -57,6 +57,14 @@ class TestTheTopologyHeader(unittest.TestCase):
 
 
 class TestTheLaunchers(unittest.TestCase):
+    def test_settings_the_run_script_reads_reach_wsl(self):
+        # From Git Bash, flight.sh forwards named variables into WSL; one missing from its list is silently dropped
+        run = _read("scripts", "wsl_run_flight.sh")
+        read = set(re.findall(r"\$\{?(DOOMSAT_\w+)", run)) - {"DOOMSAT_HOME", "DOOMSAT_REPO", "DOOMSAT_OS"}
+        forwarded = re.search(r"^\s*for v in ([^;]+); do .*PASS\+=", _read("scripts", "flight.sh"), re.M)
+        self.assertIsNotNone(forwarded)
+        self.assertLessEqual(read, set(forwarded.group(1).split()))
+
     def test_every_launcher_names_the_binary(self):
         # fprime-gds's find_app exits when bin/ holds more than one file, so a launcher that guesses breaks as soon
         # as a PrmDb.dat (or anything else) sits next to the binary.

@@ -29,7 +29,7 @@ class Doom final : public DoomComponentBase {
   private:
     // Rate group tick: connect if needed, drain the socket, downlink what arrived
     void run_handler(FwIndexType portNum, U32 context) override;
-    // A file FileUplink has verified: an uplinked WAD is renamed into place
+    // A file FileUplink has verified: an uplinked WAD is renamed into place (unconnected on the CFDP build)
     void fileAnnounce_handler(FwIndexType portNum, Fw::StringBase& file_name) override;
 
     void CONTROL_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, I8 move, I8 strafe, F32 turn, bool fire, bool use,
@@ -44,6 +44,12 @@ class Doom final : public DoomComponentBase {
     void FRAME_RATE_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, U8 hz, U8 quality) override;
     void LOAD_WAD_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, const Fw::CmdStringArg& iwad,
                              const Fw::CmdStringArg& pwad, const Fw::CmdStringArg& map) override;
+    void COMMIT_WAD_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, const Fw::CmdStringArg& part, U32 fileSize,
+                               U32 checksum) override;
+    // Rename an uplinked NAME.wad.<nonce>.part to NAME.wad; false (and no event) if it is not one
+    bool placeWad(const Fw::StringBase& path);
+    // Size and CFDP modular checksum of a file on board; false if it cannot be read
+    static bool fileSum(const char* path, FwSizeType& size, U32& checksum);
 
     // Payload link
     void connectPayload();

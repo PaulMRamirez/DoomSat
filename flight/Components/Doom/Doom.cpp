@@ -7,6 +7,7 @@
 
 #include <arpa/inet.h>
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -14,8 +15,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "CFDP/Checksum/Checksum.hpp"
 #include "Fw/Com/ComPacket.hpp"
 #include "Fw/Types/String.hpp"
+#include "Os/File.hpp"
 #include "Os/FileSystem.hpp"
 
 namespace DoomMission {
@@ -101,24 +104,102 @@ void Doom ::run_handler(FwIndexType portNum, U32 context) {
 }
 
 // ----------------------------------------------------------------------
-// Uplinked WADs: NAME.wad.<anything>.part becomes NAME.wad once FileUplink has verified its checksum
+// Uplinked WADs: NAME.wad.<anything>.part becomes NAME.wad once its checksum is verified: by FileUplink
+// (fileAnnounce, native build) or by COMMIT_WAD against the size and checksum the ground sent (CFDP build)
 // ----------------------------------------------------------------------
 
 void Doom ::fileAnnounce_handler(FwIndexType portNum, Fw::StringBase& file_name) {
+    (void)this->placeWad(file_name);  // anything else FileUplink receives (a sequence, a parameter file) is left alone
+}
+
+void Doom ::COMMIT_WAD_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, const Fw::CmdStringArg& part, U32 fileSize,
+                                  U32 checksum) {
+    this->m_cmdsReceived++;
+    // A bare name: the directory is always the uplink directory, never one the command names
+    if (std::strchr(part.toChar(), '/') != nullptr || wadDestLength(part.toChar(), part.length()) == 0) {
+        this->log_WARNING_HI_WadUplinkFailed(part);
+        this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::VALIDATION_ERROR);
+        return;
+    }
+    // $DOOMSAT_HOME/wads/uplink, as the run script creates it and the payload looks in it
+    const char* const home = std::getenv("DOOMSAT_HOME");
+    const char* const user = std::getenv("HOME");
+    Fw::String path;
+    if (home != nullptr && home[0] != '\0') {
+        path.format("%s/wads/uplink/%s", home, part.toChar());
+    } else {
+        path.format("%s/doom/wads/uplink/%s", (user != nullptr) ? user : "", part.toChar());
+    }
+    // cfdpManager writes the file in place and announces nothing, so check here that it is the whole file the
+    // ground sent before it gets its real name: a commit before the last byte has landed, or after a damaged
+    // Class 1 upload, leaves a .part that LOAD_WAD will not use. A file that is not there at all (already
+    // committed by an earlier COMMIT_WAD whose answer was lost, or not yet created) is WadUplinkFailed, as before.
+    // A commit between the last byte and cfdpManager's CRC pass does rename the whole file, and that transfer
+    // then ends with a file-size error, so the ground waits for the FIN.
+    FwSizeType haveSize = 0;
+    U32 haveSum = 0;
+    if (!fileSum(path.toChar(), haveSize, haveSum)) {
+        this->log_WARNING_HI_WadUplinkFailed(path);
+        this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::EXECUTION_ERROR);
+        return;
+    }
+    if (haveSize != fileSize || haveSum != checksum) {
+        this->log_WARNING_HI_WadCommitRefused(path, static_cast<U64>(haveSize), haveSum, fileSize, checksum);
+        this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::EXECUTION_ERROR);
+        return;
+    }
+    const bool ok = this->placeWad(path);
+    this->cmdResponse_out(opCode, cmdSeq, ok ? Fw::CmdResponse::OK : Fw::CmdResponse::EXECUTION_ERROR);
+}
+
+bool Doom ::fileSum(const char* path, FwSizeType& size, U32& checksum) {
+    // One pass over the file on this component's thread. The build is unoptimised: about 150 ms for a 28.8 MB WAD
+    // from the page cache, under 200 ms for the largest file Yamcs can uplink (a 32 MiB bucket upload). The doom
+    // queue (60 deep, run ticks at 20 Hz plus commands) fills in about 3 s, and a full queue is an FW_ASSERT in
+    // run_handlerBase.
+    Os::File file;
+    if (file.open(path, Os::File::OPEN_READ) != Os::File::OP_OK) {
+        return false;
+    }
+    CFDP::Checksum sum;
+    U8 buffer[4096];  // a multiple of 4, so every read but the last starts on a word
+    FwSizeType total = 0;
+    while (true) {
+        FwSizeType got = sizeof(buffer);
+        if (file.read(buffer, got) != Os::File::OP_OK) {
+            return false;
+        }
+        if (got == 0) {
+            break;
+        }
+        if (total + got > 0xFFFFFFFFu) {
+            return false;  // larger than any size COMMIT_WAD can name
+        }
+        sum.update(buffer, static_cast<U32>(total), static_cast<U32>(got));
+        total += got;
+    }
+    size = total;
+    checksum = sum.getValue();
+    return true;
+}
+
+bool Doom ::placeWad(const Fw::StringBase& file_name) {
     const char* const path = file_name.toChar();
     const FwSizeType destLen = wadDestLength(path, file_name.length());
     if (destLen == 0) {
-        return;  // not an uplinked WAD (a sequence, a parameter file): nothing to do
+        return false;
     }
-    // A fresh .part name for every uplink, renamed over NAME.wad in the same directory: rename(2) is
-    // atomic, and FileUplink, which opens without truncating, never writes into an older file.
+    // A fresh .part name for every uplink, renamed over NAME.wad in the same directory: rename(2) is atomic,
+    // and neither uplink service ever writes into an older file (FileUplink opens without truncating and would
+    // leave an older file's tail; cfdpManager truncates and would destroy it).
     Fw::String dest;
     dest.format("%.*s", static_cast<int>(destLen), path);
     if (Os::FileSystem::rename(path, dest.toChar()) == Os::FileSystem::OP_OK) {
         this->log_ACTIVITY_HI_WadUplinked(dest);
-    } else {
-        this->log_WARNING_HI_WadUplinkFailed(file_name);
+        return true;
     }
+    this->log_WARNING_HI_WadUplinkFailed(file_name);
+    return false;
 }
 
 // ----------------------------------------------------------------------

@@ -12,6 +12,12 @@
    <remote-dir>/NAME.<nonce>.part on the spacecraft.
 2. FileUplink checks the checksum (FileReceived); the Doom component then renames it to NAME (WadUplinked).
    Only that event says the file is there whole: the service calls an upload complete once it has SENT it.
+   On the CFDP build (docs/plans/cfdp-stage2-spike.md: Yamcs runs a cfdp service, the flight software
+   cfdpManager) the file goes up as CCSDS CFDP class 2 instead (--cfdp 1 or 2 to choose), and COMMIT_WAD does
+   the rename: in class 2 once the spacecraft's FIN says the file is whole, in class 1 once
+   RxFileTransferCompleted comes with no RxCrcMismatch (class 1 has no retransmission: not for WADs).
+   COMMIT_WAD carries the size and CFDP checksum of what was sent, and the Doom component renames the file
+   only if it has both (WadCommitRefused otherwise). --checksum FILE prints the two, for a commit by hand.
 3. LOAD_WAD; the payload proves the game starts on it in a child process, then switches (WadLoaded) or keeps
    flying what it had (WadLoadFailed). The tool shows WAD_IWAD / WAD_PWAD / WAD_LOADS, EPISODE and
    FRAMES_SENT, and saves the first whole frame from after the switch in out/.
@@ -29,6 +35,7 @@ Uplinked-WAD flights are demonstrations. They are never benched or graded: the d
 and the test set the shareware episode (charter 2.5), and this tool is not part of either.
 """
 import argparse
+import array
 import base64
 import os
 import posixpath
@@ -51,12 +58,56 @@ import wad_uplink as wu  # noqa: E402  the payload's own name rules, so a bad na
 BUCKET_UPLOAD_MAX = 32 * 1024 * 1024 - 64 * 1024
 DOOM = "/DoomSat_DoomSat/DoomSat/doom"
 CHUNK_HEADER = struct.Struct("!IHHH")   # seq, index, count, length: the FrameChunk header (Doom.fpp)
+# How long to wait for the answer to a command. With --tries above 1 (a lossy link) a command whose answer has
+# not come is sent again; a lost answer can then be stood in for by telemetry that is sent every second.
+COMMIT_ANSWER_S = 8.0
+LOAD_ANSWER_S = 40.0
+LOAD_RETRY_ANSWER_S = 25.0
+TLM_STANDIN_S = 3.0
+# An uplink is given up when neither its state nor its byte count has moved for this long. No budget from the size:
+# the pace (--pdu-delay, or sleepBetweenPdus in yamcs.yaml) decides how long it takes. Yamcs counts only first-pass
+# bytes, so a CFDP upload at full size waiting on NAK resends and the FIN has its own, longer limit (tail_limit).
+STALL_S = 90.0
+# How long an upload may wait QUEUED for Yamcs's one upload slot (maxNumPendingUploads: 1) behind another one
+QUEUED_S = 900.0
+# The CFDP pace when --pdu-delay is not given (sleepBetweenPdus in ground/yamcs/etc/yamcs.fprime-project.yaml), and
+# file data per PDU (its maxPduSize 1009 less a 12-byte header and a 4-byte offset)
+DEFAULT_PDU_DELAY_MS = 40
+CFDP_DATA_PER_PDU = 993
+# Below this pace uplinked PDUs can pile up in commsBufferManager faster than cfdpManager takes them, and an empty
+# pool stops the downlink (docs/plans/cfdp-stage2-spike.md, risk 4).
+MIN_PDU_DELAY_MS = 5
 WATCHED = ["WAD_IWAD", "WAD_PWAD", "WAD_LOADS", "EPISODE", "FRAMES_SENT", "CMDS_RECEIVED", "PAYLOAD_LINK",
            "FRAME_CHUNK"]
 
 
 def say(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def part_name(name):
+    """NAME.<milliseconds>.part: a fresh name for every uplink, which COMMIT_WAD (or FileUplink) renames to NAME."""
+    return f"{name}.{time.time_ns() // 1000000}.part"
+
+
+def tail_limit(size, pdu_delay_ms):
+    """Seconds a CFDP upload may sit at full size before its FIN. Allows NAKs for a tenth of the PDUs, 58 to a NAK
+    (CfdpCfg NakMaxSegments), each round about 58 PDUs at the pace plus cfdpManager's 2 s ack timer on a 1 Hz tick,
+    and a CRC pass at the stock 64 KiB a tick (PrmDb.json sets 16 MiB; this covers flying on the defaults)."""
+    pdus = -(-size // CFDP_DATA_PER_PDU) + 2
+    rounds = -(-pdus // 580)
+    return STALL_S + rounds * (58 * pdu_delay_ms / 1000 + 4) + size / 65536
+
+
+def cfdp_checksum(data):
+    """The CFDP modular checksum (CCSDS 727.0-B-5 4.2.2; F' CFDP::Checksum, the one a CFDP EOF carries): the file as
+    big-endian 32-bit words from its start, the last one padded with zeros, summed modulo 2**32."""
+    words = array.array("I")
+    assert words.itemsize == 4
+    words.frombytes(bytes(data) + b"\0" * (-len(data) % 4))
+    if sys.byteorder == "little":
+        words.byteswap()
+    return sum(words) & 0xFFFFFFFF
 
 
 def wad_name(value):
@@ -210,6 +261,157 @@ def flight_home():
     return os.path.expanduser("~/doom")
 
 
+def uplink(a, link, bucket, part, remote, name, content):
+    """Send the bucket object `part` to `remote` and see it put in place on board. (exit code or 0, unconfirmed)."""
+    service = link.client.get_file_transfer_client(a.instance).get_service(a.service or ("cfdp" if a.cfdp else
+                                                                                        "FprimeFilePacketService"))
+    updates = service.create_transfer_subscription()
+    t0 = time.time()
+    if a.cfdp:
+        options = {"reliable": a.cfdp == 2}
+        if a.pdu_delay is not None:
+            options["pduDelay"] = a.pdu_delay
+        transfer = service.upload(a.bucket, part, remote, source_entity="ground", destination_entity="doomsat",
+                                  options=options)
+    else:
+        transfer = service.upload(a.bucket, part, remote)
+    say(f"uplink started: {len(content)} bytes -> {remote} (transfer {transfer.id})")
+
+    def refresh():   # a Transfer is a snapshot: the subscription has the live one
+        return updates.get_transfer(transfer.id) or transfer
+
+    try:
+        if a.load_early and not a.no_load:
+            for _ in range(60):
+                transfer = refresh()
+                if transfer.transferred_size > 0 or transfer.is_complete():
+                    break
+                time.sleep(0.5)
+            iwad, pwad = (a.iwad, name) if a.iwad and a.iwad != name else (name, "")
+            say(f"LOAD_WAD {iwad} {pwad!r} {a.map} while the uplink is at {transfer.transferred_size}/{len(content)} bytes")
+            t_cmd = time.time()
+            link.command("LOAD_WAD", iwad=iwad, pwad=pwad, map=a.map)
+            said = link.wait_event(t_cmd, "[WadLoaded]", "[WadLoadFailed]", timeout=LOAD_ANSWER_S)
+            say(f"event: {said}")
+            if not said or "[WadLoadFailed]" not in said:
+                say("FAIL: a load during the uplink was not refused")
+                return 1, False
+
+        stop = threading.Event()
+        if a.latency:
+            th = threading.Thread(target=lambda: measure_latency(link, a.latency, "CONTROL round trip, during the uplink",
+                                                                 gap=a.latency_gap, stop=stop.is_set), daemon=True)
+            th.start()
+        tail_s = tail_limit(len(content), a.pdu_delay or DEFAULT_PDU_DELAY_MS) if a.cfdp else STALL_S
+        last_say, seen, moved, limit = 0, None, time.time(), STALL_S
+        while not transfer.is_complete():
+            now = (transfer.state, transfer.transferred_size)
+            if transfer.state == "QUEUED":
+                limit = QUEUED_S   # behind another upload in Yamcs's one slot: not a stall
+            else:
+                limit = tail_s if transfer.transferred_size >= len(content) else STALL_S
+            if now != seen:
+                seen, moved = now, time.time()
+                if transfer.state == "QUEUED":
+                    say("  queued: another upload holds Yamcs's one upload slot (maxNumPendingUploads)")
+            elif time.time() - moved > limit:
+                break
+            time.sleep(1)
+            transfer = refresh()
+            if time.time() - last_say > 15:
+                last_say = time.time()
+                say(f"  uplink {transfer.state}: {transfer.transferred_size}/{len(content)} bytes, "
+                    f"{transfer.transferred_size / max(time.time() - t0, 1e-3) / 1000:.1f} KB/s")
+        stop.set()
+        if a.latency:
+            th.join(timeout=30)
+        if not transfer.is_complete():
+            say(f"FAIL: transfer {transfer.state} at {transfer.transferred_size}/{len(content)} bytes, no progress for "
+                f"{limit:.0f} s")
+            return 1, False
+    finally:
+        # However this ends (a stall, a failed check, an exception, Ctrl-C), a transfer left running would hold
+        # Yamcs's one upload slot and the next run would queue behind it
+        transfer = refresh()
+        if not transfer.is_complete():
+            try:
+                service.cancel_transfer(transfer.id)
+                say("cancelled the transfer")
+            except Exception as e:   # noqa: BLE001  never mask what brought us here
+                say(f"could not cancel the transfer ({e}); it may still complete")
+    if not transfer.is_success():
+        say(f"FAIL: transfer {transfer.state} {transfer.error or ''}")
+        return 1, False
+    sent = time.time() - t0
+    if a.cfdp == 2:
+        say(f"CFDP class 2 transfer finished (FIN) in {sent:.1f} s ({len(content) / sent / 1000:.1f} KB/s): "
+            "the spacecraft has the whole file")
+    else:
+        say(f"all packets sent in {sent:.1f} s ({len(content) / sent / 1000:.1f} KB/s); waiting for the spacecraft")
+    placed = f"[WadUplinked] Uplinked WAD ready to load: {a.remote_dir.rstrip('/')}/{name}"
+    if not a.cfdp:
+        said = link.wait_event(t0, placed, "[BadChecksum]", "[WadUplinkFailed]", "[FileWriteError]", "[FileOpenError]",
+                               timeout=30)
+        say(f"event: {link.wait_event(t0, '[FileReceived]', timeout=1)}")
+        say(f"event: {said}")
+        if said and "[BadChecksum]" in said:
+            say("FAIL: the file arrived damaged. F' file packets are not retransmitted, so one packet lost on the "
+                "command link fails the whole file; it stays a .part and cannot be loaded. Uplink it again")
+            return 1, False
+        if not said or "[WadUplinked]" not in said:
+            say("FAIL: the spacecraft did not confirm the file")
+            return 1, False
+        return 0, False
+
+    # cfdpManager writes the file in place and has no fileAnnounce: commit it once it is known whole.
+    # Class 1 has no FIN, and F' v4.3.0 reports a class 1 file whose CRC failed as completed anyway.
+    if a.cfdp == 1:
+        done = link.wait_event(t0, "[RxFileTransferCompleted]", "[RxFileTransferFailed]", "[RxCrcMismatch]",
+                               timeout=30)
+        say(f"event: {done}")
+        if not done or "[RxFileTransferCompleted]" not in done or link.wait_event(t0, "[RxCrcMismatch]", timeout=1):
+            say("FAIL: the class 1 file did not arrive whole (no retransmission in class 1); not committing it")
+            return 1, False
+    # COMMIT_WAD carries what was sent; the Doom component renames the .part only if the file on board has the same
+    # size and CFDP checksum (WadCommitRefused otherwise). That, not the events above, is what keeps a damaged or
+    # unfinished file out of place.
+    # A command is one unprotected frame (no COP-1 here): on a lossy link, ask again if there is no answer.
+    # A second COMMIT_WAD after a first that worked finds no .part and says WadUplinkFailed, harmlessly.
+    size, checksum = len(content), cfdp_checksum(content)
+    said, commits, t_first = None, 0, time.time()
+    for _ in range(a.tries):
+        t_commit = time.time()
+        link.command("COMMIT_WAD", part=part, fileSize=size, checksum=checksum)
+        commits += 1
+        said = link.wait_event(t_commit, placed, "[WadUplinkFailed]", "[WadCommitRefused]", timeout=COMMIT_ANSWER_S)
+        if said:
+            break
+    said = said or link.wait_event(t_first, placed, "[WadUplinkFailed]", "[WadCommitRefused]", timeout=2)
+    say(f"event: {said}")
+    if said and "[WadCommitRefused]" in said:
+        say("FAIL: the file on board is not the file sent (its size or checksum differs); it stays a .part")
+        return 1, False
+    if said is None:
+        # Nothing came down: the command may never have arrived, and LOAD_WAD would then fly (or refuse) any older
+        # file of this name already in place, not this upload
+        say(f"FAIL: no answer to {commits} COMMIT_WAD; the file may still be {part}, and LOAD_WAD would use any older "
+            f"{name} on board in its place. Commit it by hand (--checksum FILE) or run again with more --tries")
+        return 1, False
+    if commits > 1 and "[WadUplinkFailed]" in said:
+        # A retry finding no .part: an earlier COMMIT_WAD, whose answer was lost, most likely moved it
+        if a.no_load:
+            say(f"FAIL: COMMIT_WAD not confirmed ({said} after {commits}); LOAD_WAD would tell whether the file is "
+                "in place")
+            return 1, False
+        say(f"{said} (after {commits} COMMIT_WAD; an earlier one's answer lost on the way down?); LOAD_WAD will "
+            "say whether the file is there")
+        return 0, True
+    if "[WadUplinked]" not in said:
+        say("FAIL: the spacecraft did not put the file in place")
+        return 1, False
+    return 0, False
+
+
 def main():
     home = flight_home()
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -223,16 +425,38 @@ def main():
     p.add_argument("--load-early", action="store_true", help="issue LOAD_WAD while the file is still arriving")
     p.add_argument("--expect-fail", action="store_true", help="succeed only if LOAD_WAD is refused")
     p.add_argument("--latency", type=int, default=0, help="CONTROL round trips to time before and during the uplink")
+    p.add_argument("--tries", type=int, default=1,
+                   help="send COMMIT_WAD and LOAD_WAD up to this many times while they get no answer (a lossy link)")
+    p.add_argument("--pdu-delay", type=int, help=f"with --cfdp: milliseconds between PDUs (Yamcs's pduDelay option; "
+                                                 f"at least {MIN_PDU_DELAY_MS})")
     p.add_argument("--latency-gap", type=float, default=0.5,
                    help="seconds between round trips during the uplink (spread them over it; default %(default)s)")
     p.add_argument("--remote-dir", default=posixpath.join(home, "wads", "uplink"),
                    help="the uplink directory on the spacecraft, as an absolute path (default %(default)s)")
     p.add_argument("--yamcs", default="localhost:8090")
     p.add_argument("--instance", default="fprime-project")
-    p.add_argument("--service", default="FprimeFilePacketService")
+    p.add_argument("--service", help="Yamcs file transfer service (default: cfdp if Yamcs runs it, else "
+                                     "FprimeFilePacketService)")
+    p.add_argument("--cfdp", type=int, choices=(1, 2),
+                   help="send the file with CCSDS CFDP class 1 or 2 (the CFDP build: the flight software runs "
+                        "cfdpManager), then COMMIT_WAD it into place once the transfer is known whole. Default: class 2 "
+                        "when Yamcs runs a cfdp service. Class 1 has no retransmission: for trying it, not for WADs")
     p.add_argument("--bucket", default="wadUplink")
     p.add_argument("--out", default=str(ROOT / "out"), help="where the frame from after the switch goes")
+    p.add_argument("--checksum", metavar="FILE", help="print the fileSize and checksum COMMIT_WAD needs for FILE (a "
+                                                      "commit by hand, in the Yamcs web UI), and nothing else")
     a = p.parse_args()
+    if a.checksum:
+        data = Path(a.checksum).read_bytes()
+        print(f"fileSize {len(data)} checksum {cfdp_checksum(data)}")
+        return 0
+    if a.tries < 1:
+        p.error("--tries must be at least 1")
+    if a.pdu_delay is not None and a.pdu_delay < MIN_PDU_DELAY_MS:
+        p.error(f"--pdu-delay below {MIN_PDU_DELAY_MS} ms can drain commsBufferManager and stop the downlink "
+                "(docs/plans/cfdp-stage2-spike.md, risk 4)")
+    if a.cfdp and a.service and a.service != "cfdp":
+        p.error(f"--cfdp needs the cfdp service, not {a.service}")
     if not a.no_load and not a.map:
         p.error("--map is required (or --no-load)")
     if not a.wad and not a.iwad:
@@ -249,16 +473,36 @@ def main():
         if problem:
             p.error(problem)
 
+    def check_cfdp_name():
+        # With CFDP, COMMIT_WAD names the .part on board, in a command string of at most 38 characters (FPP size 40
+        # less Yamcs's 2-byte length): the name part_name() makes
+        if a.cfdp and name and len(part_name(name)) > wu.NAME_MAX:
+            p.error(f"with CFDP the uplinked file name may be at most {wu.NAME_MAX - len(part_name(''))} characters "
+                    f"(COMMIT_WAD carries NAME.<ms>.part in {wu.NAME_MAX}); --as a shorter one")
+    check_cfdp_name()
+
     link = Link(a.yamcs.replace("http://", ""), a.instance)
     if not link.wait(lambda: "CMDS_RECEIVED" in link.values and "WAD_IWAD" in link.values, 15):
         say("no telemetry from the spacecraft within 15 s: is the flight side up (scripts/flight.sh status)?")
         return 2
+    if a.wad and a.cfdp is None:
+        # The build decides: the CFDP build's Yamcs runs a cfdp service, the native one FprimeFilePacketService.
+        # --service cfdp says the same, and gets class 2 and COMMIT_WAD with it.
+        if a.service:
+            use_cfdp = a.service == "cfdp"
+        else:
+            use_cfdp = "cfdp" in [s.name for s in link.client.get_file_transfer_client(a.instance).list_services()]
+        if use_cfdp:
+            a.cfdp = 2
+            say("Yamcs runs CFDP (the CFDP build): the file goes up as CFDP class 2")
+            check_cfdp_name()
     say(f"on board now: {link.value('WAD_IWAD')!r} {link.value('WAD_PWAD')!r}, loads {link.value('WAD_LOADS')}, "
         f"episode {link.value('EPISODE')}, frames sent {link.value('FRAMES_SENT')}")
 
     if a.latency:
         measure_latency(link, a.latency, "CONTROL round trip, link idle")
 
+    unconfirmed = False   # with CFDP: a retried COMMIT_WAD found the .part gone; LOAD_WAD tells whether it is in place
     if a.wad:
         content = Path(a.wad).read_bytes()          # ground tooling: the bytes go into the bucket, nothing more
         if a.truncate is not None:
@@ -267,7 +511,7 @@ def main():
             say(f"{a.wad} is {len(content)} bytes; Yamcs takes at most {BUCKET_UPLOAD_MAX} in one bucket upload "
                 "over HTTP (maxContentLength in ground/yamcs/etc/yamcs.yaml), so it cannot be uplinked this way")
             return 2
-        part = f"{name}.{time.time_ns() // 1000000}.part"
+        part = part_name(name)
         remote = a.remote_dir.rstrip("/") + "/" + part
         storage = link.client.get_storage_client()
         if a.bucket not in [b.name for b in storage.list_buckets()]:
@@ -279,71 +523,15 @@ def main():
             say(f"Yamcs would not take {len(content)} bytes into bucket {a.bucket}: {e}. A bucket upload is capped at "
                 "maxContentLength (ground/yamcs/etc/yamcs.yaml) and the bucket at 100 MiB / 1000 objects")
             return 2
-        service = link.client.get_file_transfer_client(a.instance).get_service(a.service)
-        updates = service.create_transfer_subscription()
-        t0 = time.time()
-        transfer = service.upload(a.bucket, part, remote)
-        say(f"uplink started: {len(content)} bytes -> {remote} (transfer {transfer.id})")
-
-        def refresh():   # a Transfer is a snapshot: the subscription has the live one
-            return updates.get_transfer(transfer.id) or transfer
-
-        if a.load_early and not a.no_load:
-            for _ in range(60):
-                transfer = refresh()
-                if transfer.transferred_size > 0 or transfer.is_complete():
-                    break
-                time.sleep(0.5)
-            iwad, pwad = (a.iwad, name) if a.iwad and a.iwad != name else (name, "")
-            say(f"LOAD_WAD {iwad} {pwad!r} {a.map} while the uplink is at {transfer.transferred_size}/{len(content)} bytes")
-            t_cmd = time.time()
-            link.command("LOAD_WAD", iwad=iwad, pwad=pwad, map=a.map)
-            said = link.wait_event(t_cmd, "[WadLoaded]", "[WadLoadFailed]", timeout=40)
-            say(f"event: {said}")
-            if not said or "[WadLoadFailed]" not in said:
-                say("FAIL: a load during the uplink was not refused")
-                return 1
-
-        stop = threading.Event()
-        lat = []
-        if a.latency:
-            th = threading.Thread(target=lambda: lat.extend(
-                measure_latency(link, a.latency, "CONTROL round trip, during the uplink", gap=a.latency_gap,
-                                stop=stop.is_set)), daemon=True)
-            th.start()
-        budget = len(content) / 15000 + 60     # ~25 KB/s at 512-byte chunks, with room
-        last = 0
-        while not transfer.is_complete() and time.time() - t0 < budget:
-            time.sleep(1)
-            transfer = refresh()
-            if time.time() - last > 15:
-                last = time.time()
-                say(f"  uplink {transfer.state}: {transfer.transferred_size}/{len(content)} bytes, "
-                    f"{transfer.transferred_size / max(time.time() - t0, 1e-3) / 1000:.1f} KB/s")
-        stop.set()
-        if a.latency:
-            th.join(timeout=30)
-        if not transfer.is_success():
-            say(f"FAIL: transfer {transfer.state} {transfer.error or ''}")
-            return 1
-        sent = time.time() - t0
-        say(f"all packets sent in {sent:.1f} s ({len(content) / sent / 1000:.1f} KB/s); waiting for the spacecraft")
-        said = link.wait_event(t0, f"[WadUplinked] Uplinked WAD ready to load: {a.remote_dir.rstrip('/')}/{name}",
-                               "[BadChecksum]", "[WadUplinkFailed]", "[FileWriteError]", "[FileOpenError]", timeout=30)
-        received = link.wait_event(t0, "[FileReceived]", timeout=1)
-        say(f"event: {received}")
-        say(f"event: {said}")
         try:
-            bucket.delete_object(part)   # it has gone up; a bucket holds 1000 objects and 100 MiB
-        except YamcsError:
-            pass
-        if said and "[BadChecksum]" in said:
-            say("FAIL: the file arrived damaged. F' file packets are not retransmitted, so one packet lost on the "
-                f"command link fails the whole file; it stays a .part and cannot be loaded. Uplink it again")
-            return 1
-        if not said or "[WadUplinked]" not in said:
-            say("FAIL: the spacecraft did not confirm the file")
-            return 1
+            rc, unconfirmed = uplink(a, link, bucket, part, remote, name, content)
+        finally:
+            try:
+                bucket.delete_object(part)   # however it went: a bucket holds 1000 objects and 100 MiB. Yamcs read
+            except YamcsError:               # the whole object when the transfer started, so this never cuts one short
+                pass
+        if rc:
+            return rc
 
     if a.no_load:
         return 0
@@ -353,12 +541,28 @@ def main():
         iwad, pwad = a.iwad, a.pwad
     episode0, frames0, loads0 = link.value("EPISODE"), link.value("FRAMES_SENT"), link.value("WAD_LOADS")
     say(f"LOAD_WAD iwad={iwad} pwad={pwad!r} map={a.map}")
+
+    def this_load_shows():
+        # The WAD channels show this load: a count above the one before, and the names asked for
+        return ((link.value("WAD_LOADS") or 0) > loads0 and link.value("WAD_IWAD") == iwad
+                and link.value("WAD_PWAD") == (pwad or ""))
+
     t_cmd = time.time()
-    link.command("LOAD_WAD", iwad=iwad, pwad=pwad, map=a.map)
-    said = link.wait_event(t_cmd, "[WadLoaded]", "[WadLoadFailed]", timeout=40)
+    said = None
+    for attempt in range(a.tries):
+        link.command("LOAD_WAD", iwad=iwad, pwad=pwad, map=a.map)
+        said = link.wait_event(t_cmd, "[WadLoaded]", "[WadLoadFailed]",
+                               timeout=LOAD_ANSWER_S if a.tries == 1 else LOAD_RETRY_ANSWER_S)
+        # The answer is one event frame; on a lossy link the WAD channels (sent every second) can stand for it,
+        # but only against a count known from before the command
+        if said is None and loads0 is not None and link.wait(this_load_shows, TLM_STANDIN_S):
+            said = f"[WadLoaded] (event not seen; WAD_LOADS {loads0} -> {link.value('WAD_LOADS')})"
+        if said is not None:
+            break
+        say(f"no answer to LOAD_WAD (attempt {attempt + 1}); sending it again")
     say(f"event: {said}")
     if said is None:
-        say("FAIL: no WadLoaded or WadLoadFailed within 40 s")
+        say("FAIL: no WadLoaded or WadLoadFailed")
         return 1
     failed = "[WadLoadFailed]" in said
     # The old game flies on while the new WAD is proven, and the event can overtake that game's last frame
@@ -371,12 +575,20 @@ def main():
         f"FRAMES_SENT {frames0} -> {link.value('FRAMES_SENT')}")
     if failed:
         if a.expect_fail:
+            if unconfirmed and any(why in said for why in (wu.NOT_FINISHED, wu.NOT_FOUND)):
+                say("FAIL: refused because the file was never put in place (COMMIT_WAD did not run on board), so the "
+                    "uplinked file itself was not tested")
+                return 1
             say("OK: refused, as expected; the game carries on with what it had")
             return 0
         say("FAIL: LOAD_WAD was refused")
         return 1
     if a.expect_fail:
         say("FAIL: LOAD_WAD was expected to be refused")
+        return 1
+    if (link.value("WAD_IWAD"), link.value("WAD_PWAD")) != (iwad, pwad or ""):
+        say(f"FAIL: WadLoaded, but the WAD channels name {link.value('WAD_IWAD')!r} {link.value('WAD_PWAD')!r}, "
+            f"not {iwad!r} {pwad!r}: that answer was not for this load")
         return 1
     if not link.wait(lambda: any(s > seq0 for _, s, _ in link.frames), 10):
         say("FAIL: no whole frame from after the switch within 10 s")

@@ -1,7 +1,9 @@
 """LOAD_WAD on the payload side: the two link records, and which file names the game may be pointed at.
 
-The operator uplinks a WAD (F' file packets into the uplink directory, renamed into place by the Doom
-component once FileUplink has verified it) and commands LOAD_WAD; the Doom component forwards the three
+The operator uplinks a WAD to NAME.<nonce>.part in the uplink directory (F' file packets on the native build,
+CFDP class 2 on the CFDP build). The Doom component renames it to NAME only once it is verified: on FileUplink's
+fileAnnounce after its checksum matches (native), or on a COMMIT_WAD whose size and CFDP checksum match the
+file on board (CFDP). The operator then commands LOAD_WAD; the Doom component forwards the three
 names as record kind 0x16, and the payload answers with a WAD report, kind 3. The payload also sends a
 report when the link comes up, so the ground always knows which file the game is running.
 
@@ -119,6 +121,11 @@ def search_dirs():
     return [uplink_dir(), wads_dir()]
 
 
+# find()'s reasons for a file that is not in place, which tools/wad_uplink_demo.py tells apart from a refused file
+NOT_FINISHED = "has not finished its uplink"
+NOT_FOUND = "is in neither the uplink nor the installed WAD directory"
+
+
 def find(name, dirs):
     """(path, None) for a loadable file, or (None, why not). Existence and size only; nothing is read."""
     for d in dirs:
@@ -135,8 +142,8 @@ def find(name, dirs):
         arriving = [f for f in (os.listdir(d) if os.path.isdir(d) else [])
                     if f.startswith(name + ".") and f.endswith(PART)]
         if arriving:
-            return None, f"{name} has not finished its uplink ({arriving[0]} so far)"
-    return None, f"{name} is in neither the uplink nor the installed WAD directory"
+            return None, f"{name} {NOT_FINISHED} ({arriving[0]} so far)"
+    return None, f"{name} {NOT_FOUND}"
 
 
 def pin(path, serial):
