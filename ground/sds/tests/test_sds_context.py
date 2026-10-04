@@ -1,12 +1,15 @@
 """The context an episode was flown in (doomsat_sds.context): WAD, map, skill, seed, pilot mode, dev or test set.
 
-None of it is in telemetry (docs/plans/sds-airflow.md, fact 12): it exists only in the running payload's and
-pilot's command lines and in payload.log, so the forward run reads it from the live process table once and the
-catalog keeps it for good. Two mistakes would poison every product built on it. Crediting an episode to a process
-that started after the episode began (a payload restarted with another WAD, a pilot restarted in another mode)
-records a guess as a fact, so such values must come back unknown, with a source that says why. And confusing the
-dev set with the locked test level (charter 2.5) would put tuning runs into the score, so the dev/test label is
-read from the harness's own research/levels.yaml, which these tests read and never write.
+Before main none of it was in telemetry (docs/plans/sds-airflow.md, fact 12): it existed only in the running
+payload's and pilot's command lines and in payload.log, so the forward run reads it from the live process table once
+and the catalog keeps it for good. On main the payload can switch WAD in flight (LOAD_WAD), so its --wad can be
+wrong, and the WAD comes from the WAD_IWAD, WAD_PWAD and WAD_LOADS channels instead: the value in effect when the
+episode began, never the one a switch at its end wrote. Three mistakes would poison every product built on it.
+Crediting an episode to a process that started after the episode began (a payload restarted with another WAD, a
+pilot restarted in another mode) records a guess as a fact, so such values must come back unknown, with a source
+that says why. Confusing the dev set with the locked test level (charter 2.5) would put tuning runs into the score,
+so the dev/test label is read from the harness's own research/levels.yaml, which these tests read and never write.
+And a switched or patched WAD is a demonstration, never dev or test, whatever its file is called.
 """
 import hashlib
 import os
@@ -34,6 +37,9 @@ PAYLOAD_ARGV = [PAYLOAD_PY, PAYLOAD_SCRIPT, "--fps", "10", "--skill", "4", "--wa
 # As scripts/start_pilot.sh execs it.
 PILOT_ARGV = ["/home/user/DoomSat/ground/.venv/bin/python", "pilot.py", "--duration", "120",
               "--system-one", "code", "--system-two", "none"]
+# A LOAD_WAD check, as doom_payload.py request_wad starts it (its forked watchdog has the same argv).
+PROBE_ARGV = [PAYLOAD_PY, PAYLOAD_SCRIPT, "--probe", "--wad", "/root/doom/wads/uplink/.pin-1-freedoom2.wad",
+              "--map", "MAP01", "--skill", "4", "--seed", "11", "--geometry", "on"]
 LOG = "\n".join([
     "[payload] listening on port 4242",
     "[payload] episode 1 started on E1M1 (level 1)",
@@ -95,6 +101,12 @@ class TestFind(unittest.TestCase):
     def test_none_when_nothing_runs_it(self):
         self.assertIsNone(context._find([], "pilot.py"))
 
+    def test_a_load_wad_check_and_its_watchdog_are_not_the_payload(self):
+        # Oldest wins, so the probe and its watchdog get the oldest start times: the filter keeps them out, not age.
+        probe, watchdog = proc(61, PROBE_ARGV, BEFORE - 100), proc(62, PROBE_ARGV, BEFORE - 100)
+        self.assertEqual(context._find([probe, watchdog, proc(63, PAYLOAD_ARGV, BEFORE)], "doom_payload.py")["pid"], 63)
+        self.assertIsNone(context._find([probe, watchdog], "doom_payload.py"))
+
 
 class TestMapFromLog(unittest.TestCase):
     def test_map_and_level_for_the_episode(self):
@@ -148,8 +160,137 @@ class TestLevelSet(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(context.level_set(Path(tmp), "doom1.wad", "E1M1"), "unknown")
 
+    def test_a_switched_or_patched_wad_is_never_dev_or_test(self):
+        # README.md: flights on an uplinked WAD are demonstrations, never benched or graded. An uplinked file can
+        # carry an installed one's name (LOAD_WAD looks in the uplink directory first), so the name proves nothing.
+        for wad, map_name in (("freedoom1.wad", "E1M1"), ("doom1.wad", "E1M1")):
+            self.assertEqual(context.level_set(self.repo, wad, map_name, wad_loads=1), "other")
+            self.assertEqual(context.level_set(self.repo, wad, map_name, pwad="basic.wad"), "other")
+            self.assertEqual(context.level_set(self.repo, wad, map_name, pwad=None, wad_loads=0),
+                             {"freedoom1.wad": "dev", "doom1.wad": "test"}[wad])
+        self.assertEqual(context.level_set(self.repo, "doom1.wad", None, wad_loads=2), "other")   # no map needed
+        self.assertEqual(context.level_set(self.repo, "doom1.wad", "E1M1", wad_loads=None), "test")
 
-class TestCapture(unittest.TestCase):
+
+def hexname(name: str) -> str:
+    """A WadName sample as archive.value() returns it: 40 bytes, zero-padded, as hex (live: WAD_IWAD)."""
+    return name.encode("ascii").ljust(40, b"\0").hex()
+
+
+class WadArchive:
+    """WAD_IWAD / WAD_PWAD / WAD_LOADS samples (generation ms, reception ms, value), served as the archive does:
+    start inclusive, stop exclusive. `fail` is raised by every read instead."""
+
+    def __init__(self, samples=(), fail=None):
+        self.samples, self.fail, self.asked = list(samples), fail, []
+
+    def parameters(self, names, start_ms, stop_ms):
+        self.asked.append((list(names), start_ms, stop_ms))
+        if self.fail is not None:
+            raise self.fail
+        out = {n: [] for n in names}
+        for t, base, patch, loads in self.samples:
+            if start_ms <= t < stop_ms:
+                for n, v in zip(config.CONTEXT_TLM, (hexname(base), hexname(patch), loads)):
+                    if n in out:
+                        out[n].append((t, t - 950, v))
+        return out
+
+
+class YamcsError(Exception):
+    """Stands in for yamcs.client.core.exceptions.YamcsError / NotFound, which word every answer this way."""
+
+
+class TestWadName(unittest.TestCase):
+    def test_the_live_hex_decodes_to_the_file_name(self):
+        live = "66726565646f6f6d312e776164" + "00" * 27          # WAD_IWAD on the CFDP stack, 4 October 2026
+        self.assertEqual(context.wad_name(live), "freedoom1.wad")
+        self.assertEqual(bytes.fromhex(live).rstrip(b"\0").decode("ascii", "replace"), "freedoom1.wad")
+
+    def test_all_zeros_is_no_patch(self):
+        self.assertIsNone(context.wad_name("00" * 40))
+        self.assertIsNone(context.wad_name(""))
+        self.assertIsNone(context.wad_name(None))
+
+    def test_bytes_and_text_are_taken_as_they_come(self):
+        self.assertEqual(context.wad_name(b"basic.wad\0\0\0"), "basic.wad")
+        self.assertEqual(context.wad_name("freedoom2.wad"), "freedoom2.wad")     # not hex: already a name
+
+
+class TestFlownWad(unittest.TestCase):
+    """The WAD in effect when the episode began: what was flown in it, whatever a switch at its end wrote."""
+    W = (START_MS, START_MS + 30_000)                    # an episode's window [first, last] from locate
+    END = START_MS + 32_000                              # its closing EpisodeStarted
+
+    def flown(self, samples, window=W, end=END):
+        return context.flown_wad(WadArchive(samples), list(window), end)
+
+    def test_the_last_sample_before_the_episode_wins(self):
+        samples = [(START_MS - 3_000, "doom1.wad", "", 0), (START_MS - 900, "freedoom1.wad", "", 1),
+                   (START_MS + 100, "freedoom2.wad", "", 2)]
+        f = self.flown(samples)
+        self.assertEqual((f["wad"], f["pwad"], f["wad_loads"], f["t_ms"]), ("freedoom1.wad", None, 1, START_MS - 900))
+        self.assertIn("at or before", f["how"])
+
+    def test_the_wad_a_switch_wrote_after_the_window_is_not_the_old_episodes(self):
+        # 1 Hz samples of the old WAD through the episode, then the switch: its sample lands after the window's
+        # last status and before the EpisodeStarted that closes the episode.
+        old = [(t, "freedoom1.wad", "", 0) for t in range(START_MS - 4_000, self.W[1] + 1, 1_000)]
+        new = [(self.W[1] + 800, "freedoom2.wad", "basic.wad", 1)]
+        f = self.flown(old + new)
+        self.assertEqual((f["wad"], f["pwad"], f["wad_loads"]), ("freedoom1.wad", None, 0))
+        with self.subTest("and for the episode the switch started, the new WAD"):
+            nxt = (self.END + 50, self.END + 20_000)
+            later = [(t, "freedoom2.wad", "basic.wad", 1) for t in range(self.W[1] + 1_800, nxt[1], 1_000)]
+            f = self.flown(old + new + later, window=nxt, end=nxt[1] + 2_000)
+            self.assertEqual((f["wad"], f["pwad"], f["wad_loads"], f["t_ms"]),
+                             ("freedoom2.wad", "basic.wad", 1, self.W[1] + 1_800))     # F''s repeat of it
+            f = self.flown(old + new, window=nxt, end=nxt[1] + 2_000)
+            self.assertEqual((f["wad"], f["t_ms"]), ("freedoom2.wad", self.W[1] + 800))
+
+    def test_without_one_before_the_first_one_in_the_window(self):
+        # A flight's first episode: the archive starts after the payload's report on connect, and F' repeats it.
+        samples = [(START_MS - 6_000, "doom1.wad", "", 0), (START_MS + 700, "freedoom1.wad", "", 0),
+                   (START_MS + 1_700, "freedoom1.wad", "", 0)]
+        f = self.flown(samples)
+        self.assertEqual((f["wad"], f["t_ms"]), ("freedoom1.wad", START_MS + 700))      # older than 5 s: not used
+        self.assertIn("during the episode", f["how"])
+
+    def test_nothing_after_the_window_or_the_closure(self):
+        self.assertIn("missing", self.flown([(self.W[1] + 1, "freedoom2.wad", "", 1)]))
+        # A death's window may end up to END_PAD_MS after its event; the event bounds the read too.
+        f = self.flown([(self.END - 10, "freedoom2.wad", "", 1)], window=(START_MS, self.END + 1_000), end=self.END)
+        self.assertEqual(f["wad"], "freedoom2.wad")
+        self.assertIn("missing", self.flown([(self.END + 10, "freedoom2.wad", "", 1)],
+                                            window=(START_MS, self.END + 1_000), end=self.END))
+
+    def test_it_reads_only_the_wad_channels_around_the_window(self):
+        arch = WadArchive([(START_MS - 900, "freedoom1.wad", "", 0)])
+        context.flown_wad(arch, list(self.W), self.END)
+        self.assertEqual(arch.asked, [(list(config.CONTEXT_TLM), START_MS - context.WAD_LOOKBACK_MS, self.W[1] + 1)])
+
+    def test_no_samples_is_a_flight_build_from_before_main(self):
+        f = self.flown([])
+        self.assertEqual(list(f), ["missing"])
+        self.assertIn("before main", f["missing"])
+
+    def test_names_the_archive_does_not_know_fall_back(self):
+        # Yamcs answers 404 "No such parameter" (or 400) for a name its mission database lacks.
+        refused = YamcsError("404 Client Error: No such parameter (missing namespace?)")
+        f = context.flown_wad(WadArchive(fail=refused), list(self.W), self.END)
+        self.assertEqual(list(f), ["missing"])
+        self.assertIn("refused", f["missing"])
+        self.assertIn("No such parameter", f["missing"])
+
+    def test_a_yamcs_that_is_down_or_failing_is_raised_not_guessed(self):
+        # The context is cataloged for good: a flicker must fail the task (it is retried), not record argv as fact.
+        for fail in (ConnectionError("refused"), TimeoutError("read timed out"), YamcsError("500 Server Error: x")):
+            with self.subTest(fail=fail):
+                with self.assertRaises(type(fail)):
+                    context.flown_wad(WadArchive(fail=fail), list(self.W), self.END)
+
+
+class CaptureCase(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -160,6 +301,8 @@ class TestCapture(unittest.TestCase):
             setattr(self, target.rsplit(".", 1)[1], p.start())
             self.addCleanup(p.stop)
 
+
+class TestCapture(CaptureCase):
     def capture(self, procs, number=2, log_text=LOG):
         return context.capture(self.settings, number, START_MS, procs=procs, log_text=log_text)
 
@@ -288,6 +431,85 @@ class TestCapture(unittest.TestCase):
         self.assertIsNone(ctx["pilot_mode"])
         self.assertEqual(ctx["level_set"], "unknown")
         self.assertEqual(ctx["repo_commit"], "feedc0ffee12")
+
+
+class TestCaptureOnMain(CaptureCase):
+    """capture() with flown_wad()'s answer, as the forward run calls it on main."""
+    TLM = {"wad": "freedoom2.wad", "pwad": None, "wad_loads": 1, "t_ms": START_MS - 400,
+           "how": "the last sample at or before the episode's first status"}
+    PRE_MAIN = {"missing": "the archive has no WAD_IWAD sample from 5 s before the episode to its end, as on a "
+                           "flight build from before main"}
+
+    def capture(self, procs, number=2, log_text=LOG, flown=None):
+        return context.capture(self.settings, number, START_MS, procs=procs, log_text=log_text, flown=flown)
+
+    def test_the_wad_flown_is_the_telemetrys_not_the_launch_argument(self):
+        # Launched on freedoom1.wad, switched to freedoom2.wad by LOAD_WAD before this episode began.
+        ctx = self.capture([proc(101, PAYLOAD_ARGV, BEFORE)], flown=self.TLM)
+        self.assertEqual((ctx["wad"], ctx["pwad"], ctx["wad_loads"], ctx["wad_launch"]),
+                         ("freedoom2.wad", None, 1, "freedoom1.wad"))
+        self.assertTrue(ctx["sources"]["wad"].startswith("telemetry WAD_IWAD, WAD_PWAD, WAD_LOADS"), ctx["sources"])
+        self.assertIn("2026-10-04T", ctx["sources"]["wad"])
+        self.assertEqual((ctx["map"], ctx["sources"]["map"]), ("E1M2", "payload.log"))
+        self.assertEqual(ctx["level_set"], "other")             # switched: a demonstration, whatever the names
+
+    def test_the_telemetry_does_not_need_the_payload_process(self):
+        ctx = self.capture([], flown=dict(self.TLM, wad="freedoom1.wad", pwad="basic.wad", wad_loads=0))
+        self.assertEqual((ctx["wad"], ctx["pwad"], ctx["wad_loads"]), ("freedoom1.wad", "basic.wad", 0))
+        self.assertIsNone(ctx["wad_launch"])
+        self.assertIsNone(ctx["map"])
+        self.assertTrue(ctx["sources"]["payload"].startswith("unknown"))
+        self.assertEqual(ctx["level_set"], "other")             # a patch WAD: never dev or test
+
+    def test_unswitched_telemetry_keeps_the_dev_and_test_labels(self):
+        ctx = self.capture([proc(101, PAYLOAD_ARGV, BEFORE)], flown=dict(self.TLM, wad="freedoom1.wad", wad_loads=0))
+        self.assertEqual(ctx["level_set"], "dev")
+
+    def test_a_flight_build_from_before_main_falls_back_to_the_arguments_and_says_why(self):
+        ctx = self.capture([proc(101, PAYLOAD_ARGV, BEFORE)], flown=self.PRE_MAIN)
+        self.assertEqual((ctx["wad"], ctx["pwad"], ctx["wad_loads"], ctx["wad_launch"]),
+                         ("freedoom1.wad", None, 0, "freedoom1.wad"))
+        self.assertIn("pid 101", ctx["sources"]["wad"])
+        self.assertIn("no WAD_IWAD sample", ctx["sources"]["wad"])
+        self.assertEqual(ctx["level_set"], "dev")
+        with self.subTest("and with nothing running, nothing is known"):
+            ctx = self.capture([], flown=self.PRE_MAIN)
+            self.assertEqual((ctx["wad"], ctx["pwad"], ctx["wad_loads"]), (None, None, None))
+            self.assertTrue(ctx["sources"]["wad"].startswith("unknown"), ctx["sources"]["wad"])
+            self.assertIn("no WAD_IWAD sample", ctx["sources"]["wad"])
+
+    def test_a_refused_read_falls_back_the_same_way(self):
+        refused = context.flown_wad(WadArchive(fail=YamcsError("400 Client Error: Invalid parameter name")),
+                                    [START_MS, START_MS + 30_000], START_MS + 32_000)
+        ctx = self.capture([proc(101, PAYLOAD_ARGV, BEFORE)], flown=refused)
+        self.assertEqual((ctx["wad"], ctx["wad_loads"]), ("freedoom1.wad", 0))
+        self.assertIn("Invalid parameter name", ctx["sources"]["wad"])
+
+    def test_the_fallback_reads_pwad_too(self):
+        argv = PAYLOAD_ARGV + ["--pwad", "/root/doom/wads/uplink/basic.wad"]
+        ctx = self.capture([proc(101, argv, BEFORE)], flown=self.PRE_MAIN)
+        self.assertEqual((ctx["wad"], ctx["pwad"]), ("freedoom1.wad", "basic.wad"))
+        self.assertEqual(ctx["level_set"], "other")
+
+    def test_a_wad_given_as_a_path_is_kept_as_launched_and_named_by_its_file(self):
+        argv = PAYLOAD_ARGV[:]
+        argv[argv.index("--wad") + 1] = "/root/doom/wads/freedoom1.wad"
+        ctx = self.capture([proc(101, argv, BEFORE)], flown=self.PRE_MAIN)
+        self.assertEqual((ctx["wad"], ctx["wad_launch"]), ("freedoom1.wad", "/root/doom/wads/freedoom1.wad"))
+
+    def test_after_a_switch_the_map_argument_says_nothing(self):
+        argv = PAYLOAD_ARGV[:]
+        argv[argv.index("--map") + 1] = "E1M3"
+        ctx = self.capture([proc(101, argv, BEFORE)], number=1, log_text="", flown=self.TLM)
+        self.assertIsNone(ctx["map"])
+        self.assertEqual(ctx["sources"]["map"], "unknown")
+        ctx = self.capture([proc(101, argv, BEFORE)], number=1, log_text="", flown=dict(self.TLM, wad_loads=0))
+        self.assertEqual((ctx["map"], ctx["sources"]["map"]), ("E1M3", "payload --map (episode 1)"))
+
+    def test_a_load_wad_check_running_now_is_not_taken_for_the_payload(self):
+        ctx = self.capture([proc(61, PROBE_ARGV, BEFORE - 100), proc(101, PAYLOAD_ARGV, BEFORE)], flown=self.PRE_MAIN)
+        self.assertIn("pid 101", ctx["sources"]["payload"])
+        self.assertEqual(ctx["wad"], "freedoom1.wad")
 
 
 if __name__ == "__main__":

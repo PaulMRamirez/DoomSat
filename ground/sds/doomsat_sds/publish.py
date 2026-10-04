@@ -30,7 +30,8 @@ BUCKET = "doomsat-sds"
 BAND_NAME = "DoomSat episodes (SDS)"
 TAG = "doomsat-sds"
 PUBLISHED_TYPES = products.L2_TYPES
-OUTCOME_COLOURS = {"died": "#e05050", "level_finished": "#50c070", "reset": "#909090", "interrupted": "#909090"}
+OUTCOME_COLOURS = {"died": "#e05050", "level_finished": "#50c070", "reset": "#909090", "wad_switch": "#a070d0",
+                   "interrupted": "#909090"}
 
 
 def item_id(episode_id: str) -> str:

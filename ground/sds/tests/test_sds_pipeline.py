@@ -21,8 +21,10 @@ from unittest import mock
 SDS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, SDS)
 
-from doomsat_sds import archive, config, episodes, pipeline, products, store  # noqa: E402
+from doomsat_sds import archive, config, context, episodes, pipeline, products, store  # noqa: E402
 from doomsat_sds.catalog import Catalog  # noqa: E402
+
+REAL_CAPTURE = context.capture             # PipelineCase replaces it; the WAD tests below call it for real
 
 FIXTURE = os.path.join(SDS, "tests", "data", "two_deaths.json.gz")
 FIXTURE_START_MS, FIXTURE_STOP_MS = 1791074769000, 1791074812000     # [00:46:09Z, 00:46:52Z)
@@ -35,6 +37,9 @@ EP2_WINDOW = [1791074773533, 1791074807183]   # computed live, 33.65 s
 EP1_ID = episodes.episode_id(EP1_END_MS, 1)
 EP2_ID = episodes.episode_id(EP2_END_MS, 2)
 
+# The recording predates main's WAD channels, so the forward run's own read of them finds none.
+PRE_MAIN = {"missing": "the archive has no WAD_IWAD sample from 5 s before the episode to its end, as on a flight "
+                       "build from before main"}
 FIXED_CONTEXT = {
     "wad": "freedoom1.wad", "map": "E1M1", "level": 1, "skill": 3, "seed": 7, "geometry": None, "oracle": None,
     "pilot_mode": "system-one=code system-two=none", "repo_commit": "0123456789ab", "level_set": "dev",
@@ -254,7 +259,7 @@ class TestLevel1(PipelineCase):
         self.assertEqual(ref["path"], str(path))
         self.assertTrue(path.is_file())
         self.assertEqual(store.sha256_file(path), ref["sha256"])
-        self.capture.assert_called_once_with(self.settings, 2, EP2_WINDOW[0])
+        self.capture.assert_called_once_with(self.settings, 2, EP2_WINDOW[0], flown=PRE_MAIN)
 
         doc = store.read_json(path)
         self.assertEqual(doc["product"], {"type": "l1_episode", "level": "L1", "version": ver})
@@ -297,6 +302,88 @@ class TestLevel1(PipelineCase):
         self.assertEqual(self.catalog.episode(EP2_ID)["context"], FIXED_CONTEXT)
         self.assertEqual(len(self.catalog.products(EP2_ID, "l1_episode")), 1)
         self.assertEqual(self.catalog.findings(), [])
+
+
+class WadArchive:
+    """The recorded archive plus main's WAD channels: `wad` is [(t_ms, base, patch, loads)], or an exception every
+    read of those channels raises (a mission database without them, or a Yamcs that went away)."""
+
+    def __init__(self, inner, wad):
+        self.inner, self.wad, self.wad_reads = inner, wad, []
+
+    def parameters(self, names, start_ms, stop_ms):
+        names = list(names)
+        if not set(names) & set(config.CONTEXT_TLM):
+            return self.inner.parameters(names, start_ms, stop_ms)
+        self.wad_reads.append(names)
+        if isinstance(self.wad, Exception):
+            raise self.wad
+        hexname = lambda v: v.encode("ascii").ljust(40, b"\0").hex() if isinstance(v, str) else v
+        out = {n: [] for n in names}
+        for t, base, patch, loads in self.wad:
+            if start_ms <= t < stop_ms:
+                for n, v in zip(config.CONTEXT_TLM, (base, patch, loads)):
+                    out[n].append((t, t - 950, hexname(v)))
+        return out
+
+    def events(self, start_ms, stop_ms, types=None):
+        return self.inner.events(start_ms, stop_ms, types)
+
+    def commands(self, start_ms, stop_ms):
+        return self.inner.commands(start_ms, stop_ms)
+
+    def server_id(self):
+        return self.inner.server_id()
+
+
+class TestWadContext(PipelineCase):
+    """The forward run on main: the WAD in the context comes from its own read of the WAD channels, and L1's read of
+    the archive (its inputs, and so its bytes apart from the context) is what it always was."""
+
+    def setUp(self):
+        super().setUp()
+        # The real capture, with no process running: everything below comes from telemetry or nowhere.
+        self.capture.side_effect = lambda *a, **kw: REAL_CAPTURE(*a, procs=[], log_text="", **kw)
+
+    def test_the_wad_comes_from_telemetry_and_l1_reads_what_it_always_read(self):
+        before = EP2_WINDOW[0] - 700
+        arch = WadArchive(self.archive, [(before, "freedoom2.wad", "basic.wad", 1),
+                                         (EP2_WINDOW[1] + 500, "doom1.wad", "", 2)])   # a later switch: not this one
+        ref = pipeline.l1(self.settings, arch, self.catalog, self.located(EP2_ID))
+        self.assertEqual(arch.wad_reads, [list(config.CONTEXT_TLM)])      # one read of its own, nothing mixed in
+        ep = self.catalog.episode(EP2_ID)
+        self.assertEqual((ep["wad"], ep["level_set"]), ("freedoom2.wad", "other"))
+        self.assertEqual((ep["context"]["pwad"], ep["context"]["wad_loads"]), ("basic.wad", 1))
+        self.assertTrue(ep["context"]["sources"]["wad"].startswith("telemetry"), ep["context"]["sources"])
+        doc = store.read_json(ref["path"])
+        self.assertEqual(doc["context"], ep["context"])
+        names = [i for i in doc["inputs"] if i["kind"] == "parameters"][0]["names"]
+        self.assertFalse(set(names) & set(config.CONTEXT_TLM))
+        self.assertEqual([i["types"] for i in doc["inputs"] if i["kind"] == "events"], [list(pipeline.L1_EVENTS)])
+        summary = products.build_summary(doc)
+        self.assertEqual((summary["wad"], summary["pwad"], summary["wad_loads"]), ("freedoom2.wad", "basic.wad", 1))
+
+    def test_a_mission_database_without_the_channels_still_gets_its_l1(self):
+        refused = Exception("404 Client Error: No such parameter (missing namespace?)")
+        pipeline.l1(self.settings, WadArchive(self.archive, refused), self.catalog, self.located(EP2_ID))
+        ep = self.catalog.episode(EP2_ID)
+        self.assertIsNone(ep["wad"])                              # no payload process either: unknown, not guessed
+        self.assertIn("refused", ep["context"]["sources"]["wad"])
+        self.assertIsNotNone(self.catalog.current(EP2_ID, "l1_episode"))
+
+    def test_a_yamcs_that_goes_away_catalogs_nothing(self):
+        with self.assertRaises(ConnectionError):
+            pipeline.l1(self.settings, WadArchive(self.archive, ConnectionError("refused")), self.catalog,
+                        self.located(EP2_ID))
+        self.assertIsNone(self.catalog.episode(EP2_ID))
+
+    def test_a_cataloged_episode_is_not_read_again(self):
+        located = self.located(EP2_ID)
+        pipeline.l1(self.settings, self.archive, self.catalog, located)
+        arch = WadArchive(self.archive, [(EP2_WINDOW[0] - 700, "freedoom2.wad", "", 1)])
+        again = pipeline.l1(self.settings, arch, self.catalog, located)
+        self.assertEqual(again["status"], "unchanged")
+        self.assertEqual(arch.wad_reads, [])                      # the context belongs to the flight
 
 
 class TestLevel2(PipelineCase):
@@ -399,7 +486,8 @@ class TestReprocess(PipelineCase):
         self.assertEqual(self.catalog.findings(), [])
         self.assertEqual(len(self.lineage_lines()), lines)
         self.assertEqual(list(Path(refs[EP2_ID]["l1"]["path"]).parent.glob("*rebuilt-*")), [])
-        self.capture.assert_has_calls([mock.call(self.settings, 1, mock.ANY), mock.call(self.settings, 2, EP2_WINDOW[0])])
+        self.capture.assert_has_calls([mock.call(self.settings, 1, mock.ANY, flown=PRE_MAIN),
+                                       mock.call(self.settings, 2, EP2_WINDOW[0], flown=PRE_MAIN)])
         self.assertEqual(self.capture.call_count, 2)          # forward only: reprocessing reuses the catalog's
 
     def test_reprocessing_an_episode_not_in_the_catalog_raises(self):

@@ -28,9 +28,10 @@ ALGORITHMS = {
     "l2_path": ("L2", "2.1.0", "png", "image/png"),         # 2.0.0: Phase C, see build_path_png
     # 1.2.0: commands counted are the payload's (the Doom component's); the ground system's own, such as a SendFile
     # that asked for an earlier episode's record, are reported apart and kept out of uplink completeness.
-    "l2_summary": ("L2", "1.2.0", "json", "application/json"),
+    # l2_summary 1.3.0: also the patch WAD and the count of in-flight WAD switches from the context (main's LOAD_WAD).
+    "l2_summary": ("L2", "1.3.0", "json", "application/json"),
     "l2_linkstats": ("L2", "1.2.0", "json", "application/json"),
-    "l3_rollup": ("L3", "1.0.0", "json", "application/json"),
+    "l3_rollup": ("L3", "1.1.0", "json", "application/json"),     # 1.1.0: a patch WAD is part of the level's key
     "ql_health": ("QL", "1.0.0", "json", "application/json"),
     "ql_contact_sheet": ("QL", "1.0.0", "png", "image/png"),
     "l0_record": ("L0", "1.0.0", "json", "application/json"),        # Phase D: the payload's record, as downlinked
@@ -169,7 +170,8 @@ def payload_commands(l1: dict) -> list[dict]:
 
 
 def other_commands(l1: dict) -> dict:
-    """Commands in the window to anything else (the ground system's own, such as FileDownlink SendFile)."""
+    """Commands in the window to anything else: the ground system's own, such as the record request (cfdpManager
+    SendFile on main), and the CFDP PDUs Yamcs's CfdpService enters in command history as /doomsat/cfdp/pdu."""
     return dict(sorted(Counter(c["name"] for c in l1["commands"] if not c["name"].startswith(config.NAMESPACE))
                        .items()))
 
@@ -197,7 +199,8 @@ def build_summary(l1: dict) -> dict:
         "path_points": len(pts),
         "commands": dict(sorted(cmds.items())),
         "other_commands": other_commands(l1),
-        "wad": l1["context"].get("wad"), "map": l1["context"].get("map"),
+        "wad": l1["context"].get("wad"), "pwad": l1["context"].get("pwad"), "map": l1["context"].get("map"),
+        "wad_loads": l1["context"].get("wad_loads"),
         "skill": l1["context"].get("skill"), "pilot_mode": l1["context"].get("pilot_mode"),
         "inputs": [l1["episode"]["id"] + "/l1_episode@" + l1["product"]["version"]],
     }
@@ -250,7 +253,10 @@ def build_linkstats(l1: dict) -> dict:
     }
 
 
-END_COLOURS = {"died": "#e04040", "level_finished": "#40c0e0", "reset": "#a0a0a0", "interrupted": "#a0a0a0"}
+# "wad_switch" came with the outcome itself: no L1 written before it carries one (reprocessing keeps the cataloged
+# outcome), so no existing l2_path changes and l2_path keeps its version.
+END_COLOURS = {"died": "#e04040", "level_finished": "#40c0e0", "reset": "#a0a0a0", "wad_switch": "#b080e0",
+               "interrupted": "#a0a0a0"}
 
 
 def _scale_bar_units(span_units: float) -> int:
@@ -347,6 +353,15 @@ def build_path_png(l1: dict, width: int = 600, height: int = 640) -> bytes:
 
 # --------------------------------------------------------------------------------------------- level 3
 
+def level_key(d: dict) -> str:
+    """'freedoom1.wad E1M1', or with a patch WAD as an operator says it, 'basic.wad over freedoom2.wad MAP01':
+    the same map name over another patch is another level."""
+    wad = d.get("wad") or "?"
+    if d.get("pwad"):
+        wad = "%s over %s" % (d["pwad"], wad)
+    return "%s %s" % (wad, d.get("map") or "?")
+
+
 def build_rollup(summaries: list[dict], summary_ids: list[str]) -> dict:
     """Across episodes, from their current L2 summaries (each carries its own WAD/map context)."""
     s = sorted(summaries, key=lambda d: d["episode_id"])
@@ -354,7 +369,7 @@ def build_rollup(summaries: list[dict], summary_ids: list[str]) -> dict:
     explored = [d["explored_cells"] or 0 for d in s]
     by_level: dict[str, dict] = {}
     for d in s:
-        key = "%s %s" % (d.get("wad") or "?", d.get("map") or "?")
+        key = level_key(d)
         g = by_level.setdefault(key, {"episodes": 0, "outcomes": {}, "kills": 0, "best_explored_cells": 0,
                                       "duration_s": 0.0})
         g["episodes"] += 1
@@ -374,7 +389,7 @@ def build_rollup(summaries: list[dict], summary_ids: list[str]) -> dict:
         "by_level": dict(sorted(by_level.items())),
         "episode_list": [{"episode_id": d["episode_id"], "outcome": d["outcome"], "duration_s": d["duration_s"],
                           "kills": d["kills"], "explored_cells": d["explored_cells"], "wad": d.get("wad"),
-                          "map": d.get("map")} for d in s],
+                          "pwad": d.get("pwad"), "map": d.get("map")} for d in s],
         "inputs": sorted(summary_ids),
     }
 

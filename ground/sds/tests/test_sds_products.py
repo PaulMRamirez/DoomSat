@@ -62,6 +62,11 @@ GOLDEN = {
     # 1.2.0: the ground system's own commands counted apart
     "l1_episode@1.1.0 l2_summary@1.2.0": "3b4cea14371e756738ff410a2baf391450e33c1b91e3ab06694ecf0f761b90fc",
     "l1_episode@1.1.0 l2_linkstats@1.2.0": "3a369e98405513eb3163929b2e1c076a5b96d3fe589711e1486bc27a8593a60f",
+    # l2_summary 1.3.0 carries pwad and wad_loads (null here: CONTEXT predates them), l3_rollup 1.1.0 keys a level by
+    # its patch WAD too; the rollup is over this one summary
+    "l1_episode@1.1.0 l2_summary@1.3.0": "93e5ce4e061280e8fe04e2dde4baf5916f096ce20e9108f41cb9ea072b509a4a",
+    "l1_episode@1.1.0 l2_summary@1.3.0 l3_rollup@1.1.0":
+        "c61be5d9fa2d556c227b81e67c34ff8c36e3f02f59994b1cb11d15f057be89d7",
 }
 
 
@@ -398,6 +403,13 @@ class TestSummary(FixtureCase):
         self.assertEqual(s["inputs"], [l1_id])
         for k in ("wad", "map", "skill", "pilot_mode"):
             self.assertEqual(s[k], CONTEXT[k])
+        self.assertEqual((s["pwad"], s["wad_loads"]), (None, None))      # a context from before main has neither
+
+    def test_the_patch_wad_and_the_switches_come_from_the_context(self):
+        doc = self.doc_copy()
+        doc["context"].update(wad="freedoom2.wad", pwad="basic.wad", wad_loads=2, map="MAP01")
+        s = products.build_summary(doc)
+        self.assertEqual((s["wad"], s["pwad"], s["wad_loads"], s["map"]), ("freedoom2.wad", "basic.wad", 2, "MAP01"))
 
     def test_values_agree_with_the_table(self):
         s = self.summary
@@ -458,6 +470,14 @@ class TestSummary(FixtureCase):
             self.skipTest("no recorded checksum for %s yet; add it to GOLDEN" % key)
         self.assertEqual(sha256(canonical_json(self.summary)), GOLDEN[key],
                          "l2_summary changed without a version bump in products.ALGORITHMS")
+
+    def test_rollup_sha256_matches_the_recorded_checksum(self):
+        key = golden_key("l1_episode", "l2_summary", "l3_rollup")
+        if key not in GOLDEN:
+            self.skipTest("no recorded checksum for %s yet; add it to GOLDEN" % key)
+        ids = ["%s/l2_summary@%s" % (self.summary["episode_id"], products.version("l2_summary"))]
+        self.assertEqual(sha256(canonical_json(products.build_rollup([self.summary], ids))), GOLDEN[key],
+                         "l3_rollup changed without a version bump in products.ALGORITHMS")
 
     def test_path_points_forward_fill(self):
         doc = self.doc_copy()
@@ -564,6 +584,21 @@ class TestLinkstats(FixtureCase):
         self.assertEqual(summary["commands"], {"INTENT": 2})
         self.assertEqual(summary["other_commands"], {config.SENDFILE: 1})
 
+    def test_cfdp_pdus_are_not_payload_commands(self):
+        # On main Yamcs's CfdpService enters each transfer in command history as /doomsat/cfdp/pdu (origin
+        # cfdp-service, seen live); like cfdpManager's SendFile it never reaches the Doom component's CMDS_RECEIVED.
+        ep = episodes.ClosedEpisode(1, 20_001, "PlayerDied", "died", 10_000)
+        link = {"CMDS_RECEIVED": [(10_000, 9_050, 5), (19_000, 18_050, 6)]}
+        cmds = [{"t": 11_000, "id": "c1", "name": config.NAMESPACE + "INTENT", "args": {}},
+                {"t": 12_000, "id": "p1", "name": "/doomsat/cfdp/pdu", "args": {}, "origin": "cfdp-service"}]
+        doc = products.build_l1(ep, (10_000, 20_000), {"TIC": [(10_000, 9_050, 1)]}, link, cmds, [], {}, [])
+        st = products.build_linkstats(doc)
+        self.assertEqual((st["uplink"]["commands_sent"], st["uplink"]["completeness"]), (1, 1.0))
+        self.assertEqual(st["uplink"]["other_commands"], {"/doomsat/cfdp/pdu": 1})
+        summary = products.build_summary(doc)
+        self.assertEqual(summary["commands"], {"INTENT": 1})
+        self.assertEqual(summary["other_commands"], {"/doomsat/cfdp/pdu": 1})
+
     def test_sha256_matches_the_recorded_checksum(self):
         key = golden_key("l1_episode", "l2_linkstats")
         if key not in GOLDEN:
@@ -594,6 +629,15 @@ class TestPathImage(FixtureCase):
         seen = colours(products.build_path_png(doc))
         self.assertGreater(seen[png.hex_rgb(products.END_COLOURS["level_finished"])], 0)
         self.assertEqual(seen[png.hex_rgb(products.END_COLOURS["died"])], 0)
+        doc["episode"]["outcome"] = "wad_switch"
+        seen = colours(products.build_path_png(doc))
+        self.assertGreater(seen[png.hex_rgb(products.END_COLOURS["wad_switch"])], 0)
+
+    def test_every_outcome_has_its_colours(self):
+        from doomsat_sds import publish
+        outcomes = {"died", "level_finished", "reset", "wad_switch", "interrupted"}     # episodes.ClosedEpisode
+        self.assertEqual(set(products.END_COLOURS), outcomes)
+        self.assertEqual(set(publish.OUTCOME_COLOURS), outcomes)
 
     def test_no_position_samples_still_renders(self):
         doc = strip_positions(self.doc)
@@ -690,9 +734,9 @@ class TestPathImage(FixtureCase):
             self.assertEqual((im.format, im.mode, im.size), ("PNG", "RGB", (600, 640)))
 
 
-def summary(episode_id, outcome, duration_s, kills, explored, wad, map_):
+def summary(episode_id, outcome, duration_s, kills, explored, wad, map_, pwad=None):
     return {"episode_id": episode_id, "outcome": outcome, "duration_s": duration_s, "kills": kills,
-            "explored_cells": explored, "wad": wad, "map": map_}
+            "explored_cells": explored, "wad": wad, "map": map_, "pwad": pwad}
 
 
 class TestRollup(unittest.TestCase):
@@ -730,6 +774,16 @@ class TestRollup(unittest.TestCase):
         self.assertEqual(r["by_level"]["doom1.wad E1M1"]["episodes"], 1)
         self.assertEqual(r["by_level"]["? ?"]["outcomes"], {"died": 1})
         self.assertEqual(r["inputs"], ["a", "b", "c", "d"])
+
+    def test_a_patch_wad_is_another_level(self):
+        # The same map name over another patch WAD is another level; summaries from before 1.3.0 have no pwad.
+        P = summary("20261004T005200Z-e0002", "wad_switch", 7.0, 0, 9, "freedoom1.wad", "E1M1", pwad="basic.wad")
+        old = {k: v for k, v in self.A.items() if k != "pwad"}
+        r = products.build_rollup([old, P], ["a", "p"])
+        self.assertEqual(list(r["by_level"]), ["basic.wad over freedoom1.wad E1M1", "freedoom1.wad E1M1"])
+        self.assertEqual(r["by_level"]["basic.wad over freedoom1.wad E1M1"]["outcomes"], {"wad_switch": 1})
+        self.assertEqual([e["pwad"] for e in r["episode_list"]], [None, "basic.wad"])
+        self.assertEqual(products.level_key({"pwad": "basic.wad"}), "basic.wad over ? ?")
 
     def test_order_of_inputs_does_not_matter(self):
         one = canonical_json(products.build_rollup([self.A, self.B], self.IDS))

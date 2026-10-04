@@ -24,7 +24,10 @@ from .episodes import END_PAD_MS, ClosedEpisode, closed_episodes, locate
 from .store import (canonical_json, episode_product_path, l3_product_path, quicklook_path, read_json, sha256,
                     write_atomic)
 
-# The Doom events kept in L1 (IntentSet only echoes commands L1 already has).
+# The Doom events kept in L1 (IntentSet only echoes commands L1 already has). Main's WAD events (WadLoaded,
+# WadLoadFailed, ...) are left out on purpose: L1 embeds this list in its inputs, so adding a name changes every L1's
+# bytes, not just a switched episode's, and would mean bumping l1_episode and every L2 with it. A switch is in the
+# closure's outcome ("wad_switch") and the WAD flown in the context instead.
 L1_EVENTS = tuple(config.EVENT_PREFIX + n for n in (
     "EpisodeStarted", "PlayerDied", "LevelFinished", "LevelStarted", "KeyPickedUp", "GoalSet", "ExploreHint",
     "PayloadConnected", "PayloadLost", "FrameTooLarge", "BadPayloadMessage"))
@@ -200,7 +203,13 @@ def l1(settings: Settings, archive: Archive, catalog: Catalog, located: dict, ru
     """Build, write and catalog the L1 record of a located episode (the forward path)."""
     ep = ClosedEpisode.from_conf(located)
     known = catalog.episode(ep.episode_id)
-    ctx = known["context"] if known else context_mod.capture(settings, ep.number, located["window"][0])
+    if known:
+        ctx = known["context"]
+    else:
+        # The WAD channels are a read of their own, so L1's inputs stay what they were and a mission database
+        # without them (a flight build from before main) costs only the context's WAD source.
+        flown = context_mod.flown_wad(archive, located["window"], ep.end_ms)
+        ctx = context_mod.capture(settings, ep.number, located["window"][0], flown=flown)
     doc, data = make_l1(settings, archive, located, ctx)
     catalog.add_episode(_episode_row(located, ctx))
     ver = products.version("l1_episode")

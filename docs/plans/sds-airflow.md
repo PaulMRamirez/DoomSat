@@ -393,3 +393,40 @@ Baseline → plan → Airflow stack → product package and tests → Phase A (f
     All six are fixed.
   - After the Yamcs replay hang (above), `sds_record`'s tasks got timeouts too: 15 minutes for the idempotent
     ones, which keep their retries, and 2 minutes for the SendFile task, which is still never retried.
+- 2026-10-04, on main with CFDP and the WAD uplink: `origin/main` (9070517c: WAD uplink stage 1, CFDP stage 2)
+  is merged into this branch (0abfafa7). It merged without conflicts and the SDS kept working: no name it reads
+  was renamed, and the CFDP uplink appears only as one `/doomsat/cfdp/pdu` entry per transfer in command history,
+  which products already count under `other_commands`. One thing was wrong on main, because the payload can now
+  switch WAD in flight (`LOAD_WAD`), and it is fixed here. Phase D's port to CFDP is a separate step.
+  - The context took the WAD from the payload's `--wad`, which a switch leaves behind. A `LOAD_WAD` to
+    `freedoom1.wad E1M1` under the default `doom1.wad` launch would even have been labelled the test set. The WAD
+    now comes from telemetry. `WAD_IWAD`, `WAD_PWAD` and `WAD_LOADS` (`config.CONTEXT_TLM`) are read on their own,
+    separate from the L1 read, so L1's inputs do not change and a mission database without them only costs the
+    context its WAD source. The value used is the one in effect at the window's start: the last sample at or before
+    it (5 s back at most), otherwise the first one inside the window. Never a later one, because the new WAD's
+    sample is written before the next episode's `EpisodeStarted` and so lies between the old episode's window and
+    its closure. Checked live: the channels arrive about once a second, and `archive.value()` returns the 40-byte
+    names as hex, which `context.wad_name` decodes. The argv fallback, now with `--pwad`, applies only when there
+    are no samples (a flight build from before main, which cannot switch WAD) or the archive refuses the names
+    (Yamcs answers 4xx). It says so in `sources`. A connection failure, a timeout or a 5xx is raised, so the task is
+    retried rather than a guess cataloged for good.
+  - `level_set` is `other` whenever `wad_loads > 0` or a patch WAD is set. README.md says flights on an uplinked
+    WAD are demonstrations, and a name cannot tell uplinked from installed (`LOAD_WAD` looks in the uplink
+    directory first). The episode-1 `--map` fallback now needs `wad_loads == 0`. A `--probe` process (the
+    `LOAD_WAD` check, and its forked watchdog) is never taken for the payload.
+  - A switch ends the episode in progress with no end event, so it read as a `reset`. `WadLoaded` is now one of the
+    watch's events: when it lies between an episode's start and the `EpisodeStarted` that closes it (at most
+    10 s before), the outcome is `wad_switch`. The closing event, time and id stay the same, so nothing cataloged
+    is found again under another id; episodes already cataloged keep their stored outcome. This applies to the
+    inferred closure of a flight's first episode too, which a demonstration's first switch is likely to end.
+  - Decision: `pipeline.L1_EVENTS` is unchanged. L1 embeds the event types it asked for, so adding `WadLoaded` or
+    `WadLoadFailed` would change every L1's bytes and need an `l1_episode` bump and a full reprocessing campaign.
+    The outcome and the context already carry the switch.
+  - `l2_summary` 1.3.0 carries `pwad` and `wad_loads`, and `l3_rollup` 1.1.0 keys a level by its patch WAD too. Both
+    goldens are recorded beside the old ones. `l2_path` keeps 2.1.0: the end-marker colour for `wad_switch` is new,
+    but no L1 written before it has that outcome.
+  - Comparability: main's `f3d2c655` (one space packet per TC frame) stopped F´ dropping commands that Yamcs had
+    packed together. `l2_linkstats` uplink completeness from flights before and after it is not comparable.
+    `context.repo_commit` identifies the stack an episode was flown on (`git merge-base --is-ancestor f3d2c655
+    <commit>`). Of the nine episodes in the live catalog, eight were flown before it and one after
+    (`20261004T160006Z-e0001`, repo commit `0abfafa74684`).

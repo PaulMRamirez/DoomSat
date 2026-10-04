@@ -20,7 +20,7 @@ sys.path.insert(0, SDS)
 
 from doomsat_sds import archive, config  # noqa: E402
 from doomsat_sds.episodes import (  # noqa: E402
-    END_PAD_MS, INFER_AFTER_MS, MAX_SILENCE_MS, ClosedEpisode, closed_episodes, episode_id, locate)
+    END_PAD_MS, INFER_AFTER_MS, MAX_SILENCE_MS, WAD_SWITCH_MS, ClosedEpisode, closed_episodes, episode_id, locate)
 
 FIXTURE = os.path.join(SDS, "tests", "data", "two_deaths.json.gz")
 T0 = 1791074769000                      # 2026-10-04T00:46:09Z, the fixture's start
@@ -211,6 +211,7 @@ class ConfTest(unittest.TestCase):
              ClosedEpisode(4, T0 + 180_000, "EpisodeStarted", "reset", None),
              ClosedEpisode(3, T0 + 61_000, "EpisodeStarted", "reset", None, inferred=True),
              ClosedEpisode(5, T0 + 20_000, "EpisodeStarted", "interrupted", T0),
+             ClosedEpisode(6, T0 + 40_000, "EpisodeStarted", "wad_switch", T0 + 21_000),
              ClosedEpisode(1, T0 + 90_000, "LevelFinished", "level_finished", T0 + 1)]
 
     def test_round_trip(self):
@@ -392,3 +393,76 @@ class PayloadRestartTest(unittest.TestCase):
 
     def test_the_watch_asks_for_payload_connected(self):
         self.assertIn("PayloadConnected", config.EPISODE_EVENTS)
+
+
+class WadSwitchTest(unittest.TestCase):
+    """On main the payload can switch WAD in flight (LOAD_WAD). It rebuilds the game and starts the next episode, so
+    the episode in progress ends with no PlayerDied or LevelFinished, and F' logs WadLoaded just before the next
+    EpisodeStarted (Doom.cpp handleWad). Without WadLoaded the episode reads as a RESET_GAME. With it the outcome is
+    "wad_switch", and nothing else about the closure moves: the id is the closing time, and an episode cataloged as
+    a reset before this rule must not come back under another id and be processed twice."""
+
+    def loaded(self, t, seq=None, name="freedoom2.wad", map_="MAP01"):
+        return {"t": t, "type": config.EVENT_PREFIX + "WadLoaded", "extra": {"name": name, "map": map_}, "seq": seq,
+                "source": config.EVENT_SOURCE}
+
+    def test_a_switch_relabels_the_reset_and_keeps_its_id(self):
+        plain = [ev(T0, "EpisodeStarted", 4), ev(T0 + 30_100, "EpisodeStarted", 5)]
+        switched = plain + [self.loaded(T0 + 30_000)]
+        [reset], [switch] = closed_episodes(plain), closed_episodes(switched)
+        self.assertEqual(reset, ClosedEpisode(4, T0 + 30_100, "EpisodeStarted", "reset", T0))
+        self.assertEqual(switch, ClosedEpisode(4, T0 + 30_100, "EpisodeStarted", "wad_switch", T0))
+        self.assertEqual(switch.episode_id, reset.episode_id)
+        self.assertEqual((switch.closing, switch.end_ms, switch.start_event_ms, switch.inferred),
+                         (reset.closing, reset.end_ms, reset.start_event_ms, reset.inferred))
+
+    def test_a_shared_time_tag_counts_in_either_order(self):
+        # F' time tags are coarse: WadLoaded and the EpisodeStarted after it can carry the same one, and the
+        # archive's sequence numbers then decide the order. The new episode, reset later, is not a switch.
+        t = T0 + 30_000
+        for seqs in ((1, 2), (2, 1)):
+            with self.subTest(seqs=seqs):
+                events = [ev(T0, "EpisodeStarted", 4, seq=0), self.loaded(t, seq=seqs[0]),
+                          ev(t, "EpisodeStarted", 5, seq=seqs[1]), ev(t + 50_000, "EpisodeStarted", 6, seq=3)]
+                self.assertEqual([(e.number, e.outcome) for e in closed_episodes(events)],
+                                 [(4, "wad_switch"), (5, "reset")])
+
+    def test_a_switch_long_before_the_next_start_is_not_its_cause(self):
+        events = [ev(T0, "EpisodeStarted", 4), self.loaded(T0 + 10_000),
+                  ev(T0 + 10_001 + WAD_SWITCH_MS, "EpisodeStarted", 5)]
+        self.assertEqual(closed_episodes(events)[0].outcome, "reset")
+        events[-1] = ev(T0 + 10_000 + WAD_SWITCH_MS, "EpisodeStarted", 5)
+        self.assertEqual(closed_episodes(events)[0].outcome, "wad_switch")
+
+    def test_the_switch_that_started_an_episode_does_not_end_it(self):
+        # WadLoaded(t) then EpisodeStarted(5) at t: episode 5 began with the switch. RESET_GAME ends it 4 s later,
+        # within WAD_SWITCH_MS of that WadLoaded, and it is still a reset.
+        t = T0 + 30_000
+        events = [ev(T0, "EpisodeStarted", 4), self.loaded(t - 100), ev(t, "EpisodeStarted", 5),
+                  ev(t + 4_000, "EpisodeStarted", 6)]
+        self.assertEqual([(e.number, e.outcome) for e in closed_episodes(events)], [(4, "wad_switch"), (5, "reset")])
+
+    def test_a_flights_first_episode_ended_by_a_switch(self):
+        # The first episode's start is never archived, so its closure is the inferred one; a demonstration's first
+        # LOAD_WAD ends exactly that episode.
+        S = T0 - 3_600_000
+        t = S + INFER_AFTER_MS + 5_000
+        out = closed_episodes([self.loaded(t - 200), ev(t, "EpisodeStarted", 2)], scan_start_ms=S)
+        self.assertEqual(out, [ClosedEpisode(1, t, "EpisodeStarted", "wad_switch", None, inferred=True)])
+        with self.subTest("a WadLoaded before a payload restart belongs to the old payload"):
+            connected = {"t": t - 100, "type": config.EVENT_PREFIX + "PayloadConnected", "extra": {}, "seq": None,
+                         "source": config.EVENT_SOURCE}
+            out = closed_episodes([self.loaded(t - 200), connected, ev(t, "EpisodeStarted", 2)], scan_start_ms=S)
+            self.assertEqual([e.outcome for e in out], ["reset"])
+
+    def test_only_a_reset_becomes_a_switch(self):
+        with self.subTest("a death before the switch keeps the death, once"):
+            events = [ev(T0, "EpisodeStarted", 4), ev(T0 + 20_000, "PlayerDied", 4, tic=700),
+                      self.loaded(T0 + 21_000), ev(T0 + 21_100, "EpisodeStarted", 5)]
+            self.assertEqual(closed_episodes(events), [ClosedEpisode(4, T0 + 20_000, "PlayerDied", "died", T0)])
+        with self.subTest("a number that does not follow on is still a restart"):
+            events = [ev(T0, "EpisodeStarted", 4), self.loaded(T0 + 21_000), ev(T0 + 21_100, "EpisodeStarted", 1)]
+            self.assertEqual(closed_episodes(events)[0].outcome, "interrupted")
+
+    def test_the_watch_asks_for_wad_loaded(self):
+        self.assertIn("WadLoaded", config.EPISODE_EVENTS)

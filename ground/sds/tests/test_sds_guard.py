@@ -198,7 +198,7 @@ def wad_reads(text):
     return found
 
 
-CHANNELS = set(config.SCIENCE) | set(config.LINK) | {config.short(config.FRAME_CHUNK)}
+CHANNELS = set(config.SCIENCE) | set(config.LINK) | set(config.CONTEXT_TLM) | {config.short(config.FRAME_CHUNK)}
 SENDING_CALLS = ("create_command_connection", "set_parameter_value", "set_parameter_values")
 
 

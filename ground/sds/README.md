@@ -48,9 +48,11 @@ scripts/sds.sh stop
 
 `scripts/sds.sh` never starts, stops or commands the flight side, and the flight side does not depend on it:
 with the SDS stopped, a flight behaves exactly as before. Start them in either order. The watcher looks back six
-hours, so episodes flown while the SDS was down are processed when it comes back, but their context (WAD, map,
-pilot) is only known if the processes that flew them are still running; otherwise it is recorded as unknown.
-Frames are another matter: they are never archived, so frames from a time the capture service was down are gone.
+hours, so episodes flown while the SDS was down are processed when it comes back, but their context (map, pilot,
+skill and the other launch options) is only known if the processes that flew them are still running; otherwise it
+is recorded as unknown. The WAD is the exception on main: it is in telemetry, so the archive still has it (see
+[Context](#context)). Frames are another matter: they are never archived, so frames from a time the capture
+service was down are gone.
 
 In a cloud VM that pauses when idle, every background process stops: run `scripts/flight.sh status` and
 `scripts/sds.sh status`, and start whatever is down. `stop` (which `start` also runs first) stops the scheduler
@@ -96,6 +98,11 @@ episode ended by `RESET_GAME` has no end event, and `EPISODE` restarts at 1 with
   or `interrupted` when the payload restarted), or by `PayloadConnected`, which F´ logs when a restarted payload
   reconnects (outcome `interrupted`; a restart that keeps the number at 1 logs no `EpisodeStarted` at all). That
   last one is checked against the samples first, because a mere socket drop also reconnects;
+- a `LOAD_WAD` that switches the WAD in flight (main) rebuilds the game and starts the next episode: F´ logs
+  `WadLoaded` just before that `EpisodeStarted`, and the episode it cut short gets the outcome `wad_switch`
+  instead of `reset`. It is still closed by the `EpisodeStarted`, at the same time, so its id does not change, and
+  episodes cataloged before this rule keep the outcome they were cataloged with. `WadLoaded` is not added to L1's
+  events: L1 embeds its list of event types, so adding one would change every L1, not just a switched episode's;
 - its **window** is the contiguous run of archived `EPISODE == n` samples ending at the closing event (a silence of
   over 30 s or `TIC` going backwards breaks a run);
 - its **id** is the closing time and the number: `20261004T004611Z-e0001`.
@@ -119,6 +126,42 @@ inputs and algorithm version give the same bytes and the same sha256. Algorithm 
 
 Files live under `$DOOMSAT_HOME/sds/products/` (`episodes/<id>/<type>-<version>.<ext>`, `l3/`, `quicklook/`).
 Nothing generated goes in the repo.
+
+### Context
+
+Each episode's context is captured once, by its forward run, and kept in the catalog; reprocessing reuses it. Every
+value carries its source in `context.sources`.
+
+- **WAD.** On main the payload can switch WAD in flight, so its `--wad` argument can be wrong. The forward run reads
+  `WAD_IWAD`, `WAD_PWAD` and `WAD_LOADS` (the base and patch WAD file names, and how many switches this payload
+  process has made) in an archive read of their own, separate from the L1 read, and takes the value in effect
+  when the episode began: the last sample at or before its first status (up to 5 s back), otherwise the first
+  sample during it, never one after its last status or its closing event (a switch writes the new WAD before the
+  next episode's `EpisodeStarted`). The context gets `wad`, `pwad`, `wad_loads` and `wad_launch` (the payload's
+  `--wad`). A flight build from before main has no such channels and cannot switch WAD; there the WAD is the
+  payload's `--wad` and `--pwad` and the source says why. A Yamcs that is down fails the task (it is retried)
+  rather than recording a guess. WADs are known by name only.
+- **Map** from `payload.log`, which the payload also prints after a switch; `--map` stands in only for episode 1
+  of a payload that has not switched WAD.
+- **dev, test or other.** An episode flown on a switched WAD (`wad_loads > 0`) or a patch WAD is `other`, never dev
+  or test: flights on an uplinked WAD are demonstrations, and a file name cannot tell an uplinked WAD from an
+  installed one. Otherwise `research/levels.yaml` decides, by WAD file name and map, as before.
+- **Processes.** A `LOAD_WAD` check runs the payload script again with `--probe` (and a forked watchdog with the
+  same arguments) for up to 20 s; those are never taken for the flight payload.
+
+`pwad`, `wad_loads` and `wad_launch` live in the catalog's `context_json`; its `wad` column holds the WAD flown.
+`l2_summary` 1.3.0 carries `pwad` and `wad_loads`, and `l3_rollup` 1.1.0 keys a level by its patch WAD too
+(`basic.wad over freedoom2.wad MAP01`).
+
+### Uplink completeness across main's one-command-per-frame change
+
+Main's commit `f3d2c655` sends one space packet per TC frame. Before it, Yamcs packed queued commands into one
+frame and F´ kept only the first, so commands were lost under load (`docs/plans/wad-uplink-stage1.md`). The
+`l2_linkstats` uplink completeness of flights before and after that commit is therefore not comparable: do not
+pool or compare it across the two. The context's `repo_commit` identifies the stack an episode was flown on, and
+`git merge-base --is-ancestor f3d2c655 <commit>` says which side it is. On main the uplink also carries CFDP PDUs
+(TC virtual channel 2); Yamcs enters each transfer once in command history as `/doomsat/cfdp/pdu`, which, like
+any command outside the Doom component, is reported under `other_commands` and kept out of completeness.
 
 ### The catalog
 

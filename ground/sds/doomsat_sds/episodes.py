@@ -9,11 +9,14 @@ There is no "episode over" message. The payload sends STATUS records; F´ turns 
 So an episode is *closed* by PlayerDied or LevelFinished, or else by the next EpisodeStarted (outcome
 "reset" when the number goes up by one, "interrupted" otherwise), or by PayloadConnected, which F´ logs when the
 payload (re)connects (outcome "interrupted"; a restart that keeps the number 1 -> 1 logs no EpisodeStarted, and a
-mere socket drop reconnects too, so that closure is an inference the caller confirms from TIC and EPISODE). Its
-*window* comes from the archived
-EPISODE and TIC samples rather than from events: the contiguous run of EPISODE == n that ends at the closing
-event. Its id is the closing event's time and the number, which is unique, sortable and stable however often
-the archive is read.
+mere socket drop reconnects too, so that closure is an inference the caller confirms from TIC and EPISODE). On
+main the payload can also switch WAD in flight (LOAD_WAD): it rebuilds the game and starts the next episode, and
+F´ logs WadLoaded just before that EpisodeStarted. The episode it cut short is still closed by the EpisodeStarted,
+at the same time and so with the same id, but its outcome is "wad_switch" rather than "reset".
+
+Its *window* comes from the archived EPISODE and TIC samples rather than from events: the contiguous run of
+EPISODE == n that ends at the closing event. Its id is the closing event's time and the number, which is unique,
+sortable and stable however often the archive is read.
 """
 from __future__ import annotations
 
@@ -39,7 +42,7 @@ class ClosedEpisode:
     number: int
     end_ms: int                     # time of the closing event (TM time)
     closing: str                    # PlayerDied | LevelFinished | EpisodeStarted
-    outcome: str                    # died | level_finished | reset | interrupted
+    outcome: str                    # died | level_finished | reset | wad_switch | interrupted
     start_event_ms: int | None      # its EpisodeStarted, when that was archived
     inferred: bool = False          # an inference to confirm against samples (lost predecessor, or a reconnect)
 
@@ -70,6 +73,15 @@ def _number(event: dict) -> int | None:
 # if these events cover this long before a start and show no end for the episode before it, that episode was
 # reset. Only an inference: the caller confirms it against the archived samples before acting on it.
 INFER_AFTER_MS = 60_000
+# F´ logs WadLoaded when it hands on the payload's report of a switch, and the payload sends that report before
+# the status that starts the next episode, so the two events are well under a second apart (or share a time tag).
+WAD_SWITCH_MS = 10_000
+
+
+def _switched(switches: list[int], after_ms: int | None, at_ms: int) -> bool:
+    """Was there a WadLoaded in (after_ms, at_ms], no more than WAD_SWITCH_MS before at_ms? Judged on times alone,
+    so two events that share a time tag count whichever way the archive orders them."""
+    return any((after_ms is None or w > after_ms) and at_ms - WAD_SWITCH_MS <= w <= at_ms for w in switches)
 
 
 def closed_episodes(events: list[dict], scan_start_ms: int | None = None) -> list[ClosedEpisode]:
@@ -78,18 +90,28 @@ def closed_episodes(events: list[dict], scan_start_ms: int | None = None) -> lis
     `scan_start_ms` is where the event query began. With it, an EpisodeStarted(n) whose predecessor these
     events never mention (a flight's first episode, whose own start event is always lost) closes n-1 as an
     inferred reset, provided the events reach at least INFER_AFTER_MS further back.
+
+    A reset, inferred or not, whose EpisodeStarted has a WadLoaded since the episode's own start and at most
+    WAD_SWITCH_MS before it, is a "wad_switch". Only the outcome changes: the closing event, its time and so the
+    episode id stay those of the EpisodeStarted, so an episode cataloged as a reset before WadLoaded was read is
+    not found again under another id.
     """
     out: list[ClosedEpisode] = []
     open_n: int | None = None          # the episode in progress, as far as these events show
     open_start: int | None = None
     open_closed = False                # has it already had its PlayerDied / LevelFinished?
+    since: int | None = None           # the last start or payload (re)connection: a WadLoaded before it is old news
+    switches = sorted(e["t"] for e in events if e["type"].rsplit(".", 1)[-1] == "WadLoaded")
     for e in sorted(events, key=lambda e: (e["t"], e.get("seq") or 0)):
         name = e["type"].rsplit(".", 1)[-1]
         if name == "PayloadConnected":
             if open_n is not None and not open_closed:
                 out.append(ClosedEpisode(open_n, e["t"], "PayloadConnected", "interrupted", open_start, inferred=True))
             open_n, open_start, open_closed = None, None, False     # whatever comes next belongs to a new start
+            since = e["t"]
             continue
+        if name == "WadLoaded":
+            continue                                      # it carries no episode number; `switches` has its time
         n = _number(e)
         if n is None:
             continue
@@ -102,11 +124,17 @@ def closed_episodes(events: list[dict], scan_start_ms: int | None = None) -> lis
             if n == open_n and not open_closed:
                 continue                                  # F´ restarted mid-episode and re-announced it
             if open_n is not None and not open_closed:
-                out.append(ClosedEpisode(open_n, e["t"], "EpisodeStarted",
-                                         "reset" if n == open_n + 1 else "interrupted", open_start))
+                outcome = "reset" if n == open_n + 1 else "interrupted"
+                if outcome == "reset" and _switched(switches, open_start, e["t"]):
+                    outcome = "wad_switch"
+                out.append(ClosedEpisode(open_n, e["t"], "EpisodeStarted", outcome, open_start))
             elif open_n is None and n > 1 and scan_start_ms is not None and e["t"] - scan_start_ms >= INFER_AFTER_MS:
-                out.append(ClosedEpisode(n - 1, e["t"], "EpisodeStarted", "reset", None, inferred=True))
+                # Most often a flight's first episode, whose start is never archived, and a demonstration's first
+                # LOAD_WAD is likely to end exactly that one.
+                outcome = "wad_switch" if _switched(switches, since, e["t"]) else "reset"
+                out.append(ClosedEpisode(n - 1, e["t"], "EpisodeStarted", outcome, None, inferred=True))
             open_n, open_start, open_closed = n, e["t"], False
+            since = e["t"]
     return out
 
 

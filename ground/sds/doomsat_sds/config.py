@@ -19,14 +19,19 @@ NAMESPACE = "/DoomSat_DoomSat/DoomSat/doom/"
 SCIENCE = ("POS_X", "POS_Y", "KILLS", "HEALTH", "TIC", "EPISODE", "DEAD", "LEVEL_DONE", "EXPLORED_CELLS", "LEVEL")
 LINK = ("FRAMES_SENT", "CHUNKS_SENT", "CMDS_RECEIVED", "PAYLOAD_LINK")
 FRAME_CHUNK = NAMESPACE + "FRAME_CHUNK"
+# The WAD being flown, which the flight software reports since main's WAD uplink: the base and patch WAD file
+# names (40 zero-padded ASCII bytes each, read back as hex) and how many times LOAD_WAD has switched it in this
+# payload process, repeated about once a second. Read on their own for the episode context, never into L1.
+CONTEXT_TLM = ("WAD_IWAD", "WAD_PWAD", "WAD_LOADS")
 
 # F´ events reach Yamcs through the fprime-yamcs-events sidecar, which posts them with this source and an
 # event_type of "<component path>.<event name>" (fprime_yamcs/events/processor.py).
 EVENT_SOURCE = "FPrimeEventProcessor"
 EVENT_PREFIX = "DoomSat.doom."
 # PayloadConnected marks a payload (re)start: an episode in progress then ended without a death or an exit, and a
-# restart that keeps the same episode number (1 -> 1) produces no EpisodeStarted at all.
-EPISODE_EVENTS = ("EpisodeStarted", "PlayerDied", "LevelFinished", "PayloadConnected")
+# restart that keeps the same episode number (1 -> 1) produces no EpisodeStarted at all. WadLoaded marks a LOAD_WAD
+# that switched the game: the episode in progress ended there, and the next EpisodeStarted follows it.
+EPISODE_EVENTS = ("EpisodeStarted", "PlayerDied", "LevelFinished", "PayloadConnected", "WadLoaded")
 
 # The only command the pipelines may ever send, from a module named for records; none is sent by default.
 SENDFILE = "/DoomSat_DoomSat/FileHandling/fileDownlink/SendFile"
