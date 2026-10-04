@@ -16,6 +16,8 @@ def _read(*parts):
 
 
 TOP = ("flight", "DoomSat", "Top")
+# Component types in these topologies with health-ping ports (pingIn/pingOut in their FPP)
+PINGED = {"Svc.ActiveRateGroup", "Svc.CmdSequencer", "Svc.Ccsds.Cfdp.CfdpManager", "Svc.FileManager", "Svc.PrmDb"}
 
 
 class TestTheTopologyHeader(unittest.TestCase):
@@ -36,11 +38,16 @@ class TestTheTopologyHeader(unittest.TestCase):
         self.assertEqual(defs, imported)
         self.assertEqual(state, imported)
 
-    def test_the_header_pings_only_instances_this_topology_has(self):
-        own = set(re.findall(r"^\s*instance\s+(\w+)\s*:", self.instances, re.M))
+    def test_the_header_pings_exactly_the_instances_that_answer_pings(self):
+        # The autocoder emits PingEntries::DoomSat_<instance>::WARN/FATAL for every instance with health-ping ports
+        # that the topology uses: a missing namespace is an undeclared identifier, an extra one is dead text. A new
+        # component type with ping ports has to be added to PINGED here.
+        types = dict(re.findall(r"^\s*instance\s+(\w+)\s*:\s*([\w.]+)", self.instances, re.M))
+        used = set(re.findall(r"^\s*instance\s+(\w+)\s*$", self.topology, re.M))
+        need = {i for i in used if types.get(i) in PINGED}
         pinged = set(re.findall(r"namespace\s+DoomSat_(\w+)\s*\{", self.header))
-        self.assertTrue(pinged)
-        self.assertLessEqual(pinged, own, "ping entries for instances this topology does not have")
+        self.assertTrue(need)
+        self.assertEqual(pinged, need)
 
     def test_the_sync_copies_the_header(self):
         sync = _read("scripts", "wsl_sync.sh")
