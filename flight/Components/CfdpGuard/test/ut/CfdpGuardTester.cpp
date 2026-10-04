@@ -51,9 +51,9 @@ std::string CfdpGuardTester ::path(const char* name) const {
     return std::string(UPLINK) + "/" + name;
 }
 
-Fw::Buffer CfdpGuardTester ::metadata(U32 seq, const char* dest, Cfdp::Class::T txm, U32 src) {
+Fw::Buffer CfdpGuardTester ::metadata(U32 seq, const char* dest, Cfdp::Class::T txm, U32 src, U32 dst) {
     Cfdp::MetadataPdu md;
-    md.initialize(Cfdp::PduDirection::DIRECTION_TOWARD_RECEIVER, txm, src, seq, BOARD, 2704, Fw::String("basic.wad"),
+    md.initialize(Cfdp::PduDirection::DIRECTION_TOWARD_RECEIVER, txm, src, seq, dst, 2704, Fw::String("basic.wad"),
                   Fw::String(dest), Cfdp::ChecksumType::CHECKSUM_TYPE_MODULAR, 1);
     return wrap(this->m_up, sizeof this->m_up, md);
 }
@@ -83,10 +83,22 @@ Fw::Buffer CfdpGuardTester ::yamcsMetadata(U32 seq, const std::string& dest) {
 }
 
 Fw::Buffer CfdpGuardTester ::fin(U32 seq, Cfdp::ConditionCode cc, Cfdp::FinDeliveryCode dc, Cfdp::FinFileStatus fs,
-                                 U32 dst) {
+                                 U32 dst, U32 src) {
     Cfdp::FinPdu f;  // the receiver's FIN: the transaction's source (the ground) in the header, as Engine::sendFin
-    f.initialize(Cfdp::PduDirection::DIRECTION_TOWARD_SENDER, Cfdp::Class::CLASS_2, GROUND, seq, dst, cc, dc, fs);
+    f.initialize(Cfdp::PduDirection::DIRECTION_TOWARD_SENDER, Cfdp::Class::CLASS_2, src, seq, dst, cc, dc, fs);
     return wrap(this->m_down, sizeof this->m_down, f);
+}
+
+Fw::Buffer CfdpGuardTester ::eof(U32 seq, Cfdp::ConditionCode cc) {
+    Cfdp::EofPdu e;
+    e.initialize(Cfdp::PduDirection::DIRECTION_TOWARD_RECEIVER, Cfdp::Class::CLASS_2, GROUND, seq, BOARD, cc, 0, 0);
+    return wrap(this->m_up, sizeof this->m_up, e);
+}
+
+void CfdpGuardTester ::upload(U32 seq, const std::string& dest) {
+    Fw::Buffer md = this->metadata(seq, dest.c_str());
+    this->invoke_to_uplinkIn(0, md);
+    ASSERT_TRUE(this->lastUplinkReadable()) << dest;
 }
 
 void CfdpGuardTester ::from_downlinkOut_handler(FwIndexType portNum, Fw::Buffer& fwBuffer) {
@@ -153,6 +165,8 @@ void CfdpGuardTester ::testEveryOtherDestinationIsRefused() {
         this->path("x.wad.1.tmp"),
         this->path("two words.wad.1.part"),
         std::string(UPLINK) + "x/x.wad.1.part",
+        std::string(UPLINK) + ".wad.1.part",   // the directory's name as a prefix: beside it, not in it
+        std::string(UPLINK) + "x.wad.1.part",
         std::string(UPLINK) + "/",
         "home/x/doom/wads/uplink/x.wad.1.part",
     };
@@ -184,6 +198,14 @@ void CfdpGuardTester ::testARefusedUploadIsReportedOnce() {
     }
     ASSERT_EVENTS_UploadRefused_SIZE(1);
     ASSERT_TLM_UPLOADS_REFUSED(0, 1);
+    // Another transaction refused in between, from this source and from another: each is reported once
+    Fw::Buffer other = this->metadata(10, "/etc/shadow");
+    this->invoke_to_uplinkIn(0, other);
+    Fw::Buffer elsewhere = this->metadata(9, "/etc/hostname", Cfdp::Class::CLASS_2, GROUND + 1);
+    this->invoke_to_uplinkIn(0, elsewhere);
+    Fw::Buffer again = this->metadata(9, "/etc/hostname");
+    this->invoke_to_uplinkIn(0, again);
+    ASSERT_EVENTS_UploadRefused_SIZE(3);
 }
 
 void CfdpGuardTester ::testTheDestinationIsTheStringCfdpManagerOpens() {
@@ -295,6 +317,11 @@ void CfdpGuardTester ::testClass1IsLetThroughButNeverCommitted() {
     Fw::Buffer md = this->metadata(16, this->path("c1.wad.1.part").c_str(), Cfdp::Class::CLASS_1);
     this->invoke_to_uplinkIn(0, md);
     ASSERT_TRUE(this->lastUplinkReadable());
+    // cfdpManager routes a Metadata by its transaction, not its class bit: a class 2 one naming another file for the
+    // same transaction would be ignored by cfdpManager, so the guard refuses it rather than follow it
+    Fw::Buffer other = this->metadata(16, this->path("c2.wad.1.part").c_str());
+    this->invoke_to_uplinkIn(0, other);
+    ASSERT_FALSE(this->lastUplinkReadable());
     Fw::Buffer f = this->fin(16);
     this->invoke_to_downlinkIn(0, f);
     ASSERT_from_fileAnnounceOut_SIZE(0);
@@ -357,9 +384,7 @@ void CfdpGuardTester ::testOtherTrafficPassesUntouched() {
 
 void CfdpGuardTester ::testTheOldestUploadMakesRoom() {
     for (U32 seq = 1; seq <= CfdpGuard::MAX_UPLOADS + 1; seq++) {
-        std::string dest = this->path(("n" + std::to_string(seq) + ".wad.1.part").c_str());
-        Fw::Buffer md = this->metadata(seq, dest.c_str());
-        this->invoke_to_uplinkIn(0, md);
+        this->upload(seq, this->path(("n" + std::to_string(seq) + ".wad.1.part").c_str()));
     }
     ASSERT_EVENTS_UploadForgotten_SIZE(1);
     ASSERT_EVENTS_UploadForgotten(0, this->path("n1.wad.1.part").c_str(), GROUND, 1);
@@ -369,6 +394,108 @@ void CfdpGuardTester ::testTheOldestUploadMakesRoom() {
     Fw::Buffer last = this->fin(CfdpGuard::MAX_UPLOADS + 1);
     this->invoke_to_downlinkIn(0, last);
     ASSERT_from_fileAnnounceOut_SIZE(1);
+    // Upload 9 has ended and holds the slot upload 1 had: a new one takes that slot without pushing anyone out,
+    // and the next one pushes out the oldest still waiting (upload 2), not whoever holds the first slot
+    this->clearHistory();
+    this->upload(10, this->path("n10.wad.1.part"));
+    ASSERT_EVENTS_UploadForgotten_SIZE(0);
+    this->upload(11, this->path("n11.wad.1.part"));
+    ASSERT_EVENTS_UploadForgotten_SIZE(1);
+    ASSERT_EVENTS_UploadForgotten(0, this->path("n2.wad.1.part").c_str(), GROUND, 2);
+    Fw::Buffer f10 = this->fin(10);
+    this->invoke_to_downlinkIn(0, f10);
+    ASSERT_from_fileAnnounceOut_SIZE(1);
+    ASSERT_from_fileAnnounceOut(0, Fw::String(this->path("n10.wad.1.part").c_str()));
+}
+
+void CfdpGuardTester ::testTheSourceIsPartOfTheTransaction() {
+    // cfdpManager keys a transaction by (source, sequence number): two sources may use the same number at once
+    const std::string a = this->path("a.wad.1.part");
+    const std::string b = this->path("b.wad.1.part");
+    this->upload(30, a);
+    Fw::Buffer otherFin = this->fin(30, Cfdp::ConditionCode::CONDITION_CODE_NO_ERROR,
+                                    Cfdp::FinDeliveryCode::FIN_DELIVERY_CODE_COMPLETE,
+                                    Cfdp::FinFileStatus::FIN_FILE_STATUS_RETAINED, BOARD, GROUND + 1);
+    this->invoke_to_downlinkIn(0, otherFin);
+    ASSERT_from_fileAnnounceOut_SIZE(0);  // another source's transaction: not this upload
+    Fw::Buffer md = this->metadata(30, b.c_str(), Cfdp::Class::CLASS_2, GROUND + 1);
+    this->invoke_to_uplinkIn(0, md);
+    ASSERT_TRUE(this->lastUplinkReadable());  // not a resend of (GROUND, 30) with another file: its own upload
+    ASSERT_TLM_UPLOADS_ACCEPTED_SIZE(2);
+    Fw::Buffer finB = this->fin(30, Cfdp::ConditionCode::CONDITION_CODE_NO_ERROR,
+                                Cfdp::FinDeliveryCode::FIN_DELIVERY_CODE_COMPLETE,
+                                Cfdp::FinFileStatus::FIN_FILE_STATUS_RETAINED, BOARD, GROUND + 1);
+    this->invoke_to_downlinkIn(0, finB);
+    Fw::Buffer finA = this->fin(30);
+    this->invoke_to_downlinkIn(0, finA);
+    ASSERT_from_fileAnnounceOut_SIZE(2);
+    ASSERT_from_fileAnnounceOut(0, Fw::String(b.c_str()));
+    ASSERT_from_fileAnnounceOut(1, Fw::String(a.c_str()));
+}
+
+void CfdpGuardTester ::testALateMetadataAfterTheFinChangesNothing() {
+    // When the first Metadata is lost, the receiver NAKs for it every ack_timer and the sender answers each NAK: on a
+    // slow link a copy can come after the FIN. cfdpManager drops it; so must the guard, and F´'s repeated FIN (its
+    // ACK lost) must not commit the file a second time
+    const std::string a = this->path("late.wad.1.part");
+    this->upload(40, a);
+    Fw::Buffer f = this->fin(40);
+    this->invoke_to_downlinkIn(0, f);
+    ASSERT_from_fileAnnounceOut_SIZE(1);
+    Fw::Buffer late = this->metadata(40, a.c_str());
+    this->invoke_to_uplinkIn(0, late);
+    ASSERT_TRUE(this->lastUplinkReadable());  // the same file: let through, as cfdpManager would ignore it anyway
+    ASSERT_TLM_UPLOADS_ACCEPTED_SIZE(1);
+    Fw::Buffer repeat = this->fin(40);
+    this->invoke_to_downlinkIn(0, repeat);
+    ASSERT_from_fileAnnounceOut_SIZE(1);
+    ASSERT_EVENTS_UploadCommitted_SIZE(1);
+    // ... and a Metadata naming another file for that transaction never becomes something a FIN commits
+    Fw::Buffer moved = this->metadata(40, this->path("other.wad.1.part").c_str());
+    this->invoke_to_uplinkIn(0, moved);
+    ASSERT_FALSE(this->lastUplinkReadable());
+    Fw::Buffer again = this->fin(40);
+    this->invoke_to_downlinkIn(0, again);
+    ASSERT_from_fileAnnounceOut_SIZE(1);
+}
+
+void CfdpGuardTester ::testACancelledUploadMakesRoomFirst() {
+    // A cancel from the sender ends the transaction with no FIN; its record goes before any upload still arriving
+    this->upload(50, this->path("cancelled.wad.1.part"));
+    Fw::Buffer e = this->eof(50, Cfdp::ConditionCode::CONDITION_CODE_CANCEL_REQUEST_RECEIVED);
+    std::vector<U8> before(e.getData(), e.getData() + e.getSize());
+    this->invoke_to_uplinkIn(0, e);
+    ASSERT_EQ(0, std::memcmp(e.getData(), before.data(), before.size()));  // passed on unchanged
+    ASSERT_TRUE(this->lastUplinkReadable());
+    for (U32 seq = 51; seq < 51 + CfdpGuard::MAX_UPLOADS; seq++) {
+        this->upload(seq, this->path(("k" + std::to_string(seq) + ".wad.1.part").c_str()));
+    }
+    ASSERT_EVENTS_UploadForgotten_SIZE(0);
+    // A normal EOF ends nothing: the next upload pushes out the oldest still waiting for its FIN
+    Fw::Buffer normal = this->eof(51, Cfdp::ConditionCode::CONDITION_CODE_NO_ERROR);
+    this->invoke_to_uplinkIn(0, normal);
+    this->upload(60, this->path("k60.wad.1.part"));
+    ASSERT_EVENTS_UploadForgotten_SIZE(1);
+    ASSERT_EVENTS_UploadForgotten(0, this->path("k51.wad.1.part").c_str(), GROUND, 51);
+}
+
+void CfdpGuardTester ::testMetadataForAnotherEntityNeverPushesOutAnUpload() {
+    // cfdpManager starts no receive for a Metadata addressed elsewhere, and class 1 has no FIN: neither may push out an
+    // upload still waiting for its FIN
+    const std::string live = this->path("live.wad.1.part");
+    this->upload(70, live);
+    for (U32 seq = 71; seq < 71 + 2 * CfdpGuard::MAX_UPLOADS; seq++) {
+        const std::string dest = this->path(("e" + std::to_string(seq) + ".wad.1.part").c_str());
+        Fw::Buffer md = (seq % 2) ? this->metadata(seq, dest.c_str(), Cfdp::Class::CLASS_2, GROUND, BOARD + 1)
+                                  : this->metadata(seq, dest.c_str(), Cfdp::Class::CLASS_1);
+        this->invoke_to_uplinkIn(0, md);
+        ASSERT_TRUE(this->lastUplinkReadable());
+    }
+    ASSERT_EVENTS_UploadForgotten_SIZE(0);
+    Fw::Buffer f = this->fin(70);
+    this->invoke_to_downlinkIn(0, f);
+    ASSERT_from_fileAnnounceOut_SIZE(1);
+    ASSERT_from_fileAnnounceOut(0, Fw::String(live.c_str()));
 }
 
 }  // namespace DoomMission

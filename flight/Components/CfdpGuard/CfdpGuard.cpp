@@ -3,8 +3,8 @@
 // \brief  The CFDP uplink's gatekeeper (see CfdpGuard.fpp)
 //
 // Both paths read the buffer the way CfdpManager::dataIn_handler does: a big-endian FW_PACKET_FILE descriptor,
-// then the PDU, typed with peekPduType and decoded with F´'s own MetadataPdu / FinPdu. The guard therefore sees a
-// Metadata exactly when cfdpManager would, and the destination it checks is the string cfdpManager would open.
+// then the PDU, typed with peekPduType and decoded with F´'s own MetadataPdu / EofPdu / FinPdu. The guard therefore
+// sees a Metadata exactly when cfdpManager would, and the destination it checks is the string cfdpManager would open.
 // ======================================================================
 
 #include "DoomMission/Components/CfdpGuard/CfdpGuard.hpp"
@@ -51,6 +51,8 @@ CfdpGuard ::CfdpGuard(const char* const compName)
       m_committed(0) {
     for (FwSizeType i = 0; i < MAX_UPLOADS; i++) {
         this->m_uploads[i].used = false;
+        this->m_uploads[i].awaitsFin = false;
+        this->m_uploads[i].ended = false;
         this->m_refused[i].used = false;
     }
 }
@@ -63,14 +65,40 @@ CfdpGuard ::~CfdpGuard() {}
 
 void CfdpGuard ::uplinkIn_handler(FwIndexType portNum, Fw::Buffer& fwBuffer) {
     const Fw::Buffer pdu = pduView(fwBuffer);
-    if (pdu.getSize() > 0 && peekPduType(pdu) == PduTypeEnum::METADATA && !this->admitMetadata(pdu)) {
+    const PduTypeEnum::T type = (pdu.getSize() > 0) ? peekPduType(pdu) : PduTypeEnum::NONE;
+    if (type == PduTypeEnum::METADATA && !this->admitMetadata(pdu)) {
         // cfdpManager hands back a buffer whose descriptor is not FW_PACKET_FILE without reading it, on its own
         // thread, through the dataInReturn path the router already has (CfdpManager::dataIn_handler).
         U8* const data = fwBuffer.getData();
         data[0] = 0;
         data[1] = static_cast<U8>(Fw::ComPacketType::FW_PACKET_UNKNOWN);
+    } else if (type == PduTypeEnum::END_OF_FILE) {
+        this->noteEof(pdu);
     }
     this->uplinkOut_out(0, fwBuffer);
+}
+
+FwSizeType CfdpGuard ::takeSlot(bool& forgotten, Upload& old) {
+    // A free slot; else the oldest transaction that has ended, then the oldest no FIN can settle (class 1, or
+    // addressed elsewhere), and only then the oldest upload still waiting for its FIN
+    FwSizeType best = MAX_UPLOADS;
+    U8 bestRank = 0;
+    for (FwSizeType i = 0; i < MAX_UPLOADS; i++) {
+        const Upload& u = this->m_uploads[i];
+        if (!u.used) {
+            return i;
+        }
+        const U8 rank = u.ended ? 3 : (u.awaitsFin ? 1 : 2);
+        if (best == MAX_UPLOADS || rank > bestRank || (rank == bestRank && u.order < this->m_uploads[best].order)) {
+            best = i;
+            bestRank = rank;
+        }
+    }
+    if (bestRank == 1) {
+        forgotten = true;
+        old = this->m_uploads[best];
+    }
+    return best;
 }
 
 bool CfdpGuard ::admitMetadata(const Fw::Buffer& pdu) {
@@ -88,38 +116,30 @@ bool CfdpGuard ::admitMetadata(const Fw::Buffer& pdu) {
     const Fw::String& dest = md.getDestFilename();
     bool admit = WadPath::isUplinkPart(dest.toChar());
 
-    bool resend = false;     // a Metadata already let through, sent again
-    bool forgotten = false;  // an older upload had to make room
+    bool resend = false;     // a Metadata for a transaction already let through
+    bool forgotten = false;  // an upload still waiting for its FIN had to make room
     Upload old;
-    if (admit && md.getTxmMode() == Class::CLASS_2) {
-        // Class 1 sends no FIN, so it is let through but not followed: only COMMIT_WAD, with its own checks, can put
-        // a class 1 file in place
+    if (admit) {
+        // Every Metadata let through is remembered, whatever its class or destination entity, and kept after its
+        // transaction ends. cfdpManager routes a Metadata by (source, sequence number) alone, whatever its class
+        // bit, and keeps the first destination it takes for a transaction (r2RecvMd runs once; after the FIN it
+        // drops Metadata). So a second Metadata for a known transaction is let through only if it names the same
+        // file: then the destination the guard holds is the one cfdpManager checksummed.
         Os::ScopeLock lock(this->m_lock);
-        FwSizeType slot = MAX_UPLOADS;
         for (FwSizeType i = 0; i < MAX_UPLOADS && !resend; i++) {
             const Upload& u = this->m_uploads[i];
             if (u.used && u.srcEid == src && u.seq == seq) {
-                // The same file, or nothing: cfdpManager keeps the first Metadata it saw, and a different
-                // destination could only take effect if that one never did
                 resend = true;
                 admit = (u.dest == dest);
-            } else if (!u.used && slot == MAX_UPLOADS) {
-                slot = i;
             }
         }
         if (!resend) {
-            if (slot == MAX_UPLOADS) {
-                slot = 0;
-                for (FwSizeType i = 1; i < MAX_UPLOADS; i++) {
-                    if (this->m_uploads[i].order < this->m_uploads[slot].order) {
-                        slot = i;
-                    }
-                }
-                old = this->m_uploads[slot];
-                forgotten = true;
-            }
-            Upload& u = this->m_uploads[slot];
+            Upload& u = this->m_uploads[this->takeSlot(forgotten, old)];
             u.used = true;
+            // Class 1 sends no FIN, so only COMMIT_WAD, with its own checks, puts a class 1 file in place; and
+            // cfdpManager starts no receive for a Metadata addressed to another entity
+            u.awaitsFin = (md.getTxmMode() == Class::CLASS_2) && (md.getDestEid() == LOCAL_EID);
+            u.ended = false;
             u.srcEid = src;
             u.seq = seq;
             u.destEid = md.getDestEid();
@@ -186,16 +206,18 @@ void CfdpGuard ::settleFin(const Fw::Buffer& pdu) {
         FwSizeType slot = MAX_UPLOADS;
         for (FwSizeType i = 0; i < MAX_UPLOADS; i++) {
             const Upload& u = this->m_uploads[i];
-            if (u.used && u.srcEid == fin.getSourceEid() && u.seq == fin.getTransactionSeq() &&
-                u.destEid == fin.getDestEid()) {
+            if (u.used && u.awaitsFin && !u.ended && u.srcEid == fin.getSourceEid() &&
+                u.seq == fin.getTransactionSeq() && u.destEid == fin.getDestEid()) {
                 slot = i;
             }
         }
         if (slot == MAX_UPLOADS) {
-            return;  // not an upload the guard let through, or one already settled: a repeated FIN commits nothing
+            // Not a class 2 upload the guard let through, or one already settled: F´ repeats its FIN until the
+            // ground ACKs it, and the repeats commit nothing
+            return;
         }
         dest = this->m_uploads[slot].dest;
-        this->m_uploads[slot].used = false;
+        this->m_uploads[slot].ended = true;
     }
     // The receiver sends NO_ERROR with RETAINED only after its checksum over the whole file matched, with the file
     // at the Metadata's destination (TransactionRx r2CalcCrcChunk); any other FIN leaves the file as it is
@@ -203,6 +225,7 @@ void CfdpGuard ::settleFin(const Fw::Buffer& pdu) {
     const FinFileStatus fs = fin.getFileStatus();
     if (cc == ConditionCode::CONDITION_CODE_NO_ERROR && fs == FinFileStatus::FIN_FILE_STATUS_RETAINED &&
         fin.getDeliveryCode() == FinDeliveryCode::FIN_DELIVERY_CODE_COMPLETE) {
+        // Counted as announced: Doom's WadUplinked or WadUplinkFailed says how its rename went
         this->log_ACTIVITY_HI_UploadCommitted(dest, fin.getSourceEid(), fin.getTransactionSeq());
         this->tlmWrite_UPLOADS_COMMITTED(++this->m_committed);
         if (this->isConnected_fileAnnounceOut_OutputPort(0)) {
@@ -211,6 +234,25 @@ void CfdpGuard ::settleFin(const Fw::Buffer& pdu) {
     } else {
         this->log_WARNING_LO_UploadNotCommitted(dest, fin.getSourceEid(), fin.getTransactionSeq(),
                                                 static_cast<U8>(cc), static_cast<U8>(fs));
+    }
+}
+
+void CfdpGuard ::noteEof(const Fw::Buffer& pdu) {
+    EofPdu eof;
+    Fw::SerialBuffer sb = serialOver(pdu);
+    // EofPdu also starts out reading NO_ERROR, so one that did not decode is ignored like a normal EOF
+    if (eof.deserializeFrom(sb) != Fw::FW_SERIALIZE_OK || eof.getDirection() != PduDirection::DIRECTION_TOWARD_RECEIVER ||
+        eof.getConditionCode() == ConditionCode::CONDITION_CODE_NO_ERROR) {
+        return;
+    }
+    // The sender cancelled: cfdpManager ends the transaction with no FIN (r2Reset), so nothing will settle it, and
+    // its record can make room first
+    Os::ScopeLock lock(this->m_lock);
+    for (FwSizeType i = 0; i < MAX_UPLOADS; i++) {
+        Upload& u = this->m_uploads[i];
+        if (u.used && u.srcEid == eof.getSourceEid() && u.seq == eof.getTransactionSeq()) {
+            u.ended = true;
+        }
     }
 }
 

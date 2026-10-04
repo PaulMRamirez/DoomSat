@@ -38,9 +38,10 @@ class FakeStack:
     """Just enough of YamcsClient, a processor, the storage and file transfer clients."""
 
     def __init__(self, refuse_load=False, cfdp=False, lose=(), damage=False, stall=False, pace_s=0.0, hold_s=0.0,
-                 queued_s=0.0, guard=False):
+                 queued_s=0.0, guard=False, rename_fails=False):
         self.refuse_load, self.cfdp = refuse_load, cfdp
         self.guard = guard        # cfdpGuard on board: a class 2 file is committed as its FIN goes out
+        self.rename_fails = rename_fails   # Doom::placeWad's rename fails every time: the .part stays
         self.uplinked = set()     # names whose uplink was started: not on board unless placed or arriving
         self.damage = damage      # the file lands on board with one byte wrong (class 1: no retransmission)
         self.stall = stall        # the transfer starts and never moves again
@@ -145,10 +146,14 @@ class FakeStack:
                     threading.Timer(0.05, self.event, ["[RxCrcMismatch] File CRC mismatch"]).start()
                 threading.Timer(0.1, self.event, ["[RxFileTransferCompleted] done"]).start()
             elif self.guard:                                  # cfdpGuard at the FIN -> doom.fileAnnounce -> placeWad
-                del self.parts[obj]
                 final = obj.rsplit(".", 2)[0]
-                self.placed.add(final)
-                threading.Timer(0.05, self.event, [f"[WadUplinked] Uplinked WAD ready to load: /home/x/doom/wads/uplink/{final}"]).start()
+                threading.Timer(0.04, self.event, [f"[UploadCommitted] CFDP upload {remote} arrived whole (transaction 100:1): putting it in place"]).start()
+                if self.rename_fails:
+                    threading.Timer(0.05, self.event, [f"[WadUplinkFailed] Uplinked WAD could not be renamed into place: {remote}"]).start()
+                else:
+                    del self.parts[obj]
+                    self.placed.add(final)
+                    threading.Timer(0.05, self.event, [f"[WadUplinked] Uplinked WAD ready to load: /home/x/doom/wads/uplink/{final}"]).start()
             return self.live() if self.live else self.snapshot("COMPLETED", len(content))
         name = remote.rsplit("/", 1)[1].rsplit(".", 2)[0]
         self.placed.add(name)
@@ -168,7 +173,9 @@ class FakeStack:
             if onboard is None:
                 threading.Timer(0.1, self.event, [f"[WadUplinkFailed] Uplinked WAD could not be renamed into place: {path}"]).start()
             elif (len(onboard), demo.cfdp_checksum(onboard)) != (args["fileSize"], args["checksum"]):
-                threading.Timer(0.1, self.event, [f"[WadCommitRefused] Uplinked WAD not committed: {path}"]).start()
+                threading.Timer(0.1, self.event, [f"[WadCommitRefused] Uplinked WAD not committed, it is not the file the ground sent: {path} has {len(onboard)} bytes"]).start()
+            elif self.rename_fails:
+                threading.Timer(0.1, self.event, [f"[WadUplinkFailed] Uplinked WAD could not be renamed into place: {path}"]).start()
             else:
                 del self.parts[args["part"]]
                 final = args["part"].rsplit(".", 2)[0]
@@ -346,14 +353,18 @@ class TestTheDemo(unittest.TestCase):
         self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--iwad", "freedoom2.wad", "--map", "MAP01",
                                        "--cfdp", "1", "--tries", "3"), 1)
         self.assertNotIn("LOAD_WAD", self.names(stack))
-        # Class 2: after a FIN the .part is gone only because it was put in place (cfdpGuard, its WadUplinked lost),
-        # so LOAD_WAD decides; here the file is not on board at all, and the load says so
-        stack, said = FakeStack(cfdp=True), []
-        stack.upload = lambda *a, **k: (FakeStack.upload(stack, *a, **k), stack.parts.clear())[0]
-        self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--iwad", "freedoom2.wad", "--map", "MAP01",
-                                       "--cfdp", "2", "--tries", "3", said=said), 1)
-        self.assertEqual(self.names(stack), ["COMMIT_WAD", "LOAD_WAD"])
-        self.assertIn("FAIL: LOAD_WAD was refused", said)
+        # Class 2 with no sign that cfdpGuard committed this upload (no guard on board, or the file never arrived where
+        # COMMIT_WAD looks): a failure too, even with an older basic.wad on board that LOAD_WAD would fly
+        for older in (False, True):
+            with self.subTest(older=older):
+                stack, said = FakeStack(cfdp=True), []
+                if older:
+                    stack.placed.add("basic.wad")
+                stack.upload = lambda *a, s=stack, **k: (FakeStack.upload(s, *a, **k), s.parts.clear())[0]
+                self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--iwad", "freedoom2.wad", "--map", "MAP01",
+                                               "--cfdp", "2", "--tries", "3", said=said), 1)
+                self.assertEqual(self.names(stack), ["COMMIT_WAD"])
+                self.assertIn("FAIL: the spacecraft did not put the file in place", said)
 
     def test_a_lost_load_wad_is_sent_again(self):
         stack = FakeStack(lose=["LOAD_WAD"])
@@ -590,9 +601,9 @@ class TestTheDemo(unittest.TestCase):
         needles, said = [], []
         real = demo.Link.wait_event
 
-        def spy(link, since, *wanted, timeout=60.0):
+        def spy(link, since, *wanted, **kw):
             needles.extend(wanted)
-            return real(link, since, *wanted, timeout=timeout)
+            return real(link, since, *wanted, **kw)
         with mock.patch.object(demo.Link, "wait_event", spy):
             self.assertEqual(self.run_demo(FakeStack(cfdp=True), "--wad", self.wad, "--iwad", "freedoom2.wad",
                                            "--map", "MAP01", "--cfdp", "2", said=said), 0)
@@ -615,6 +626,40 @@ class TestTheDemo(unittest.TestCase):
         stack = FakeStack(cfdp=True, guard=True, lose=["[WadUplinked]"])   # nothing to settle it: unconfirmed
         with mock.patch.object(demo, "COMMIT_ANSWER_S", 0.3):
             self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--no-load", "--cfdp", "2"), 1)
+
+    def test_only_this_uploads_commit_counts(self):
+        # Another upload of basic.wad is put in place while this one is under way (a same-name WadUplinked after t0).
+        # Without this upload's own UploadCommitted, the tool still commits its own .part
+        for guard in (False, True):
+            with self.subTest(guard=guard):
+                stack = FakeStack(cfdp=True, guard=guard)
+                real = stack.upload
+
+                def upload(*a, s=stack, real=real, **k):
+                    s.event("[WadUplinked] Uplinked WAD ready to load: /home/x/doom/wads/uplink/basic.wad")
+                    return real(*a, **k)
+                stack.upload = upload
+                if not guard:
+                    with mock.patch.object(demo, "GUARD_ANSWER_S", 0.3):
+                        self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--iwad", "freedoom2.wad", "--map",
+                                                       "MAP01"), 0)
+                    self.assertEqual(self.names(stack), ["COMMIT_WAD", "LOAD_WAD"])
+                    self.assertEqual(stack.parts, {}, "its own .part was committed")
+                else:
+                    self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--iwad", "freedoom2.wad", "--map",
+                                                   "MAP01"), 0)
+                    self.assertEqual(self.names(stack), ["LOAD_WAD"])
+
+    def test_a_failed_rename_at_the_fin_is_not_taken_for_a_commit(self):
+        # cfdpGuard announced the file but the rename failed (WadUplinkFailed naming this .part at the FIN), and fails
+        # again on COMMIT_WAD: the .part is still there, and that WadUplinkFailed is a failure, not "already in place"
+        stack, said = FakeStack(cfdp=True, guard=True, rename_fails=True), []
+        stack.placed.add("basic.wad")   # an older one, which LOAD_WAD would fly
+        with mock.patch.object(demo, "COMMIT_ANSWER_S", 0.3):
+            self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--iwad", "freedoom2.wad", "--map", "MAP01",
+                                           said=said), 1)
+        self.assertEqual(self.names(stack), ["COMMIT_WAD"])
+        self.assertEqual(len(stack.parts), 1)
 
     def test_the_guard_leaves_class_1_to_commit_wad(self):
         stack = FakeStack(cfdp=True, guard=True)

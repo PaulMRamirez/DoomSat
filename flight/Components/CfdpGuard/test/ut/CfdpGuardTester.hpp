@@ -41,6 +41,10 @@ class CfdpGuardTester final : public CfdpGuardGTestBase {
     void testAResendKeepsTheFirstDestination();
     void testOtherTrafficPassesUntouched();
     void testTheOldestUploadMakesRoom();
+    void testTheSourceIsPartOfTheTransaction();
+    void testALateMetadataAfterTheFinChangesNothing();
+    void testACancelledUploadMakesRoomFirst();
+    void testMetadataForAnotherEntityNeverPushesOutAnUpload();
 
   private:
     void connectPorts();
@@ -51,7 +55,8 @@ class CfdpGuardTester final : public CfdpGuardGTestBase {
     Fw::Buffer metadata(U32 seq,
                         const char* dest,
                         Svc::Ccsds::Cfdp::Class::T txm = Svc::Ccsds::Cfdp::Class::CLASS_2,
-                        U32 src = GROUND);
+                        U32 src = GROUND,
+                        U32 dst = BOARD);
     //! The same, encoded the way Yamcs encodes it: entity ids in 2 bytes, the sequence number in 4
     Fw::Buffer yamcsMetadata(U32 seq, const std::string& dest);
     //! FW_PACKET_FILE descriptor + the receiver's FIN, as cfdpManager.dataOut sends it
@@ -59,7 +64,12 @@ class CfdpGuardTester final : public CfdpGuardGTestBase {
                    Svc::Ccsds::Cfdp::ConditionCode cc = Svc::Ccsds::Cfdp::ConditionCode::CONDITION_CODE_NO_ERROR,
                    Svc::Ccsds::Cfdp::FinDeliveryCode dc = Svc::Ccsds::Cfdp::FinDeliveryCode::FIN_DELIVERY_CODE_COMPLETE,
                    Svc::Ccsds::Cfdp::FinFileStatus fs = Svc::Ccsds::Cfdp::FinFileStatus::FIN_FILE_STATUS_RETAINED,
-                   U32 dst = BOARD);
+                   U32 dst = BOARD,
+                   U32 src = GROUND);
+    //! FW_PACKET_FILE descriptor + the sender's EOF, as fprimeRouter.fileOut delivers it
+    Fw::Buffer eof(U32 seq, Svc::Ccsds::Cfdp::ConditionCode cc);
+    //! A Metadata to the uplink directory, sent up
+    void upload(U32 seq, const std::string& dest);
     //! Whether the last buffer sent on uplinkOut still reads as a CFDP PDU to cfdpManager
     bool lastUplinkReadable();
     std::string path(const char* name) const;

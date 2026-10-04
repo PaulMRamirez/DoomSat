@@ -37,15 +37,28 @@ cfdpGuard.fileAnnounceOut -> doom.fileAnnounce
   back any buffer whose descriptor is not `FW_PACKET_FILE`, unread, on its own thread, through the return path the
   router already has. `tests/test_cfdp_guard.py` reads that branch from F´ when the install is there.
 - **Drop the Metadata, not the transaction.** The file data and EOF still reach `cfdpManager`. With no Metadata,
-  it writes them to `<uplink>/.cfdp-tmp/<eid>:<seq>.tmp`, asks for the Metadata ten times, and ends with a FIN
-  carrying `NAK_LIMIT_REACHED`. The ground then shows FAILED. If the guard dropped every PDU instead, Yamcs would
-  end PAUSED with no reason given. The bytes stay inside the uplink directory, and `scripts/wsl_run_flight.sh`
-  clears `.cfdp-tmp` at each start.
+  it writes them to `<tmp_dir>/<eid>:<seq>.tmp` (`<uplink>/.cfdp-tmp` from the parameter file), asks for the
+  Metadata nine times (with `nack_limit` 10, the tenth count sends the FIN instead of a NAK), and ends with a FIN
+  carrying `NAK_LIMIT_REACHED`. The ground then shows FAILED for class 2; class 1 never hears back and shows
+  COMPLETED. If the guard dropped every PDU instead, Yamcs would end PAUSED with no reason given. With the
+  parameter file the bytes stay inside the uplink directory, and `scripts/wsl_run_flight.sh` clears `.cfdp-tmp` at
+  each start. A start that flies without the parameter file (`DOOMSAT_PRM_DEFAULTS=1`) stages them in F´'s default
+  `/tmp`, which nothing clears; the name is two numbers and `.tmp`, never one the ground chooses.
+- **Remember every transaction let through, and keep it after it ends.** `cfdpManager` routes a Metadata by
+  (source entity, sequence number) alone, whatever its class bit, and keeps the first destination it takes for a
+  transaction (`r2RecvMd` runs once; after the FIN it drops Metadata). So the guard records every Metadata it lets
+  through, class 1 and other destination entities included, and lets a second one for the same transaction through
+  only if it names the same file. The destination the guard holds is then the one `cfdpManager` checksummed. A
+  record is kept after its FIN (or after the sender cancels, an EOF with a condition code, which ends the
+  transaction with no FIN), so a late copy of its Metadata, which a slow link can deliver after the FIN, changes
+  nothing.
 - **Commit only a clean Class 2 FIN.** The FIN must decode, and a `FinPdu` that failed to decode still reads
-  NO_ERROR / COMPLETE / RETAINED, so that check comes first. It must point toward the sender, match a recorded
-  (source entity, sequence number, destination entity) by decoded value (Yamcs writes ids in 2 and 4 bytes, F´ in
-  the fewest), and carry NO_ERROR, COMPLETE and RETAINED. The first such FIN commits, and F´'s repeats find
-  nothing to match. Class 1 has no FIN, so the guard lets it into the uplink directory but never commits it.
+  NO_ERROR / COMPLETE / RETAINED, so that check comes first. It must point toward the sender, match a recorded class
+  2 upload addressed to `cfdpManager`'s LocalEid by (source entity, sequence number, destination entity), compared
+  as decoded values (Yamcs writes ids in 2 and 4 bytes, F´ in the fewest), and carry NO_ERROR, COMPLETE and
+  RETAINED. The first such FIN commits and ends the record, so F´'s repeats (sent until the ground ACKs) commit
+  nothing. `UPLOADS_COMMITTED` counts these announcements; Doom's `WadUplinked` or `WadUplinkFailed` says how the
+  rename went. Class 1 has no FIN, so the guard lets it into the uplink directory but never commits it.
   `COMMIT_WAD`, with its size and checksum check, stays for class 1 and for commits by hand.
 - **Belt and braces.** `Doom::fileAnnounce_handler` now refuses any path outside the uplink directory as well.
 
@@ -53,7 +66,7 @@ cfdpGuard.fileAnnounceOut -> doom.fileAnnounce
 
 | Check | Result |
 |---|---|
-| Unit tests: `scripts/flight.sh ut` (GTest, 14) | All pass. They cover every refused shape of destination, an embedded NUL both ways, Yamcs-width ids, a truncated FIN, seven failed or partial FINs, class 1, resends and a full table |
+| Unit tests: `scripts/flight.sh ut` (GTest, 18) | All pass. They cover every refused shape of destination (the directory's name as a bare prefix included), an embedded NUL both ways, Yamcs-width ids, a truncated FIN, seven failed or partial FINs, class 1 (and a class 2 Metadata naming another file for its transaction), resends, a second source with the same sequence number, a late Metadata after the FIN with the FIN repeated, a cancel, Metadata addressed to another entity, and a full table emptied in the right order. Eight one-line mutants of the table logic (forgetting at the FIN, no eviction order, ignoring a cancel, following only class 2, committing class 1, any destination entity, the source left out of either match) each fail at least one test |
 | Python suite | Passes, with `tests/test_cfdp_guard.py` (wiring, parser reuse, the shared name rule, the F´ branch the refusal relies on) and three demo tests with an on-board stand-in for the guard |
 | Class 2 upload, no loss | `MetadataReceived`, then `UploadCommitted`, then `WadUplinked`, then `RxFileTransferCompleted`. No `COMMIT_WAD` was sent; `LOAD_WAD` flew it |
 | Uploads to `/tmp/…`, `<uplink>/../…`, `<uplink>/notawad.bin`, `<uplink>/.cfdp-tmp/x.wad.1.part` | Each was refused on board (`UploadRefused`, once per transaction although its Metadata came about ten times). The ground showed FAILED `NAK_LIMIT_REACHED` after 28.0 s. No file at any target; the bytes sat in `.cfdp-tmp` until the next start cleared them |
@@ -68,16 +81,26 @@ POSIX keeps the descriptor valid, and no error followed: `RxFileTransferComplete
 
 ## What it does not cover
 
-- **Ground commands and parameters still name paths.** `cfdpManager.SendFile`, `PlaybackDirectory`,
-  `PollDirectory` and the `ChannelConfig` parameter (`tmp_dir`, `move_dir`, `fail_dir`) take any path, and the
-  guard never sees them. Anyone who can command the spacecraft can still read, and with `keep` DELETE remove,
-  any file the flight process can. Run the flight side as an ordinary user.
+- **Ground commands and parameters still name paths.** `fileManager.MoveFile`, `AppendFile`, `RemoveFile` and
+  `CreateDirectory`, `cfdpManager.SendFile`, `PlaybackDirectory`, `PollDirectory` and the `ChannelConfig` parameter
+  (`tmp_dir`, `move_dir`, `fail_dir`) take any path, and the guard never sees them. Anyone who can command the
+  spacecraft can still read, write over (moving an uplinked WAD onto a file, for example) or delete any file the
+  flight process can. Run the flight side as an ordinary user.
 - **A refused upload costs a whole transfer.** The ground's failure reason, `NAK_LIMIT_REACHED`, reads like a link
   fault. The `UploadRefused` event and the `UPLOADS_REFUSED` channel say what happened. Injecting a FIN with
   `FILESTORE_REJECTION` would fail the transfer at once, but it means building PDUs in the guard and was not done.
-- **Up to 8 uploads are followed at once** (`MAX_UPLOADS`, above `cfdpManager`'s `MaxSimultaneousRx` of 5). A
-  ninth pushes out the oldest (`UploadForgotten`), and `COMMIT_WAD` can still commit that one.
-- **The temp files of refused uploads** stay until the next start.
+- **8 transactions are remembered at once** (`MAX_UPLOADS`). `cfdpManager` does not stop at `MaxSimultaneousRx`
+  (5): in F´ v4.3.0 that check in `Engine::startRxTransaction` is commented out, and any of the channel's 50
+  transactions can be a receive. When the table is full, a transaction that has ended goes first, then one no FIN
+  can settle (class 1, or addressed to another entity), and only then the oldest upload still waiting for its FIN
+  (`UploadForgotten`), whose FIN then commits nothing; `COMMIT_WAD` can still commit it. The ground sends one upload
+  at a time (Yamcs `maxNumPendingUploads: 1`), so that last case needs nine uploads at once from elsewhere.
+- **A sender that breaks CFDP within a transaction** can still make the guard's record differ from `cfdpManager`'s
+  destination, for example by pushing a live upload out of the table with eight others and then naming another
+  file for it. Every destination it can reach still passed the confinement, and such a sender could as well send
+  `COMMIT_WAD` or `SendFile`.
+- **The temp files of refused uploads** stay until the next start (in `/tmp`, and never cleared, when flying
+  without the parameter file).
 - **Read, not run.** If a file-data PDU's body fails to decode before any Metadata, F´ ends the transaction with
   no error status and could send a NO_ERROR FIN for the temp file. The guard has no Metadata for it, so it commits
   nothing. If a Metadata did arrive and the file is short, `r2CalcCrcChunk` would loop. Yamcs never sends such a

@@ -2,7 +2,9 @@ module DoomMission {
 
     @ The CFDP uplink's gatekeeper, on both of cfdpManager's paths.
     @ Up (router -> cfdpManager): a Metadata PDU whose destination is not an uplinked WAD in the uplink directory
-    @ (NAME.wad.<nonce>.part, see Doom/WadPath.hpp) never reaches cfdpManager, so CFDP writes nothing anywhere else.
+    @ (NAME.wad.<nonce>.part, see Doom/WadPath.hpp) never reaches cfdpManager, so it opens no destination anywhere
+    @ else. File data that comes without an admitted Metadata is still staged in cfdpManager's tmp_dir as
+    @ <eid>:<seq>.tmp, which the repo's parameters put in the uplink directory (.cfdp-tmp).
     @ Down (cfdpManager -> com queue): when cfdpManager's own FIN for an upload the guard let through says the file
     @ arrived whole (no error, retained), the guard announces the file to the Doom component, which renames it to
     @ NAME.wad. The commit happens on board, with no ground command.
@@ -58,15 +60,16 @@ module DoomMission {
         event UploadForgotten(dest: string size 120, srcEid: U32, seq: U32) \
             severity warning low \
             id 4 \
-            format "Too many CFDP uploads at once: {} (transaction {}:{}) will not be put in place on board"
+            format "CFDP upload table full: {} (transaction {}:{}) is no longer followed, so its FIN will not put it in place; COMMIT_WAD can"
 
-        @ Uploads let through to the uplink directory
+        @ Uploads let through to the uplink directory (class 1 included; a resent Metadata is not counted again)
         telemetry UPLOADS_ACCEPTED: U32 id 0
 
         @ Uploads refused for their destination, or for a Metadata nobody can read
         telemetry UPLOADS_REFUSED: U32 id 1
 
-        @ Uploads put in place on the receiver's FIN
+        @ Uploads announced to the Doom component on the receiver's FIN; its WadUplinked or WadUplinkFailed says how
+        @ the rename went
         telemetry UPLOADS_COMMITTED: U32 id 2
 
         # ----------------------------------------------------------------------

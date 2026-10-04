@@ -83,7 +83,8 @@ the build:
 - `COMMIT_WAD`, because `cfdpManager` has no `fileAnnounce`. It carries the size and CFDP checksum of what was
   sent, and the Doom component renames only a file that has both. (The commit could also move on board with no
   upstream work, through a guard component that records each upload's destination from its Metadata and commits
-  on the receiver's FIN: risk 3.)
+  on the receiver's FIN: risk 3.) *Since then:* built, `docs/plans/cfdp-guard.md`; `COMMIT_WAD` stays for class 1
+  and a commit by hand.
 
 The upstream drafts below would retire them, but none blocks. F´ v4.4.0 and `devel` (`55f597d`, 2 October 2026)
 still carry the `configure` bug, still have no reference wiring and still have no CFDP sandbox. For this work an
@@ -311,7 +312,8 @@ order:
 
 1. Run the flight side as an ordinary user that can write little besides the uplink directory (no code).
 2. A small guard component between `fprimeRouter.fileOut` and `cfdpManager.dataIn` that drops any metadata PDU
-   whose destination is not `<uplink>/<basename>.part` (not built; about a day).
+   whose destination is not `<uplink>/<basename>.part` (not built; about a day). *Since then:* built,
+   `docs/plans/cfdp-guard.md`.
 3. Upstream: a destination root in `cfdpManager`, like FileUplink's `configure(directory)` (draft F5).
 
 ### Risks and limits, most serious first
@@ -360,7 +362,7 @@ order:
 A review of the whole branch found 21 problems, and an adversarial check of each one refuted none (15 confirmed as
 stated, 6 confirmed with their severity or reach cut back). All are fixed on this branch, with a test each where
 one could be written, with two exceptions. The guard component that would commit on board is described under risk 3
-and not built. For class 1, the suggested check of `cfdpManager`'s `faultCrcMismatch` counter is not needed: the
+and not built (*since then:* built, `docs/plans/cfdp-guard.md`). For class 1, the suggested check of `cfdpManager`'s `faultCrcMismatch` counter is not needed: the
 on-board checksum check below refuses a damaged file whether or not its `RxCrcMismatch` reaches the ground. The
 fixes that changed behaviour:
 

@@ -25,6 +25,10 @@ GUARD_TEST(Commit, ATruncatedFinCountsForNothing)
 GUARD_TEST(Commit, OnlyUploadsLetThroughAreCommitted)
 GUARD_TEST(Commit, Class1IsLetThroughButNeverCommitted)
 GUARD_TEST(Commit, TheOldestUploadMakesRoom)
+GUARD_TEST(Commit, TheSourceIsPartOfTheTransaction)
+GUARD_TEST(Commit, ALateMetadataAfterTheFinChangesNothing)
+GUARD_TEST(Commit, ACancelledUploadMakesRoomFirst)
+GUARD_TEST(Commit, MetadataForAnotherEntityNeverPushesOutAnUpload)
 
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);

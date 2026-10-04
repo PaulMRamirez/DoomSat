@@ -176,7 +176,8 @@ ground/.venv/bin/python tools/wad_uplink_demo.py --iwad freedoom1.wad --map E1M1
    the file. Commands go up on their own virtual channel ahead of the file, so they keep flowing alongside it.
 2. **Into place.** When the spacecraft has the whole file it says so (the class 2 FIN), and at that moment it
    renames the file to `NAME` in the uplink directory itself (`cfdpGuard`, then `WadUplinked`): no command
-   needed, so an upload from the Yamcs web UI lands in place too. A file that is still arriving, or never arrived
+   needed, so a reliable (class 2, the default) upload from the Yamcs web UI to a destination of that shape
+   lands in place too. A file that is still arriving, or never arrived
    whole, stays a `.part` and can't be loaded. `COMMIT_WAD(NAME.<nonce>.part, fileSize, checksum)` is for the rest
    (a class 1 upload, a commit by hand): the Doom component checks the size and CFDP checksum against the file on
    board and only then renames it (`WadCommitRefused` otherwise). `tools/wad_uplink_demo.py --checksum FILE`
@@ -198,12 +199,17 @@ when it needs one) when no answer comes back. Keep `--pdu-delay` at 5 ms or more
 PDUs can use up the buffers the downlink also needs.
 
 **What is and is not restricted.** An upload may land only as `NAME.wad.<nonce>.part` directly in the uplink
-directory: `cfdpGuard` refuses any other destination on board (`UploadRefused`, and the ground's transfer fails),
-so nothing can be written or overwritten elsewhere through CFDP (`docs/plans/cfdp-guard.md`). On the native build
-F´ file packets still write wherever they are sent, since it never set FileUplink's write directory. Commands are
-another matter: `cfdpManager.SendFile` can downlink any file the flight process can read, deleting it if asked
-(`keep` DELETE), and its `ChannelConfig` parameter names directories. Run the flight side as an ordinary user,
-never as root, on anything that matters.
+directory: `cfdpGuard` refuses any other destination on board (`UploadRefused` and `UPLOADS_REFUSED`; a class 2
+transfer then fails on the ground with `NAK_LIMIT_REACHED`, while a class 1 transfer still shows COMPLETED there,
+because class 1 never hears back), so no other destination can be written or overwritten through CFDP
+(`docs/plans/cfdp-guard.md`). The bytes of a refused upload are still staged in `cfdpManager`'s `tmp_dir`, which the
+parameter file puts in `wads/uplink/.cfdp-tmp` (F´'s own default, `/tmp`, applies only to a start that flies without
+the parameter file, which `DOOMSAT_PRM_DEFAULTS=1` allows). On the native build F´ file packets still write wherever they are sent, since it never set FileUplink's
+write directory. Commands are another matter: anyone who can command the spacecraft can still write over or delete
+any file the flight process can. `fileManager.MoveFile`, `AppendFile` and `RemoveFile` take any path (moving an
+uplinked WAD over another file, for example), `cfdpManager.SendFile` can downlink any file the flight process can
+read, deleting it if asked (`keep` DELETE), and its `ChannelConfig` parameter names directories. Run the flight side
+as an ordinary user, never as root, on anything that matters.
 
 The demo takes the uplink directory from `DOOMSAT_HOME` (the environment, then `.env`), as the scripts do. With
 the ground on Windows and the flight side in WSL, pass the WSL path explicitly, for example

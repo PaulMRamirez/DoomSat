@@ -13,11 +13,10 @@
 2. FileUplink checks the checksum (FileReceived); the Doom component then renames it to NAME (WadUplinked).
    Only that event says the file is there whole: the service calls an upload complete once it has SENT it.
    On the CFDP build (docs/plans/cfdp-stage2-spike.md: Yamcs runs a cfdp service, the flight software
-   cfdpManager) the file goes up as CCSDS CFDP class 2 instead (--cfdp 1 or 2 to choose), and COMMIT_WAD does
-   the rename: in class 2 once the spacecraft's FIN says the file is whole, in class 1 once
-   RxFileTransferCompleted comes with no RxCrcMismatch (class 1 has no retransmission: not for WADs).
-   On a build with cfdpGuard the spacecraft commits a class 2 file itself when its FIN goes out, and COMMIT_WAD is
-   only the fallback (a lost WadUplinked, a build without the guard, class 1).
+   cfdpManager) the file goes up as CCSDS CFDP class 2 instead (--cfdp 1 or 2 to choose). cfdpGuard commits a
+   class 2 file on board as the spacecraft's FIN goes out (UploadCommitted naming this upload's .part, then
+   WadUplinked). COMMIT_WAD is the fallback for the rest: those events lost, a build without the guard, or class 1
+   once RxFileTransferCompleted comes with no RxCrcMismatch (class 1 has no retransmission: not for WADs).
    COMMIT_WAD carries the size and CFDP checksum of what was sent, and the Doom component renames the file
    only if it has both (WadCommitRefused otherwise). --checksum FILE prints the two, for a commit by hand.
 3. LOAD_WAD; the payload proves the game starts on it in a child process, then switches (WadLoaded) or keeps
@@ -91,7 +90,7 @@ def say(msg):
 
 
 def part_name(name):
-    """NAME.<milliseconds>.part: a fresh name for every uplink, which COMMIT_WAD (or FileUplink) renames to NAME."""
+    """NAME.<milliseconds>.part: a fresh name for every uplink, which the Doom component renames to NAME."""
     return f"{name}.{time.time_ns() // 1000000}.part"
 
 
@@ -177,14 +176,15 @@ class Link:
         with self.lock:
             return self.values.get(name, (0, None))[1]
 
-    def wait_event(self, since, *needles, timeout=60.0):
-        """The first event after `since` whose message contains any needle; None on timeout."""
+    def wait_event(self, since, *needles, timeout=60.0, when=False):
+        """The first event after `since` whose message contains any needle (with when=True, as (arrival time,
+        message)); None on timeout."""
         end = time.time() + timeout
         with self.lock:
             while True:
                 for t, msg in self.events:
                     if t >= since and any(n in msg for n in needles):
-                        return msg
+                        return (t, msg) if when else msg
                 left = end - time.time()
                 if left <= 0:
                     return None
@@ -354,6 +354,10 @@ def uplink(a, link, bucket, part, remote, name, content):
     else:
         say(f"all packets sent in {sent:.1f} s ({len(content) / sent / 1000:.1f} KB/s); waiting for the spacecraft")
     placed = f"[WadUplinked] Uplinked WAD ready to load: {a.remote_dir.rstrip('/')}/{name}"
+    # WadUplinked names NAME, the same for every upload of it; these name this upload's own .part (a fresh nonce)
+    committed = f"[UploadCommitted] CFDP upload {remote} "
+    not_renamed = f"[WadUplinkFailed] Uplinked WAD could not be renamed into place: {remote}"
+    refused = f"[WadCommitRefused] Uplinked WAD not committed, it is not the file the ground sent: {remote} "
     if not a.cfdp:
         said = link.wait_event(t0, placed, "[BadChecksum]", "[WadUplinkFailed]", "[FileWriteError]", "[FileOpenError]",
                                timeout=30)
@@ -369,14 +373,16 @@ def uplink(a, link, bucket, part, remote, name, content):
         return 0, False
 
     # cfdpManager writes the file in place and has no fileAnnounce. cfdpGuard commits a class 2 file on board as the
-    # receiver's FIN goes out, so its WadUplinked comes down with the FIN; COMMIT_WAD below is the fallback.
+    # receiver's FIN goes out, so its events come down with the FIN; COMMIT_WAD below is the fallback. Only this
+    # upload's own UploadCommitted counts: a WadUplinked alone could be another upload of the same NAME.
     if a.cfdp == 2:
-        said = link.wait_event(t0, placed, timeout=GUARD_ANSWER_S)
-        if said:
+        mine = link.wait_event(t0, committed, timeout=GUARD_ANSWER_S, when=True)
+        said = mine and link.wait_event(mine[0], placed, not_renamed, timeout=GUARD_ANSWER_S)
+        if said and "[WadUplinked]" in said:
             say(f"event: {said} (committed on board at the FIN)")
             return 0, False
-        say(f"no WadUplinked within {GUARD_ANSWER_S:.0f} s of the FIN (lost on the way down, or no cfdpGuard on this "
-            "build): sending COMMIT_WAD")
+        say(f"{said or 'no commit of this upload seen'} within {GUARD_ANSWER_S:.0f} s of the FIN (events lost on the "
+            "way down, a failed rename, or no cfdpGuard on this build): sending COMMIT_WAD")
     # Class 1 has no FIN, and F' v4.3.0 reports a class 1 file whose CRC failed as completed anyway.
     if a.cfdp == 1:
         done = link.wait_event(t0, "[RxFileTransferCompleted]", "[RxFileTransferFailed]", "[RxCrcMismatch]",
@@ -396,10 +402,10 @@ def uplink(a, link, bucket, part, remote, name, content):
         t_commit = time.time()
         link.command("COMMIT_WAD", part=part, fileSize=size, checksum=checksum)
         commits += 1
-        said = link.wait_event(t_commit, placed, "[WadUplinkFailed]", "[WadCommitRefused]", timeout=COMMIT_ANSWER_S)
+        said = link.wait_event(t_commit, placed, not_renamed, refused, timeout=COMMIT_ANSWER_S)
         if said:
             break
-    said = said or link.wait_event(t_first, placed, "[WadUplinkFailed]", "[WadCommitRefused]", timeout=2)
+    said = said or link.wait_event(t_first, placed, not_renamed, refused, timeout=2)
     say(f"event: {said}")
     if said and "[WadCommitRefused]" in said:
         say("FAIL: the file on board is not the file sent (its size or checksum differs); it stays a .part")
@@ -410,7 +416,13 @@ def uplink(a, link, bucket, part, remote, name, content):
         say(f"FAIL: no answer to {commits} COMMIT_WAD; the file may still be {part}, and LOAD_WAD would use any older "
             f"{name} on board in its place. Commit it by hand (--checksum FILE) or run again with more --tries")
         return 1, False
-    if (commits > 1 or a.cfdp == 2) and "[WadUplinkFailed]" in said:
+    # A first WadUplinkFailed says no more than that the .part is not there to rename. With this upload's own
+    # UploadCommitted seen, and no failed rename of it at the FIN, cfdpGuard put it in place and its WadUplinked was
+    # lost; otherwise it may never have arrived where COMMIT_WAD looks, and LOAD_WAD would fly any older NAME.
+    with link.lock:
+        failed_at_fin = any(t < t_first and not_renamed in m for t, m in link.events)
+    guarded = a.cfdp == 2 and link.wait_event(t0, committed, timeout=0) is not None and not failed_at_fin
+    if (commits > 1 or guarded) and not_renamed in said:
         # No .part to commit: cfdpGuard put a class 2 file in place at its FIN, or an earlier COMMIT_WAD did, and
         # that WadUplinked was lost on the way down
         if a.no_load:
@@ -453,8 +465,9 @@ def main():
                                      "FprimeFilePacketService)")
     p.add_argument("--cfdp", type=int, choices=(1, 2),
                    help="send the file with CCSDS CFDP class 1 or 2 (the CFDP build: the flight software runs "
-                        "cfdpManager), then COMMIT_WAD it into place once the transfer is known whole. Default: class 2 "
-                        "when Yamcs runs a cfdp service. Class 1 has no retransmission: for trying it, not for WADs")
+                        "cfdpManager). Class 2 is put in place on board by cfdpGuard at the FIN (COMMIT_WAD only as a "
+                        "fallback); class 1 by COMMIT_WAD once the transfer is known whole. Default: class 2 when Yamcs "
+                        "runs a cfdp service. Class 1 has no retransmission: for trying it, not for WADs")
     p.add_argument("--bucket", default="wadUplink")
     p.add_argument("--out", default=str(ROOT / "out"), help="where the frame from after the switch goes")
     p.add_argument("--checksum", metavar="FILE", help="print the fileSize and checksum COMMIT_WAD needs for FILE (a "
@@ -501,7 +514,7 @@ def main():
         return 2
     if a.wad and a.cfdp is None:
         # The build decides: the CFDP build's Yamcs runs a cfdp service, the native one FprimeFilePacketService.
-        # --service cfdp says the same, and gets class 2 and COMMIT_WAD with it.
+        # --service cfdp says the same, and gets class 2 with it.
         if a.service:
             use_cfdp = a.service == "cfdp"
         else:

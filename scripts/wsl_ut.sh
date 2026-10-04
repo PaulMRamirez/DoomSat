@@ -8,10 +8,13 @@ bash "$DOOMSAT_REPO/scripts/wsl_sync.sh"
 cd "$PROJ"
 . fprime-venv/bin/activate
 UT=build-fprime-automatic-native-ut
-# A unit test registered after the unit-test build was configured is only picked up by configuring it again
-if [ ! -f "$UT/CMakeCache.txt" ] || [ DoomMission/Components/CfdpGuard/CMakeLists.txt -nt "$UT/CMakeCache.txt" ]; then
+# fprime-util check reads its list of targets before it refreshes the cache, so a unit test registered since the
+# last configure would not be built on this run: refresh it in place first (quick when nothing changed). A second
+# `fprime-util generate --ut` would only refuse, because the build directory exists.
+if [ ! -f "$UT/CMakeCache.txt" ]; then
   fprime-util generate --ut 2>&1 | grep -v "fprime-gds has unexpected" | tail -3
-  touch "$UT/CMakeCache.txt"
+else
+  cmake --build "$UT" --target refresh_cache 2>&1 | tail -1
 fi
 cd DoomMission/Components/CfdpGuard
 fprime-util check -j "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)" 2>&1 | grep -v "fprime-gds has unexpected"

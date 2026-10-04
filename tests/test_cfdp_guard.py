@@ -5,6 +5,7 @@ needs the F´ install. These checks need nothing: they read the topology, the so
 F´ itself when the install is there (skipped otherwise), because the guard refuses a Metadata by relying on
 cfdpManager to hand back, unread, a buffer whose descriptor is not FW_PACKET_FILE.
 """
+import json
 import os
 import re
 import unittest
@@ -21,6 +22,7 @@ TOPOLOGY = _read("flight", "DoomSat", "Top", "topology.fpp")
 INSTANCES = _read("flight", "DoomSat", "Top", "instances.fpp")
 GUARD_CPP = _read("flight", "Components", "CfdpGuard", "CfdpGuard.cpp")
 GUARD_FPP = _read("flight", "Components", "CfdpGuard", "CfdpGuard.fpp")
+GUARD_HPP = _read("flight", "Components", "CfdpGuard", "CfdpGuard.hpp")
 DOOM_CPP = _read("flight", "Components", "Doom", "Doom.cpp")
 NUM_CHANNELS = int(re.search(r"constant NumChannels = (\d+)", _read("flight", "config", "CfdpCfg.fpp")).group(1))
 FPRIME = os.path.join(os.environ.get("DOOMSAT_HOME", os.path.expanduser("~/doom")), "DoomSat", "lib", "fprime")
@@ -63,9 +65,10 @@ class TestItReadsPdusAsCfdpManagerDoes(unittest.TestCase):
     def test_it_uses_f_primes_own_cfdp_classes(self):
         self.assertIn("#include <Svc/Ccsds/CfdpManager/Types/PduBase.hpp>",
                       _read("flight", "Components", "CfdpGuard", "CfdpGuard.hpp"))
-        for used in ("peekPduType(pdu) == PduTypeEnum::METADATA", "MetadataPdu md;", "md.deserializeFrom(sb)",
+        for used in ("type == PduTypeEnum::METADATA", "MetadataPdu md;", "md.deserializeFrom(sb)",
                      "md.getDestFilename()", "peekPduType(pdu) == PduTypeEnum::FINISHED", "FinPdu fin;",
-                     "fin.deserializeFrom(sb) != Fw::FW_SERIALIZE_OK", "Fw::ComPacketType::FW_PACKET_FILE"):
+                     "fin.deserializeFrom(sb) != Fw::FW_SERIALIZE_OK", "Fw::ComPacketType::FW_PACKET_FILE",
+                     "type == PduTypeEnum::END_OF_FILE", "EofPdu eof;", "eof.deserializeFrom(sb) != Fw::FW_SERIALIZE_OK"):
             self.assertIn(used, GUARD_CPP)
         self.assertIn("Svc_Ccsds_CfdpManager_Types", _read("flight", "Components", "CfdpGuard", "CMakeLists.txt"))
 
@@ -73,6 +76,12 @@ class TestItReadsPdusAsCfdpManagerDoes(unittest.TestCase):
         for cond in ("ConditionCode::CONDITION_CODE_NO_ERROR", "FinFileStatus::FIN_FILE_STATUS_RETAINED",
                      "FinDeliveryCode::FIN_DELIVERY_CODE_COMPLETE", "PduDirection::DIRECTION_TOWARD_SENDER"):
             self.assertIn(cond, GUARD_CPP)
+
+    def test_its_local_entity_is_cfdp_managers(self):
+        # Only a class 2 upload addressed to cfdpManager's LocalEid can end with its FIN; the guard holds the same id
+        prm = json.loads(_read("flight", "config", "PrmDb.json"))
+        local = int(re.search(r"LOCAL_EID = (\d+);", GUARD_HPP).group(1))
+        self.assertEqual(local, prm["DoomSat.cfdpManager"]["LocalEid"])
 
     @unittest.skipUnless(os.path.isdir(FPRIME), "no F´ install to read")
     def test_cfdp_manager_hands_back_a_buffer_that_is_not_a_file_pdu(self):
