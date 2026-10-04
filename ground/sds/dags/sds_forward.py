@@ -34,7 +34,8 @@ L2_SUMMARY = Asset(name="doomsat_sds_l2_summary", uri="file:///doomsat-sds/produ
     start_date=pendulum.datetime(2026, 10, 1, tz="UTC"),
     catchup=False,
     max_active_runs=3,
-    default_args={"retries": 2, "retry_delay": timedelta(seconds=30)},
+    # A Yamcs replay can hang for good (doomsat_sds.archive explains); the timeout turns that into a retry.
+    default_args={"retries": 2, "retry_delay": timedelta(seconds=30), "execution_timeout": timedelta(minutes=30)},
     tags=["doomsat-sds", "phase-a"],
     doc_md=__doc__,
 )

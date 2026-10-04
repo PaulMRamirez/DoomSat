@@ -31,7 +31,7 @@ L2_TYPES = ["l2_path", "l2_summary", "l2_linkstats"]
     start_date=pendulum.datetime(2026, 10, 1, tz="UTC"),
     catchup=False,
     max_active_runs=1,
-    default_args={"retries": 1, "retry_delay": timedelta(seconds=30)},
+    default_args={"retries": 1, "retry_delay": timedelta(seconds=30), "execution_timeout": timedelta(minutes=45)},
     params={
         "episodes": Param([], type="array", description="episode ids to reprocess; empty means every cataloged episode"),
         "types": Param(L2_TYPES, type="array", description="L2 product types to bring up to their current version"),

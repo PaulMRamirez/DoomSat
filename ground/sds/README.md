@@ -57,6 +57,11 @@ sessions it started itself (a pid file is trusted only while the process's start
 anything matched by name. A forward run that fails for good is retried twice by the watcher
 (`fwd__<id>__retry1`, `__retry2`); after that a `forward_failed` finding asks a person to look.
 
+A Yamcs replay can die inside the server and leave its HTTP response open for ever. So parameters are read in
+10-minute replays, each request has a 60 s read timeout, and every task that reads Yamcs has an
+`execution_timeout`; a hung read becomes a failed try that is retried. To stop a stuck task by hand, SIGKILL its
+`airflow worker -- <ti id>` process: on SIGTERM the Task SDK only calls the operator's `on_kill` and carries on.
+
 Airflow's UI and API are on http://127.0.0.1:8080 with no login (local only). The CLI with the right
 environment is `scripts/sds.sh airflow ...`, e.g. `scripts/sds.sh airflow dags list-runs sds_forward`.
 

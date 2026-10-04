@@ -104,7 +104,8 @@ disagreed with the brief, the code won; each case is listed under "What the code
    share the channel (`seq & 0x80000000`). Phase B's live capture is the only frame source.
 4. **Archive reads are fresh.** The runtime parameter archive uses the back-filler (every ~10 minutes), but
    a read whose window runs past the archive's end is completed by an automatic replay, so a read made
-   seconds after an episode ends is complete. Each read spawns a replay processor, so reads are batched.
+   seconds after an episode ends is complete. Each read spawns a replay processor, so reads are batched across
+   channels, and cut into 10-minute windows, because a long replay can die inside Yamcs (see Progress).
 5. **TM time runs about 0.95 s ahead of wall clock** (the preprocessor's leap-second offset is 38, not 37),
    while command history is stamped with wall clock. Commands are placed on the TM time axis using the
    offset measured from the samples themselves (generation minus reception).
@@ -336,3 +337,30 @@ Baseline → plan → Airflow stack → product package and tests → Phase A (f
     whole. A dead service stayed "capture GO". Two threads raced on the umask.
   - The bucket kept every version ever published; it now holds the current ones, three objects per episode.
   - A missing pilot was recorded as "none" instead of unknown.
+- A forward run that hung, verified by running. With `--system-two none` an episode has no level budget, so
+  episode 3 of the 01:16 flight ran 2.45 hours (8815 s, from 02:05) until I restarted the payload at 04:32. The
+  restart's `PayloadConnected` closed it, live, as `interrupted` (inferred, then confirmed from telemetry).
+  - Its `build_l1` then hung for 28 minutes. Yamcs's log shows the replay failing 30 s into the 2.45-hour
+    `streamParameterValues`: "Channel did not become writable in 10 seconds", then
+    `IllegalReferenceCountException`s. After that the HTTP response never ended, and yamcs-client sets no read
+    timeout. SIGTERM did not stop the task, because the Task SDK only calls `on_kill` on SIGTERM; SIGKILL did.
+  - Fixed three ways: parameters are read in 10-minute replays (checked live to return the same samples as one
+    replay, 6081 of 6081, and faster); every Yamcs request has a 60 s read timeout, with one retry per chunk;
+    every task that reads Yamcs has an `execution_timeout`, which Airflow enforces with SIGALRM.
+  - The retried `build_l1` read the episode in 10-minute chunks and built its L1 (18 MB, 308,337 tics) in 2 min 57 s.
+    The L2s and the publish followed. Its context is unknown (no WAD, map or pilot), which is right: the payload
+    that flew it was gone by the time the run started.
+- Finding: restarting the payload leaves the old ViZDoom engine running. `scripts/wsl_run_flight.sh` stops the
+  payload with `pkill -f "doom_payload.py --fps"` (SIGTERM), Python dies without closing the game, and the
+  `vizdoom` child is orphaned. Four had piled up after this session's payload restarts (killed by hand). Left
+  alone, since it is an existing flight-side file.
+- Third reprocessing campaign (`reprocess__summary-linkstats-1.2`), verified by running, for the 1.2.0
+  `l2_summary` and `l2_linkstats` from the review fixes:
+  - All 8 episodes' L1s were rebuilt from the archive with the chunked reader, and all 8 reproduced their
+    cataloged sha256 bit for bit. That includes the 47-minute episode, whose L1 the single-replay reader had
+    built at 02:07, so chunking changes nothing.
+  - 14 L2s were built (two per episode for 7 episodes), 10 were already current, none stale. The catalog now
+    holds `l2_summary` and `l2_linkstats` at 1.0.0, 1.1.0 and 1.2.0, the newest current.
+  - Every episode was republished. The bucket went from 45 objects to 24 (the 21 superseded copies from before
+    the pruning fix are gone), three current ones per episode. All 8 Timeline items link to 1.2.0, and the
+    rollup was rebuilt by asset trigger over 8 `l2_summary@1.2.0` inputs.

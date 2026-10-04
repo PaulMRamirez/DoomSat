@@ -26,7 +26,7 @@ from airflow.sdk import dag, task
     catchup=False,
     max_active_runs=1,
     dagrun_timeout=timedelta(minutes=5),
-    default_args={"retries": 0},
+    default_args={"retries": 0, "execution_timeout": timedelta(minutes=4)},
     tags=["doomsat-sds", "phase-b"],
     doc_md=__doc__,
 )

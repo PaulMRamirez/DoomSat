@@ -32,7 +32,7 @@ LOOKBACK_S = 6 * 3600
     start_date=pendulum.datetime(2026, 10, 1, tz="UTC"),
     catchup=False,
     max_active_runs=1,
-    default_args={"retries": 1, "retry_delay": timedelta(seconds=15)},
+    default_args={"retries": 1, "retry_delay": timedelta(seconds=15), "execution_timeout": timedelta(minutes=10)},
     tags=["doomsat-sds", "phase-a"],
     doc_md=__doc__,
 )

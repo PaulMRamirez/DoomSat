@@ -10,6 +10,11 @@ Things about this archive that cost time to find (docs/plans/sds-airflow.md, "Wh
   replay each. Same values, five times slower.
 - Event filters: lowercase `or`/`and` silently match nothing on Yamcs 5.12.8. A regex on `type` works.
 - `list_command_history(command=...)` builds a URL Yamcs 5.12.8 does not route; list without a name instead.
+- A long replay can die inside Yamcs and leave its HTTP response open for ever. Seen live 30 s into a 2.5-hour
+  streamParameterValues: "Channel did not become writable in 10 seconds", then IllegalReferenceCountExceptions,
+  then nothing; yamcs-client sets no read timeout, so the reader waited for ever. Parameters are therefore read in
+  CHUNK_MS pieces, every request carries a read timeout, and a chunk that times out or fails is asked for once more
+  before the error is raised.
 - Values: F´ bools arrive as the strings "True"/"False" (an XTCE enumeration), F32 as Python floats widened from
   float32, enums as their labels. `value()` normalises the first two.
 """
@@ -76,12 +81,29 @@ def _command_dict(c) -> dict:
             "comment": c.comment, "acks": acks}
 
 
+CHUNK_MS = 10 * 60 * 1000       # parameter reads go to Yamcs in replays of at most this long
+READ_TIMEOUT_S = 60             # no byte for this long and the request is given up on
+
+
+def with_read_timeout(session, read_s: float = READ_TIMEOUT_S):
+    """Give every request on a requests.Session a (connect, read) timeout unless the call names its own."""
+    plain = session.request
+
+    def request(method, url, **kw):
+        kw.setdefault("timeout", (10, read_s))
+        return plain(method, url, **kw)
+
+    session.request = request
+    return session
+
+
 class YamcsArchive:
     """The live archive through yamcs-client (imported here, so nothing else needs it)."""
 
     def __init__(self, address: str = "localhost:8090", instance: str = config.INSTANCE):
         from yamcs.client import YamcsClient
         self.client = YamcsClient(address)
+        with_read_timeout(self.client.ctx.session)
         self.archive = self.client.get_archive(instance)
         self.instance = instance
 
@@ -102,13 +124,31 @@ class YamcsArchive:
         if stop_ms <= start_ms:
             return out
         wanted = {config.qualified(n): n for n in names}
-        for pdata in self.archive.stream_parameter_values(list(wanted), start=from_ms(start_ms), stop=from_ms(stop_ms)):
-            for p in pdata.parameters:
-                n = wanted.get(p.name)
-                if n is None:
-                    continue
-                out[n].append((to_ms(p.generation_time), to_ms(p.reception_time) if p.reception_time else None,
-                               value(p.eng_value)))
+        t = start_ms
+        while t < stop_ms:
+            u = min(t + CHUNK_MS, stop_ms)
+            for attempt in (1, 2):
+                got: dict[str, Series] = {n: [] for n in names}
+                try:
+                    for pdata in self.archive.stream_parameter_values(list(wanted), start=from_ms(t), stop=from_ms(u)):
+                        for p in pdata.parameters:
+                            n = wanted.get(p.name)
+                            if n is not None:
+                                got[n].append((to_ms(p.generation_time),
+                                               to_ms(p.reception_time) if p.reception_time else None,
+                                               value(p.eng_value)))
+                    break
+                except Exception as e:
+                    if attempt == 2:
+                        raise
+                    print("archive: parameters %s..%s failed (%s: %s); asking once more"
+                          % (iso(t), iso(u), type(e).__name__, e))
+            # A sample on a boundary between chunks would come back twice; the outer bounds are left to Yamcs,
+            # as they were when the whole window was one replay.
+            lo, hi = (None if t == start_ms else t), (None if u == stop_ms else u)
+            for n in names:
+                out[n].extend(s for s in got[n] if (lo is None or s[0] >= lo) and (hi is None or s[0] < hi))
+            t = u
         for n in out:
             out[n].sort(key=lambda s: s[0])
         return out
