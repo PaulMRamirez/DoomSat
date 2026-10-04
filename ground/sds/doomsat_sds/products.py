@@ -34,7 +34,7 @@ ALGORITHMS = {
     "ql_health": ("QL", "1.0.0", "json", "application/json"),
     "ql_contact_sheet": ("QL", "1.0.0", "png", "image/png"),
     "l0_record": ("L0", "1.0.0", "json", "application/json"),        # Phase D: the payload's record, as downlinked
-    "qa_record_check": ("QA", "1.1.0", "json", "application/json"),  # Phase D: that record against L1
+    "qa_record_check": ("QA", "1.2.0", "json", "application/json"),  # Phase D: that record against L1
 }
 L2_TYPES = ("l2_path", "l2_summary", "l2_linkstats")
 # IntentSet echoes every INTENT command, which L1 already carries; the other Doom events are kept.
@@ -78,7 +78,9 @@ def _table(series: dict, names: list, start_ms: int, end_ms: int) -> dict:
     not as their algorithm needs. F' time tags are coarse (the rate group's), and two statuses handled within
     one tag give a channel two samples with the same time: those go in consecutive rows with the same t_ms,
     in reception order, so rows are non-decreasing (not strictly increasing) in time. (1.0.0 kept one row per
-    time and so lost the earlier of such a pair: 8 samples in a 34 s episode.)
+    time and so lost the earlier of such a pair: 8 samples in a 34 s episode.) Within such a pair, the k-th
+    sample of one channel and the k-th of another need not come from the same status, because a channel can
+    lose one of the two on board; the downlink does not say, so nothing downstream should assume it.
     """
     rows: dict[tuple[int, int], list] = {}
     for i, n in enumerate(names):

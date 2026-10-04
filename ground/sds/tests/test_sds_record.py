@@ -121,6 +121,27 @@ class TestAgainstL1(unittest.TestCase):
         self.assertIs(checks["statuses sent vs received"]["agree"], True)
         self.assertLess(out["statuses"]["delivery"], 1.0)
 
+    def test_a_position_lost_on_board_is_unattributable_not_a_disagreement(self):
+        # Seen live (episode 20261004T020515Z-e0002): two statuses, tics 29308 and 29311, shared one F' time tag;
+        # the archive kept both TICs but only the second position. Pairing that position with tic 29308 gave a
+        # false 30-unit "disagreement". A time tag with fewer positions than tics must not be compared.
+        ep = episodes.ClosedEpisode(4, 2_000, "PlayerDied", "died", None)
+        science = {n: [] for n in config.SCIENCE}
+        science["TIC"] = [(1_000, 900, 10), (1_000, 950, 13), (1_100, 1_000, 16)]
+        science["POS_X"] = [(1_000, 950, 5.0), (1_100, 1_000, 7.0)]
+        science["POS_Y"] = [(1_000, 950, 6.0), (1_100, 1_000, 8.0)]
+        l1 = products.build_l1(ep, (1_000, 1_100), science, {}, [], [], CONTEXT, [])
+        rec = {"episode": 4, "outcome": "died", "first_tic": 10, "last_tic": 16, "statuses_sent": 3,
+               "health_min": 0, "context": {}, "path": [[10, 2.0, 3.0], [16, 7.0, 8.0]],
+               "final": {"kills": None, "explored": None, "health": None, "x": 7.0, "y": 8.0}}
+        checks = {c["check"]: c for c in record.compare(rec, l1, CONTEXT)["checks"]}
+        self.assertIs(checks["path points"]["agree"], True)       # tic 16 compared and equal; tic 10 not compared
+        self.assertEqual(checks["path points"]["archive"], 1)
+        self.assertIn("1 unattributable", checks["path points"]["note"])
+        rec["path"][1][1] = 7.5                                   # a real disagreement is still caught
+        checks = {c["check"]: c for c in record.compare(rec, l1, CONTEXT)["checks"]}
+        self.assertIs(checks["path points"]["agree"], False)
+
     def test_context_the_ground_never_learnt_is_not_a_disagreement(self):
         out = record.compare(record_from(self.l1), self.l1, {"wad": None, "map": None})
         checks = {c["check"]: c for c in out["checks"]}

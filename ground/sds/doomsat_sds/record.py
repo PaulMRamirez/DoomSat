@@ -161,18 +161,37 @@ def compare(record: dict, l1: dict, context: dict | None = None) -> dict:
         checks.append(_check("statuses while the archive was listening", listening, received, received <= listening,
                              "%d of about %d statuses sent from tic %d on reached the archive (%.1f%%)" % (
                                  received, listening, first_archived, 100.0 * received / listening)))
-    # The record's path, a position per second of game time, against the archived position at the same tic.
+    # The record's path, a position per second of game time, against the archived position with the same time tag
+    # as that tic. Two statuses can share an F' time tag, and a channel can lose one of the pair on board, so which
+    # X, Y and TIC samples came from the same status is not always knowable on the ground. A time tag is compared
+    # only when it holds as many TIC samples as X and Y samples (one status, or a pair that arrived whole); a tic
+    # at any other time tag is unattributable, which is neither agreement nor disagreement.
     cols = l1["telemetry"]["columns"]
     it, ix, iy = cols.index("TIC"), cols.index("POS_X"), cols.index("POS_Y")
-    at_tic = {r[it]: (r[ix], r[iy]) for r in l1["telemetry"]["rows"] if r[it] is not None and r[ix] is not None
-              and r[iy] is not None}
-    matched = [(t, x, y, at_tic[t]) for t, x, y in record["path"] if t in at_tic]
-    off = [abs(x - a[0]) + abs(y - a[1]) for _, x, y, a in matched]
+    by_time: dict[int, dict] = {}
+    for r in l1["telemetry"]["rows"]:
+        slot = by_time.setdefault(r[0], {"tic": [], "x": [], "y": []})
+        for key, i in (("tic", it), ("x", ix), ("y", iy)):
+            if r[i] is not None:
+                slot[key].append(r[i])
+    at_tic: dict[int, list] = {}
+    unattributable = set()
+    for slot in by_time.values():
+        whole = len(slot["tic"]) == len(slot["x"]) == len(slot["y"])
+        for t in slot["tic"]:
+            if whole:
+                at_tic.setdefault(t, []).extend(zip(slot["x"], slot["y"]))
+            else:
+                unattributable.add(t)
+    matched = [(t, x, y, at_tic[t]) for t, x, y in record["path"] if at_tic.get(t)]
+    off = [min(abs(x - a[0]) + abs(y - a[1]) for a in cands) for _, x, y, cands in matched]
     in_window = sum(1 for t, _, _ in record["path"] if first_archived is not None and t >= first_archived)
+    vague = sum(1 for t, _, _ in record["path"] if t in unattributable and not at_tic.get(t))
     checks.append(_check("path points", len(record["path"]), len(matched), all(d == 0 for d in off) if off else None,
-                         "%d of %d record positions (%d after the archive began) have an archived sample at the same "
-                         "tic; largest difference %s units" % (len(matched), len(record["path"]), in_window,
-                                                                max(off) if off else None)))
+                         "%d of %d record positions (%d after the archive began) compared with the archived position "
+                         "at the same tic, largest difference %s units; %d unattributable (their time tag lost a "
+                         "position on board)" % (len(matched), len(record["path"]), in_window,
+                                                  max(off) if off else None, vague)))
     ctx = context or {}
     for key in ("wad", "map", "skill", "seed"):
         mine = ctx.get(key)
