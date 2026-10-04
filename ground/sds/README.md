@@ -14,7 +14,7 @@ cataloged products**, the way a science data system does, in its three usual mod
  FRAME_CHUNK ──► capture service ──► capture/ ──► sds_quicklook (every minute) ──► contact sheet + health
  (realtime only)   (scripts/sds.sh)
  catalog ──► sds_reprocess (by hand) ──► L1 rebuilt from the archive, checked ──► L2 at the current version
- payload record ◄── SendFile ◄── sds_record (Phase D, opt-in) ──► L0 record ──► checked against L1
+ payload record ◄── SendFile ◄── sds_record (Phase D, opt-in) ──► L0 record (CFDP, cfdpDown) ──► checked against L1
 ```
 
 ## The rule it lives by: products never flow back to the pilot
@@ -27,8 +27,9 @@ together with the rest of the boundary:
 
 - products are drawn from telemetry only, and nothing here opens a WAD;
 - nothing is written under `out/frames/`, which the pilot reads;
-- the only command the SDS can send is FileDownlink `SendFile`, from one task named for it, and only when
-  record requests are switched on (Phase D).
+- the only command the SDS can send is cfdpManager `SendFile`, from one task named for it, and only when
+  record requests are switched on (Phase D). Of CFDP it only reads Yamcs's transfer list and the `cfdpDown`
+  bucket, and deletes the one object it has ingested.
 
 Nothing here is part of a graded run. Fly demonstration episodes on the dev set (`WAD=freedoom1.wad`).
 
@@ -78,7 +79,7 @@ environment is `scripts/sds.sh airflow ...`, e.g. `scripts/sds.sh airflow dags l
 | `sds_rollup` | on the L2-summary asset | L3 rollup across the current summaries, copied to the bucket |
 | `sds_quicklook` | every minute | Contact sheet of the latest captured frames plus link and payload health |
 | `sds_reprocess` | by hand | Reprocessing campaign: rebuild L1 from the archive, check it reproduces, build every L2 lacking its current version, republish |
-| `sds_record_watch`, `sds_record` | every 2 minutes, per episode | Phase D: request the payload's record with `SendFile`, wait for the downlinked file, ingest it, compare with L1 |
+| `sds_record_watch`, `sds_record` | every 2 minutes, per episode | Phase D: request the payload's record with `SendFile`, wait for its CFDP downlink, ingest it from `cfdpDown`, compare with L1 |
 
 The capture service is not a DAG: it has to run continuously, so `scripts/sds.sh` runs it beside Airflow.
 
@@ -199,25 +200,44 @@ DOOMSAT_SDS_RECORDS=on scripts/sds.sh start            # the SDS asks for each o
 ```
 
 The record is written when the episode ends, before its last status goes down, so it exists by the time the
-ground asks. `sds_record` sends `SendFile`, waits for the file in the downlink mirror (`$DOOMSAT_HOME/run/downlink`)
-with a deferrable FileSensor, ingests it as `l0_record` and compares it with L1: episode, outcome, last tic,
-kills, cells, final health and position, positions along the path, context, and how many of the statuses sent
-reached the archive. Every disagreement becomes a catalog finding.
+ground asks. `sds_record` sends cfdpManager's `SendFile` (class 2, keep `KEEP`: `DELETE` would remove the record on
+board once sent) and waits for the CCSDS CFDP downlink, which Yamcs's CfdpService saves in its bucket `cfdpDown`.
+It ingests the record from there as `l0_record` and compares it with L1: episode, outcome, last tic, kills, cells,
+final health and position, positions along the path, context (the WAD flown, its patch WAD, map, skill, seed), and
+how many of the statuses sent reached the archive. Every disagreement becomes a catalog finding. A WAD switch
+(`LOAD_WAD`) also ends an episode with a record: the payload's recorder writes it as `reset`, which agrees with the
+ground's `wad_switch`.
 
 Only episodes whose payload ran with `--records on` are asked for (the episode's cataloged context records the
 payload's arguments), so turning either switch on in either order is safe. The command is never resent
-automatically: a failed `rec__` run is re-requested by hand (clear it in the UI). When no file comes,
-`report_downlink_events` says why: a `FileOpenError` on board (`record_unavailable`), or a `FileSent` whose file
-never reached the mirror (`record_not_mirrored`). After ingest, the copy in the `fprimeFilesIn` bucket is
-deleted, because that bucket holds 1000 objects and stops mirroring, silently, when it is full.
+automatically: a failed `rec__` run is re-requested by hand (clear it in the UI).
+
+There is no file on disk to wait for, so `wait_for_downlinked_file` is a sensor (every 5 s, reschedule mode, two
+minutes at most) that reads three things and writes nothing: `SendFile`'s answer (Yamcs's acknowledgements, then the
+F´ dispatcher's `OpCodeCompleted` or `OpCodeError`), cfdpManager's events, and
+`GET /api/filetransfer/fprime-project/cfdp/transfers?direction=DOWNLOAD&start=<command time - 5 s>`, from which it
+takes the newest transfer whose `remotePath` is the source path sent. `COMPLETED` is a record received. `FAILED`
+with a reason starting "File was received OK" is one too: the checksum-verified file is in the bucket, only F´'s
+acknowledgement of Yamcs's Finished PDU was lost, and the finding `record_fin_unacknowledged` says so. When no
+record comes, `report_downlink_events` says why: `record_unavailable` (`SendFile` refused, or `TxFileOpenFailed`,
+`TxZeroLengthFile` or `SendFileInitiateFail` on board: the file was never sent and Yamcs never lists a transfer, so
+the wait ends at once), `record_transfer_failed` (a transfer that began and failed) or `record_not_received`
+(nothing settled within the wait). A timeout cancels nothing: nothing in the SDS POSTs to `/filetransfer`.
+
+The object is read by the name the transfer gives (a name already taken in the bucket gets `(1)`, `(2)`... added),
+checked against the transfer's size and the record format, and then deleted, that object only: `cfdpDown` holds 1000
+objects and 100 MB. The product's inputs record the bucket, object, transfer id and CFDP transaction id.
 
 Positions are compared only where the archive can attribute them. Two statuses can share an F´ time tag, and a
 channel can lose one of the pair on board, so a time tag with fewer positions than tics is reported as
 unattributable, neither agreement nor disagreement.
 
-The flight software sets two traps here, both handled: F´ command strings hold at most 39 characters (the
-dictionary says 100), so paths are kept short, relative to the F´ binary's directory when the absolute one is too
-long; and `SendFile` answers OK even when it cannot open the file, so success is judged by the `FileSent` event.
+The flight software sets traps here, all handled. F´ command strings hold at most 40 characters on board (the
+dictionary says 200), so paths are kept to 39, relative to the F´ binary's directory when the absolute one is too
+long. Yamcs needs all seven `SendFile` arguments. cfdpManager answers OK when it has queued the transfer and fails
+later, asynchronously, if the file cannot be opened, so the answer alone proves nothing. F´ events carry the
+spacecraft's time, about 0.9 s ahead of Yamcs's, and F´ numbers its transactions from 1 at every boot, so the
+transfer is matched by source path and the time Yamcs created it.
 
 ## Publishing (Phase E)
 

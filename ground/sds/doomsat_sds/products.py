@@ -36,7 +36,8 @@ ALGORITHMS = {
     "ql_health": ("QL", "1.0.0", "json", "application/json"),
     "ql_contact_sheet": ("QL", "1.0.0", "png", "image/png"),
     "l0_record": ("L0", "1.0.0", "json", "application/json"),        # Phase D: the payload's record, as downlinked
-    "qa_record_check": ("QA", "1.2.0", "json", "application/json"),  # Phase D: that record against L1
+    # qa_record_check 1.3.0: the patch WAD is compared too, and the record's "reset" agrees with a "wad_switch".
+    "qa_record_check": ("QA", "1.3.0", "json", "application/json"),  # Phase D: that record against L1
 }
 L2_TYPES = ("l2_path", "l2_summary", "l2_linkstats")
 # IntentSet echoes every INTENT command, which L1 already carries; the other Doom events are kept.

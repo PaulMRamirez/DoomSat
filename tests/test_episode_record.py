@@ -2,9 +2,9 @@
 
 It must change nothing unless asked: the bench builds the payload from its own argparse.Namespace, which has no
 `records` option, and the flight default is off. When it is on, the file it writes is what the ground compares
-against the archive, so its name (episode and last tic, short enough for F' command strings), its counts and its
-positions (rounded exactly as an F32 channel rounds them) are pinned here. A failure to write must never escape
-into the game loop.
+against the archive, so its name (episode and last tic, short enough for F' command strings), its counts, its
+positions (rounded exactly as an F32 channel rounds them) and its context (the WAD flown, which LOAD_WAD can
+switch) are pinned here. A failure to write must never escape into the game loop.
 """
 import argparse
 import json
@@ -25,6 +25,7 @@ def obs(episode, tic, x=10.123456789, y=-20.5, health=100, kills=0, explored=1, 
 
 class FakePayload:
     wad = "/root/doom/wads/freedoom1.wad"
+    pwad = None
     map = "E1M1"
     level = 1
     geometry = "off"
@@ -50,8 +51,27 @@ class TestOffUnlessAsked(unittest.TestCase):
                 else:
                     os.environ["DOOMSAT_HOME"] = old
             self.assertEqual(rec.path, os.path.join(tmp, "run", "rec"))
-            self.assertEqual(rec.context(), {"wad": "freedoom1.wad", "map": "E1M1", "level": 1, "skill": 3, "seed": 7,
-                                             "geometry": "off", "oracle": "off"})
+            self.assertEqual(rec.context(), {"wad": "freedoom1.wad", "pwad": None, "map": "E1M1", "level": 1,
+                                             "skill": 3, "seed": 7, "geometry": "off", "oracle": "off"})
+
+    def test_the_context_is_the_wad_flown_when_each_episode_begins(self):
+        # The payload's switch_wad sets wad, pwad and map to the switched game's (paths, pinned under the uplink
+        # directory with their file names kept) and starts a new episode; the context is read at each start.
+        payload = FakePayload()
+        rec = er.from_args(argparse.Namespace(records="on", skill=3, seed=7), payload)
+        with tempfile.TemporaryDirectory() as tmp:
+            rec.path = tmp
+            rec.status(obs(1, 3))
+            payload.wad = "/root/doom/wads/uplink/.pinned/1/freedoom2.wad"
+            payload.pwad = "/root/doom/wads/uplink/.pinned/1/basic.wad"
+            payload.map = "MAP01"
+            rec.status(obs(2, 3))                              # LOAD_WAD: the game rebuilt, a new episode number
+            with open(os.path.join(tmp, "1-3.json")) as f:
+                closed = json.load(f)
+        self.assertEqual(closed["outcome"], "reset")           # the ground calls this one wad_switch
+        self.assertEqual((closed["context"]["wad"], closed["context"]["pwad"]), ("freedoom1.wad", None))
+        self.assertEqual((rec.cur["context"]["wad"], rec.cur["context"]["pwad"], rec.cur["context"]["map"]),
+                         ("freedoom2.wad", "basic.wad", "MAP01"))
 
 
 class TestTheRecord(unittest.TestCase):

@@ -1,24 +1,36 @@
-"""Phase D on the ground: naming the payload's record, and holding it against the L1 built from the archive.
+"""Phase D on the ground: naming the payload's record, waiting for its CFDP downlink, reading it from Yamcs's bucket,
+and holding it against the L1 built from the archive.
 
 Two things here would fail silently on the flight side, so they are pinned: F' accepts command strings of at most
-39 characters whatever the dictionary says (a longer path is a FORMAT_ERROR on board), and the record is named by
-episode and last tic, which the ground must work out from L1 exactly as the payload does. The comparison is the
-point of the phase: every disagreement must show up as agree=False, and things the archive can legitimately miss
-(a late start, a lost status) must not.
+40 characters on board whatever the dictionary says (a longer path is a FORMAT_ERROR; the SDS keeps to 39), and the
+record is named by episode and last tic, which the ground must work out from L1 exactly as the payload does.
+
+The wait is judged from what Yamcs and the archive show, in canned shapes taken from a live class 2 downlink on
+4 October 2026 (docs/plans/sds-airflow.md): the transfer list, cfdpManager's events and the dispatcher's answer.
+The comparison is the point of the phase: every disagreement must show up as agree=False, and things the archive
+can legitimately miss (a late start, a lost status) must not.
 """
 import copy
+import datetime as dt
+import hashlib
+import json
 import os
+import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+from urllib.parse import unquote
 
 SDS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, SDS)
 from doomsat_sds import config, episodes, pipeline, products, record  # noqa: E402
-from doomsat_sds.archive import RecordedArchive  # noqa: E402
+from doomsat_sds.archive import RecordedArchive, iso  # noqa: E402
 from doomsat_sds.catalog import Catalog  # noqa: E402
+from doomsat_sds.store import canonical_json  # noqa: E402
+
+REPO = os.path.dirname(os.path.dirname(SDS))
 
 FIXTURE = os.path.join(SDS, "tests", "data", "two_deaths.json.gz")
 WINDOW = [1791074773533, 1791074807183]
@@ -76,12 +88,10 @@ class TestNaming(unittest.TestCase):
         with self.assertRaises(ValueError):
             record.source_path(s, "12345-4294967295-and-more.json")
 
-    def test_the_mirror_is_where_the_flight_launcher_puts_it_whatever_the_environment_says(self):
-        # wsl_run_flight.sh always gives Yamcs FPRIME_DOWNLINK_DIR=$RUN/downlink; an SDS that followed its own
-        # environment's FPRIME_DOWNLINK_DIR would watch a directory nothing is written to.
-        s = config.Settings(home=Path("/x/sds"), doomsat_home=Path("/x"))
-        with mock.patch.dict(os.environ, {"FPRIME_DOWNLINK_DIR": "/somewhere/else"}):
-            self.assertEqual(s.downlink, Path("/x/run/downlink"))
+    def test_sendfile_takes_all_seven_arguments_and_keeps_the_file(self):
+        args = record.sendfile_args({"source": "/root/doom/run/rec/2-1180.json", "dest": "rec_x.json"})
+        self.assertEqual(args, {"channelId": 0, "destId": 100, "cfdpClass": "CLASS_2", "keep": "KEEP", "priority": 0,
+                                "sourceFileName": "/root/doom/run/rec/2-1180.json", "destFileName": "rec_x.json"})
 
     def test_destination_names_fit_and_are_flat(self):
         d = record.dest_name(episodes.episode_id(1791074807184, 65535))
@@ -155,6 +165,60 @@ class TestAgainstL1(unittest.TestCase):
         self.assertIsNone(checks["context wad"]["agree"])
         self.assertTrue(out["agree"])
 
+    def test_a_wad_switch_is_the_payloads_reset(self):
+        # The payload's recorder sees only the episode number change when LOAD_WAD rebuilds the game.
+        switched = copy.deepcopy(self.l1)
+        switched["episode"]["outcome"] = "wad_switch"
+        r = record_from(self.l1)
+        r["outcome"] = "reset"
+        checks = {c["check"]: c for c in record.compare(r, switched, CONTEXT)["checks"]}
+        self.assertIs(checks["outcome"]["agree"], True)
+        self.assertIn("WAD switch", checks["outcome"]["note"])
+        r["outcome"] = "died"
+        self.assertIs({c["check"]: c for c in record.compare(r, switched, CONTEXT)["checks"]}["outcome"]["agree"],
+                      False)
+        r["outcome"] = "reset"                         # and the ground's reset is still only a reset
+        reset = copy.deepcopy(self.l1)
+        reset["episode"]["outcome"] = "reset"
+        self.assertIs({c["check"]: c for c in record.compare(r, reset, CONTEXT)["checks"]}["outcome"]["agree"], True)
+        self.assertIs({c["check"]: c for c in record.compare(r, self.l1, CONTEXT)["checks"]}["outcome"]["agree"],
+                      False)
+
+    def test_the_patch_wad_is_compared_when_both_sides_carry_it(self):
+        def pwad_check(theirs, ctx):
+            r = record_from(self.l1)
+            if theirs is not KeyError:
+                r["context"]["pwad"] = theirs
+            return {c["check"]: c for c in record.compare(r, self.l1, ctx)["checks"]}["context pwad"]
+
+        on_main = dict(CONTEXT, pwad=None, wad_loads=0)
+        self.assertIs(pwad_check(None, on_main)["agree"], True)                 # no patch WAD on either side
+        self.assertIs(pwad_check("basic.wad", on_main)["agree"], False)
+        self.assertIs(pwad_check("basic.wad", dict(on_main, pwad="basic.wad"))["agree"], True)
+        self.assertIsNone(pwad_check(KeyError, on_main)["agree"])               # a record from before main
+        self.assertIn("record predates", pwad_check(KeyError, on_main)["note"])
+        self.assertIsNone(pwad_check(None, CONTEXT)["agree"])                   # a context from before main
+        self.assertIsNone(pwad_check(None, dict(on_main, wad=None))["agree"])   # the ground never learnt the WAD
+
+    def test_the_wad_compared_is_the_one_flown(self):
+        flown = dict(CONTEXT, wad="freedoom2.wad", pwad=None, wad_loads=1, wad_launch="freedoom1.wad",
+                     sources={"wad": "telemetry WAD_IWAD, WAD_PWAD, WAD_LOADS: the first sample during the episode"})
+        r = record_from(self.l1)
+        r["context"].update(wad="freedoom2.wad", pwad=None)     # after a LOAD_WAD, as the payload writes it
+        checks = {c["check"]: c for c in record.compare(r, self.l1, flown)["checks"]}
+        self.assertIs(checks["context wad"]["agree"], True)
+        self.assertEqual(checks["context wad"]["note"], "the WAD flown, from telemetry")
+        self.assertEqual({c["check"]: c for c in record.compare(r, self.l1, CONTEXT)["checks"]}["context wad"]["note"],
+                         "the payload's --wad")
+
+    def test_the_check_is_byte_stable_at_its_version(self):
+        out = canonical_json(record.compare(record_from(self.l1), self.l1, CONTEXT))
+        key = "l1_episode@%s qa_record_check@%s" % (products.version("l1_episode"), products.version("qa_record_check"))
+        if key not in GOLDEN:
+            self.skipTest("no recorded checksum for %s yet; add it to GOLDEN" % key)
+        self.assertEqual(hashlib.sha256(out).hexdigest(), GOLDEN[key],
+                         "qa_record_check changed without a version bump in products.ALGORITHMS")
+
 
 class TestPlan(unittest.TestCase):
     def test_plan_from_the_catalog(self):
@@ -170,7 +234,329 @@ class TestPlan(unittest.TestCase):
             self.assertEqual(p["name"], "2-1180.json")
             self.assertEqual(p["source"], "/root/doom/run/rec/2-1180.json")
             self.assertEqual(p["dest"], "rec_%s.json" % ep2.episode_id)
-            self.assertTrue(p["mirror_path"].endswith("/run/downlink/" + p["dest"]))
+            self.assertNotIn("mirror_path", p)      # on main nothing mirrors a downlinked file to disk
+
+    def test_the_watch_asks_for_every_episode_the_payload_wrote_a_record_for(self):
+        # Read from the DAG's source: importing it needs Airflow. An interrupted episode never wrote a record; a WAD
+        # switch did (the payload writes it as a reset). Each name must be one episodes.py spells.
+        import ast
+        tree = ast.parse(Path(SDS, "dags", "sds_record.py").read_text(encoding="utf-8"))
+        found = [ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                 and any(getattr(t, "id", None) == "REQUESTABLE" for t in n.targets)]
+        self.assertEqual(found, [("died", "level_finished", "reset", "wad_switch")])
+        spelled = {n.value for n in ast.walk(ast.parse(Path(SDS, "doomsat_sds", "episodes.py").read_text(
+            encoding="utf-8"))) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+        self.assertLessEqual(set(found[0]), spelled)
+
+
+# qa_record_check's bytes for the faithful record of episode 2 in the fixture, by version. 1.2.0 was recorded from
+# the code before 1.3.0 added the patch WAD check and the note on where the ground's WAD came from.
+GOLDEN = {
+    "l1_episode@1.1.0 qa_record_check@1.2.0": "a100bc65b9c87323aeed162ac28d18aa19ec5e135d7cd9d9a9a698b879a5cde1",
+    "l1_episode@1.1.0 qa_record_check@1.3.0": "db349266011b01000de3a6e8a009cf72663c0c8d0e474755391cbfbf2c4b2ad9",
+}
+
+
+# ------------------------------------------------------------------------------------------------ the CFDP downlink
+def ms(text):
+    return int(round(dt.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000))
+
+
+SRC = "/root/doom/run/rec/2-98749.json"
+DEST = "rec_probe_2-98749.json"
+ISSUED = ms("2026-10-04T15:59:39.900Z")       # Yamcs's clock, as cmd.generation_time gives it
+SINCE = ISSUED - record.TRANSFER_SLACK_MS
+COMMAND = {"command_id": "1791129579900-127.0.0.1-1", "issued_ms": ISSUED}
+OPCODE = str(config.SENDFILE_OPCODE)          # the event's Opcode argument, as Yamcs's event extra holds it
+# The transfer Yamcs listed for the live downlink (int64 fields come back as JSON strings)
+LIVE_TRANSFER = {
+    "id": "0", "startTime": "2026-10-04T15:59:39.943Z", "state": "COMPLETED", "bucket": "cfdpDown",
+    "objectName": DEST, "remotePath": SRC, "direction": "DOWNLOAD", "totalSize": "82038",
+    "sizeTransferred": "82038", "reliable": True, "failureReason": "",
+    "transactionId": {"sequenceNumber": 1, "initiatorEntity": "42"}, "creationTime": "2026-10-04T15:59:39.941Z",
+    "transferType": "FILE TRANSFER", "localEntity": {"name": "ground", "id": "100"},
+    "remoteEntity": {"name": "doomsat", "id": "42"}}
+
+
+def event(when, name, message="", **extra):
+    kind = name if "." in name else "DoomSat.cfdpManager." + name
+    return {"t": ms(when), "rt": None, "source": config.EVENT_SOURCE, "type": kind, "message": message,
+            "extra": {k: str(v) for k, v in extra.items()}, "seq": None}
+
+
+# F' events carry TM time, about 0.9 s ahead of the ground clock that stamped the command and the transfer
+LIVE_EVENTS = [
+    event("2026-10-04T15:59:40.830Z", "CdhCore.cmdDisp.OpCodeCompleted", "Opcode 0x10006000 completed",
+          Opcode=OPCODE),
+    event("2026-10-04T15:59:40.844Z", "TxFileQueued", "TX file queued for %s (transaction 1)" % SRC,
+          sourceFileName=SRC, transactionSeq=1),
+    event("2026-10-04T15:59:40.880Z", "TxFileTransferStarted", "TX CLASS_2 transaction 1 transfer started",
+          cfdpClass="CLASS_2", seqNum=1, srcEid=42, srcFile=SRC, destEid=100, destFile=DEST, fileSize=82038),
+    event("2026-10-04T15:59:42.913Z", "TxFileTransferCompleted", "TX CLASS_2 transaction 1 completed",
+          cfdpClass="CLASS_2", seqNum=1, srcEid=42, srcFile=SRC, destEid=100, destFile=DEST, fileSize=82038),
+]
+OPEN_FAILED = [
+    event("2026-10-04T15:59:40.830Z", "CdhCore.cmdDisp.OpCodeCompleted", "completed", Opcode=OPCODE),
+    event("2026-10-04T15:59:40.844Z", "TxFileQueued", "queued", sourceFileName=SRC, transactionSeq=2),
+    event("2026-10-04T15:59:41.850Z", "TxFileOpenFailed", "TX class CLASS_2 transaction 42:2 failed to open file",
+          cfdpClass="CLASS_2", srcEid=42, seqNum=2, filename=SRC, status=-2),
+    event("2026-10-04T15:59:41.851Z", "TxFileTransferFailed", "TX CLASS_2 transaction 2 FAILED, error code 4",
+          cfdpClass="CLASS_2", seqNum=2, srcEid=42, srcFile=SRC, destEid=100, destFile=DEST, conditionCode=4),
+]
+
+
+def judge(transfers=(), events=(), commands=()):
+    return record.verdict(SRC, SINCE, COMMAND["command_id"], list(commands), list(events), list(transfers))
+
+
+def transfer(**changes):
+    return dict(LIVE_TRANSFER, **changes)
+
+
+class TestTheWait(unittest.TestCase):
+    def test_a_completed_transfer_is_received(self):
+        v = judge([LIVE_TRANSFER], LIVE_EVENTS)
+        self.assertEqual((v["state"], v["finding"], v["answer"]), ("received", None, "OK"))
+        self.assertEqual(v["transfer"]["objectName"], DEST)
+        self.assertEqual([e["type"] for e in v["events"]], ["OpCodeCompleted", "TxFileQueued", "TxFileTransferStarted",
+                                                            "TxFileTransferCompleted"])
+
+    def test_a_file_received_ok_with_its_finished_pdu_unacknowledged_is_received_and_said(self):
+        # Yamcs saved the checksum-verified object, then gave up waiting for F' to acknowledge its FIN (3 s x 10).
+        t = transfer(state="FAILED", failureReason="File was received OK but the Finished PDU has not been "
+                                                   "acknowledged")
+        v = judge([t], LIVE_EVENTS[:3])
+        self.assertEqual((v["state"], v["finding"]), ("received", "record_fin_unacknowledged"))
+        self.assertIn("Finished PDU", v["why"])
+
+    def test_any_other_failed_transfer_fails(self):
+        for reason in ("Checksum does not match", "inactivity timeout", ""):
+            v = judge([transfer(state="FAILED", failureReason=reason)], LIVE_EVENTS[:3])
+            self.assertEqual((v["state"], v["finding"]), ("failed", "record_transfer_failed"), reason)
+
+    def test_a_transfer_in_progress_is_waited_for_and_yamcs_decides(self):
+        for state in ("RUNNING", "QUEUED", "PAUSED", "CANCELLING"):
+            v = judge([transfer(state=state)], LIVE_EVENTS[:3])
+            self.assertEqual((v["state"], v["finding"]), ("waiting", None), state)
+        # F' giving up on a transfer Yamcs lists is Yamcs's to settle (it fails it on inactivity)
+        v = judge([transfer(state="RUNNING")], OPEN_FAILED[:2] + OPEN_FAILED[3:])
+        self.assertEqual(v["state"], "waiting")
+
+    def test_nothing_yet_is_waiting(self):
+        self.assertEqual(judge()["state"], "waiting")
+        v = judge([], LIVE_EVENTS[:2])
+        self.assertEqual((v["state"], v["answer"]), ("waiting", "OK"))
+
+    def test_a_stale_transfer_of_the_same_file_is_not_this_one(self):
+        # An earlier request for the same path, or an earlier flight's (transactions restart at 1 every boot)
+        stale = transfer(creationTime=iso(SINCE - 1), startTime=iso(SINCE - 1))
+        self.assertIsNone(record.find_transfer([stale], SRC, SINCE))
+        self.assertEqual(judge([stale], LIVE_EVENTS[:2])["state"], "waiting")
+        self.assertEqual(judge([stale, LIVE_TRANSFER])["transfer"]["creationTime"], LIVE_TRANSFER["creationTime"])
+
+    def test_a_taken_name_gets_a_suffix_and_the_name_comes_from_the_transfer(self):
+        older = transfer(id="7", state="FAILED", failureReason="Checksum does not match",
+                         creationTime=iso(SINCE + 10), transactionId={"sequenceNumber": 1, "initiatorEntity": "42"})
+        newer = transfer(id="8", objectName=DEST + "(1)", creationTime=iso(SINCE + 2_000),
+                         transactionId={"sequenceNumber": 2, "initiatorEntity": "42"})
+        v = judge([newer, older])
+        self.assertEqual((v["state"], v["transfer"]["objectName"]), ("received", DEST + "(1)"))
+
+    def test_other_files_uploads_and_other_spellings_are_not_this_one(self):
+        others = [transfer(remotePath="/root/doom/run/rec/12-98749.json"), transfer(direction="UPLOAD"),
+                  transfer(remotePath="../../../../../run/rec/2-98749.json")]
+        self.assertEqual(judge(others)["state"], "waiting")
+
+    def test_a_file_that_cannot_be_sent_fails_at_once(self):
+        v = judge([], OPEN_FAILED)
+        self.assertEqual((v["state"], v["finding"]), ("failed", "record_unavailable"))
+        self.assertIn("failed to open", v["why"])
+        zero = [event("2026-10-04T15:59:41.850Z", "TxZeroLengthFile", "cannot transfer zero-length file",
+                      cfdpClass="CLASS_2", srcEid=42, seqNum=2, filename=SRC)]
+        self.assertEqual(judge([], zero)["finding"], "record_unavailable")
+        initiate = [event("2026-10-04T15:59:41.850Z", "SendFileInitiateFail", "Failed to initiate",
+                          sourceFileName=SRC)]
+        self.assertEqual(judge([], initiate)["finding"], "record_unavailable")
+
+    def test_a_transfer_failed_on_board_with_no_yamcs_transfer_fails(self):
+        v = judge([], [OPEN_FAILED[1], event("2026-10-04T15:59:41.840Z", "TxSendMetadataFailed", "no metadata",
+                                             cfdpClass="CLASS_2", srcEid=42, seqNum=2), OPEN_FAILED[3]])
+        self.assertEqual((v["state"], v["finding"]), ("failed", "record_transfer_failed"))
+        self.assertIn("TxSendMetadataFailed", [e["type"] for e in v["events"]])     # attributed by its transaction
+
+    def test_events_about_another_file_or_transaction_are_not_this_ones(self):
+        other = [event("2026-10-04T15:59:41.850Z", "TxFileOpenFailed", "failed to open", cfdpClass="CLASS_2",
+                       srcEid=42, seqNum=5, filename="/root/doom/run/rec/1-7.json", status=-2),
+                 event("2026-10-04T15:59:41.860Z", "TxAckLimitReached", "ACK limit", cfdpClass="CLASS_2", srcEid=42,
+                       seqNum=5)]
+        v = judge([], LIVE_EVENTS[:2] + other)
+        self.assertEqual(v["state"], "waiting")
+        self.assertNotIn("TxFileOpenFailed", [e["type"] for e in v["events"]])
+        self.assertEqual(record.about(LIVE_EVENTS[:2] + other, SRC), [LIVE_EVENTS[1]])
+
+    def test_a_refused_command_fails_at_once(self):
+        refused = [event("2026-10-04T15:59:40.830Z", "MaxTxTransactionsReached", "Maximum number of commanded TX"),
+                   event("2026-10-04T15:59:40.831Z", "CdhCore.cmdDisp.OpCodeError",
+                         "Opcode 0x10006000 completed with error EXECUTION_ERROR", Opcode=OPCODE,
+                         error="EXECUTION_ERROR")]
+        v = judge([], refused)
+        self.assertEqual((v["state"], v["finding"], v["answer"]), ("failed", "record_unavailable", "EXECUTION_ERROR"))
+        self.assertEqual([e["type"] for e in v["events"]], ["MaxTxTransactionsReached", "OpCodeError"])
+        # another command's error is not SendFile's answer
+        other = [event("2026-10-04T15:59:40.831Z", "CdhCore.cmdDisp.OpCodeError", "error", Opcode="268455941",
+                       error="VALIDATION_ERROR")]
+        self.assertEqual((judge([], other)["state"], judge([], other)["answer"]), ("waiting", None))
+
+    def test_a_command_yamcs_never_sent_fails_at_once(self):
+        sent = [{"id": COMMAND["command_id"], "acks": {"Queued": "OK", "Released": "OK", "Sent": "NOK"}}]
+        v = judge([], [], sent)
+        self.assertEqual((v["state"], v["finding"], v["answer"]), ("failed", "record_unavailable", "NOK"))
+        fine = [{"id": COMMAND["command_id"], "acks": {"Queued": "OK", "Released": "OK", "Sent": "OK"}},
+                {"id": "someone-else", "acks": {"Sent": "NOK"}}]
+        self.assertEqual(judge([], [], fine)["state"], "waiting")
+
+    def test_yamcs_times(self):
+        self.assertEqual(record._ms("2026-10-04T15:59:39.941Z"), ms("2026-10-04T15:59:39.941Z"))
+        self.assertEqual(record._ms("2026-10-04T15:59:39Z"), ms("2026-10-04T15:59:39.000Z"))
+        self.assertEqual(record._ms("2026-10-04T15:59:39.9415Z"), ms("2026-10-04T15:59:39.941Z"))
+        self.assertIsNone(record._ms(None))
+        self.assertIsNone(record._ms("yesterday"))
+
+
+# ------------------------------------------------------------------------------------------------ Yamcs, faked
+class Response:
+    def __init__(self, status_code=200, body=b"", data=None):
+        self.status_code, self.content, self.data = status_code, body, data
+
+    def json(self):
+        return self.data
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError("%d Client Error" % self.status_code)
+
+
+class FakeYamcs:
+    """The two REST paths record.py uses, GET and DELETE only: the CFDP transfer list and the cfdpDown bucket."""
+
+    def __init__(self, transfers=(), objects=None):
+        self.transfers, self.objects, self.calls = list(transfers), dict(objects or {}), []
+
+    def get(self, url, params=None, timeout=None):
+        self.calls.append(("GET", url, params))
+        if url.endswith("/api/filetransfer/fprime-project/cfdp/transfers"):
+            return Response(data={"transfers": self.transfers})
+        m = re.search(r"/api/storage/buckets/cfdpDown/objects/([^/]+)$", url)
+        name = unquote(m.group(1)) if m else None
+        return Response(body=self.objects[name]) if name in self.objects else Response(404)
+
+    def delete(self, url, timeout=None):
+        self.calls.append(("DELETE", url, None))
+        m = re.search(r"/api/storage/buckets/cfdpDown/objects/([^/]+)$", url)
+        return Response() if m and self.objects.pop(unquote(m.group(1)), None) is not None else Response(404)
+
+
+class FakeArchive:
+    def __init__(self, events=(), commands=()):
+        self._events, self._commands, self.reads = list(events), list(commands), []
+
+    def events(self, start_ms, stop_ms, types=None):
+        self.reads.append(("events", start_ms, stop_ms, tuple(types or ())))
+        return [e for e in self._events if start_ms <= e["t"] < stop_ms and (not types or e["type"] in types)]
+
+    def commands(self, start_ms, stop_ms):
+        self.reads.append(("commands", start_ms, stop_ms))
+        return [c for c in self._commands if start_ms <= c["t"] < stop_ms]
+
+
+class TestObserve(unittest.TestCase):
+    def test_it_reads_the_right_windows_and_only_reads(self):
+        s = config.Settings(home=Path("/x/sds"), doomsat_home=Path("/root/doom"))
+        yamcs = FakeYamcs([LIVE_TRANSFER])
+        archive = FakeArchive(LIVE_EVENTS, [{"t": ISSUED, "id": COMMAND["command_id"], "acks": {"Sent": "OK"}}])
+        now = ms("2026-10-04T15:59:45.000Z")
+        v = record.observe(s, archive, {"source": SRC}, COMMAND, now, http=yamcs)
+        self.assertEqual(v["state"], "received")
+        self.assertEqual(yamcs.calls, [("GET", "http://localhost:8090/api/filetransfer/fprime-project/cfdp/transfers",
+                                        {"direction": "DOWNLOAD", "start": iso(SINCE)})])
+        kinds = {r[0]: r for r in archive.reads}
+        self.assertEqual(kinds["events"][1:3], (ISSUED - record.EVENT_SLACK_MS, now + 5_000))
+        self.assertEqual(set(kinds["events"][3]), set(record.DOWNLINK_EVENTS + record.ANSWER_EVENTS))
+        self.assertEqual(kinds["commands"][1:], (ISSUED - 1_000, ISSUED + 1_000))
+
+
+class TestIngest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.s = config.Settings(home=Path(self.tmp.name) / "sds", doomsat_home=Path("/root/doom"))
+        self.rec = json.dumps({"record": {"format": "doomsat-episode-record", "version": 1}, "episode": 2},
+                              sort_keys=True).encode()
+        self.p = {"episode_id": "20261004T160006Z-e0002", "source": SRC, "dest": DEST}
+        self.t = transfer(id="8", objectName=DEST + "(1)", totalSize=str(len(self.rec)),
+                          transactionId={"sequenceNumber": 2, "initiatorEntity": "42"})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def catalog(self):
+        c = Catalog(self.s.catalog)
+        c.add_episode({"episode_id": self.p["episode_id"], "number": 2, "outcome": "died",
+                       "closing_event": "PlayerDied", "closing_ms": ISSUED - 60_000, "context": CONTEXT})
+        return c
+
+    def test_the_transfers_object_is_ingested_and_only_it_deleted(self):
+        yamcs = FakeYamcs(objects={DEST: b"an older object of the same name", DEST + "(1)": self.rec})
+        with self.catalog() as c, mock.patch("doomsat_sds.pipeline._commit", return_value="test"):
+            ref = record.ingest(self.s, c, self.p, COMMAND, self.t, run_id="rec__x", http=yamcs)
+            row = c.current(self.p["episode_id"], "l0_record")
+        self.assertEqual(ref["status"], "new")
+        self.assertEqual(Path(ref["path"]).read_bytes(), self.rec)
+        self.assertEqual(row["inputs"], [{"source": "cfdp", "bucket": "cfdpDown", "object": DEST + "(1)",
+                                          "transfer_id": "8",
+                                          "transaction_id": {"sequenceNumber": 2, "initiatorEntity": "42"},
+                                          "transfer_state": "COMPLETED", "transfer_created": self.t["creationTime"],
+                                          "on_board": SRC, "command_id": COMMAND["command_id"]}])
+        self.assertTrue(yamcs.calls[0][1].endswith("/api/storage/buckets/cfdpDown/objects/" + DEST + "%281%29"))
+        self.assertTrue(record.forget_downlinked(self.s, self.t, http=yamcs))
+        self.assertEqual(sorted(yamcs.objects), [DEST])                 # the other object is not touched
+        self.assertFalse(record.forget_downlinked(self.s, self.t, http=yamcs))
+        self.assertEqual({m for m, _, _ in yamcs.calls}, {"GET", "DELETE"})
+
+    def test_an_object_of_another_size_or_not_a_record_is_refused(self):
+        with self.catalog() as c, mock.patch("doomsat_sds.pipeline._commit", return_value="test"):
+            longer = FakeYamcs(objects={DEST + "(1)": self.rec + b"\n"})     # still a record, but not what was sent
+            with self.assertRaises(ValueError):
+                record.ingest(self.s, c, self.p, COMMAND, self.t, http=longer)
+            foreign = b'{"something": "else"}'
+            with self.assertRaises(ValueError):
+                record.ingest(self.s, c, self.p, COMMAND, dict(self.t, totalSize=str(len(foreign))),
+                              http=FakeYamcs(objects={DEST + "(1)": foreign}))
+            self.assertIsNone(c.current(self.p["episode_id"], "l0_record"))
+
+
+class TestTheFlightSoftware(unittest.TestCase):
+    def test_the_sendfile_opcode_is_cfdp_managers_first_command(self):
+        # The dispatcher's answer names the command by opcode: cfdpManager's base id plus SendFile's, 0.
+        with open(os.path.join(REPO, "flight", "DoomSat", "Top", "instances.fpp"), encoding="utf-8") as f:
+            m = re.search(r"instance\s+cfdpManager\s*:\s*[\w.]+\s+base\s+id\s+(0x[0-9A-Fa-f]+)", f.read())
+        self.assertIsNotNone(m)
+        self.assertEqual(config.SENDFILE_OPCODE, int(m.group(1), 16))
+
+    def test_the_names_are_in_the_built_dictionary(self):
+        home = os.environ.get("DOOMSAT_HOME") or os.path.expanduser("~/doom")
+        found = sorted(Path(home, "DoomSat", "build-artifacts").glob("*/DoomSat/dict/DoomSatTopologyDictionary.json"))
+        if not found:
+            self.skipTest("no built F' dictionary under %s" % home)
+        d = json.loads(found[0].read_text(encoding="utf-8"))
+        commands = {c["name"]: c for c in d["commands"]}
+        if "DoomSat.cfdpManager.SendFile" not in commands:
+            self.skipTest("the built flight software is from before main (no cfdpManager)")
+        names = {e["name"] for e in d["events"]}
+        self.assertEqual([n for n in record.DOWNLINK_EVENTS + record.ANSWER_EVENTS if n not in names], [])
+        send = commands["DoomSat.cfdpManager.SendFile"]
+        self.assertEqual(send["opcode"], config.SENDFILE_OPCODE)
+        self.assertEqual([a["name"] for a in send["formalParams"]], list(record.sendfile_args({"source": "s",
+                                                                                              "dest": "d"})))
 
 
 if __name__ == "__main__":

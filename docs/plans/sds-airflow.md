@@ -249,6 +249,9 @@ to `$DOOMSAT_HOME/sds/lineage/openlineage.jsonl`.
 6. One file outside `ground/sds/` and `scripts/sds.sh` is new: `tests/test_sds.py`, a loader so that
    `python -m unittest discover -s tests` also runs the SDS tests.
 7. The demonstration flights use `WAD=freedoom1.wad` (dev set) rather than the default test level.
+8. Phase D waits with a sensor that polls Yamcs's CFDP transfer list, not a FileSensor (added 2026-10-04, after
+   main replaced F´ file packets with CFDP: there is no downlinked file on disk to watch). See the last entry under
+   "Progress and findings".
 
 ## Order of work
 
@@ -434,3 +437,36 @@ Baseline → plan → Airflow stack → product package and tests → Phase A (f
     `context.repo_commit` identifies the stack an episode was flown on (`git merge-base --is-ancestor f3d2c655
     <commit>`). Of the nine episodes in the live catalog, eight were flown before it and one after
     (`20261004T160006Z-e0001`, repo commit `0abfafa74684`).
+- 2026-10-04, Phase D on CFDP: main removed FileDownlink, `fileDownlink.SendFile`, FprimeFilePacketService and its
+  `downlinkMirrorDir`, so Phase D as built could neither ask for a record nor see one arrive. A downlink is now a
+  CCSDS CFDP class 2 transfer that Yamcs's CfdpService saves in its bucket `cfdpDown`. An operator's manual
+  `SendFile` of an 82 KB record on the live stack (15:59 UTC) showed the transfer's `remotePath` exactly as the source
+  string sent, `COMPLETED` about 3 s after the command, and the object's bytes identical to the file on board. The
+  DAG itself has not run against the live stack yet.
+  - The command is `/DoomSat_DoomSat/DoomSat/cfdpManager/SendFile` with all seven arguments, which Yamcs requires:
+    channel 0, destination entity 100, `CLASS_2`, `KEEP` (`DELETE` would remove the record on board), priority 0, and
+    the two paths, still at most 39 characters (40 on board). The task is still `send_SendFile_command`, checks
+    `ENABLED` first and is never retried. The guard pins the new path, checks the arguments `record.request` really
+    hands yamcs-client, and flags any write to `/filetransfer`, any yamcs-client transfer call (upload, download,
+    cancel, pause, resume, file actions) and any write to `cfdpDown` other than the ingested object's DELETE in a
+    record module.
+  - Deviation: the brief's FileSensor is gone (and with it the `fs_default` connection in `scripts/sds.sh`). There
+    is no file to watch: `cfdpDown` is a RocksDB bucket inside Yamcs. `wait_for_downlinked_file` is a `@task.sensor`
+    (poke 5 s, reschedule, 120 s, which covers Yamcs's 30 s FIN-ACK limit and inactivity timer). Each poke reads
+    `SendFile`'s answer, cfdpManager's events and `GET .../cfdp/transfers?direction=DOWNLOAD&start=<command - 5 s>`,
+    and takes the newest transfer whose `remotePath` is the source, created after that start (so an older transfer
+    of the same path, possibly from another boot with the same transaction number, never stands in). `COMPLETED`
+    is received; `FAILED` with "File was received OK" is received with the finding `record_fin_unacknowledged`;
+    any other `FAILED` is `record_transfer_failed`. cfdpManager answers OK once it has queued the send and opens the
+    file later, so `TxFileOpenFailed`, `TxZeroLengthFile` or `SendFileInitiateFail` for this source (Yamcs then
+    never lists a transfer), or a non-OK answer (a Yamcs acknowledgement, or the dispatcher's `OpCodeError` for
+    SendFile's opcode 0x10006000), fail the wait at once as `record_unavailable`. A wait that ends with nothing
+    settled is `record_not_received`, which replaces `record_not_mirrored`. A timeout cancels nothing.
+  - Ingest reads `GET /api/storage/buckets/cfdpDown/objects/<objectName>`, with the name from the transfer (a taken
+    name gets `(1)`), checks the transfer's size and the record format, records bucket, object, transfer id and
+    transaction id in the inputs instead of the mirror path, and then deletes that object only.
+  - WAD switches: the payload's record context gains `pwad`. When `LOAD_WAD` ends an episode, the payload's
+    recorder closes it as `reset` (it sees only the episode number change), so `wad_switch` episodes are requested
+    too and `record.compare` accepts the record's `reset` against them. `context wad` is held against the WAD
+    flown, from telemetry, and the patch WAD is compared when both sides carry it. `qa_record_check` 1.3.0; its
+    1.2.0 and 1.3.0 checksums for the fixture are both recorded. `l0_record` stays 1.0.0: its bytes are the file.

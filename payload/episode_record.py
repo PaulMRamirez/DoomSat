@@ -2,14 +2,19 @@
 
 Off unless the payload runs with --records on (scripts/flight.sh: RECORDS=on). Then, for every episode, it
 keeps a running account of what the payload itself sent: how many STATUS records, the first and last tic, the
-final values, a position every second of game time, and the launch context (WAD, map, skill, seed). When the
-episode ends it writes $DOOMSAT_HOME/run/rec/<episode>-<last tic>.json. The ground's science data system
-asks for that file with FileDownlink's SendFile, and checks it against the Level 1 record it built
-from the Yamcs archive: same episode, same ending, and how many of the statuses sent actually reached the ground.
+final values, a position every second of game time, and the context the episode began in (the base and patch
+WAD being flown, which LOAD_WAD can switch, map, skill, seed). When the episode ends it writes
+$DOOMSAT_HOME/run/rec/<episode>-<last tic>.json. The ground's science data system asks for that file with
+cfdpManager's SendFile, which downlinks it over CFDP, and checks it against the Level 1 record it built from the
+Yamcs archive: same episode, same ending, and how many of the statuses sent actually reached the ground.
 
 The name carries the last tic because the episode number restarts with the payload; the ground knows both (the
 PlayerDied/LevelFinished event says the tic), so it can name the file without asking the payload anything. Keep
-it short: F' takes command strings of at most 39 characters.
+it short: F' takes command strings of at most 40 characters on board, and the ground keeps to 39.
+
+An episode with no death or exit is closed when the next one's first status arrives, as "reset". A LOAD_WAD that
+switches the game starts a new episode too, and the one it cut short is closed the same way: this account sees
+only the episode number change (the ground, which hears of the switch, calls that outcome wad_switch).
 
 Nothing on board reads these files. The accumulator is a write-only account of the current episode, started
 afresh with every new episode and never consulted by the world model, the executor or the pilot (charter 2.2: no
@@ -37,7 +42,8 @@ def from_args(args, payload):
     if getattr(args, "records", "off") != "on":
         return None
     return EpisodeRecorder(directory(), lambda: {
-        "wad": os.path.basename(payload.wad), "map": payload.map, "level": payload.level,
+        "wad": os.path.basename(payload.wad), "pwad": os.path.basename(payload.pwad) if payload.pwad else None,
+        "map": payload.map, "level": payload.level,
         "skill": getattr(args, "skill", None), "seed": getattr(args, "seed", None),
         "geometry": payload.geometry, "oracle": payload.oracle})
 
@@ -58,7 +64,7 @@ class EpisodeRecorder:
         """A STATUS with these values has just been (or is about to be) sent."""
         if self.cur is not None and int(o["episode"]) != self.cur["episode"]:
             if not self.cur["written"]:
-                self.close("reset")         # a new episode with no death or exit in between: RESET_GAME
+                self.close("reset")         # a new episode with no death or exit in between: RESET_GAME or LOAD_WAD
             self.cur = None
         if self.cur is None:
             self._start(o)

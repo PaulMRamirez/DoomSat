@@ -33,8 +33,12 @@ EVENT_PREFIX = "DoomSat.doom."
 # that switched the game: the episode in progress ended there, and the next EpisodeStarted follows it.
 EPISODE_EVENTS = ("EpisodeStarted", "PlayerDied", "LevelFinished", "PayloadConnected", "WadLoaded")
 
-# The only command the pipelines may ever send, from a module named for records; none is sent by default.
-SENDFILE = "/DoomSat_DoomSat/FileHandling/fileDownlink/SendFile"
+# The only command the pipelines may ever send, from a module named for records; none is sent by default. On main
+# the F´ file packets are gone: cfdpManager's SendFile downlinks a file over CCSDS CFDP into Yamcs's bucket cfdpDown.
+SENDFILE = "/DoomSat_DoomSat/DoomSat/cfdpManager/SendFile"
+# Its F´ opcode (cfdpManager's base id 0x10006000 in flight/DoomSat/Top/instances.fpp; SendFile is its first
+# command), which is how the dispatcher's OpCodeCompleted / OpCodeError events name the command they answer.
+SENDFILE_OPCODE = 0x10006000
 
 
 def qualified(name: str) -> str:
@@ -77,14 +81,8 @@ class Settings:
 
     @property
     def run_dir(self) -> Path:
-        """The flight side's run directory: payload.log, yamcs.log, the downlink mirror."""
+        """The flight side's run directory: payload.log, yamcs.log, the payload's episode records (run/rec)."""
         return self.doomsat_home / "run"
-
-    @property
-    def downlink(self) -> Path:
-        """Where FprimeFilePacketService mirrors downlinked files: scripts/wsl_run_flight.sh always gives Yamcs
-        FPRIME_DOWNLINK_DIR=$DOOMSAT_HOME/run/downlink, whatever the caller's environment says."""
-        return self.run_dir / "downlink"
 
     @property
     def yamcs_url(self) -> str:

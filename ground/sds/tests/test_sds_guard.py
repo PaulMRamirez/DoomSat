@@ -8,7 +8,9 @@ list of files (PILOT_SIDE) and cannot see ground/sds at all, so these tests draw
 1. nothing the pilot process runs names the SDS: its package, its home, its bucket, its catalog;
 2. the SDS writes nowhere the pilot reads (the pilot shows out/frames/latest_map.png to a model as its map);
 3. nothing in the SDS opens a WAD (only research/grader may, CLAUDE.md);
-4. the SDS is read-only by default: its one command is FileDownlink SendFile, sent from a module named for it;
+4. the SDS is read-only by default: its one command is cfdpManager SendFile (class 2, keeping the file on board),
+   sent from a module named for it; of CFDP it only reads the transfer list and the cfdpDown bucket, and deletes the
+   one object it has ingested;
 5. its processes survive research/preflight.py --kill and the flight side's pkill, which both match by command
    line, and its own stop cannot take down the flight;
 6. its DAGs and its package import nothing from the pilot.
@@ -17,6 +19,7 @@ Every scan has a canary, as research/honesty.py does: a planted leak the matcher
 passes says something. The scans read source only: no SDS module that needs Airflow or yamcs-client is imported.
 """
 import ast
+import datetime as dt
 import functools
 import glob
 import importlib.util
@@ -24,6 +27,7 @@ import os
 import re
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -32,7 +36,7 @@ SDS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))      # ground/
 REPO = os.path.dirname(os.path.dirname(SDS))
 sys.path.insert(0, SDS)
 
-from doomsat_sds import capture, config, products, store  # noqa: E402
+from doomsat_sds import capture, config, products, record, store  # noqa: E402
 
 
 def _load_honesty():
@@ -243,6 +247,63 @@ def command_findings(name, text):
     if "record" not in base and (re.search(r"\brecord\.request\s*\(", text)
                                  or re.search(r"from\s+[\w.]*record\s+import\s+[^\n]*\brequest\b", text)):
         out.append("calls record.request (the SendFile sender) outside a record module")
+    return out
+
+
+# yamcs-client's file transfer calls: the two that start a transfer and the four that steer one.
+TRANSFER_STARTS = ("upload", "download")
+TRANSFER_CONTROL = ("cancel_transfer", "pause_transfer", "resume_transfer", "run_file_action")
+HTTP_WRITES = ("post", "put", "patch", "delete")
+
+
+def _strings_in(node):
+    return [n.value for n in ast.walk(node) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+
+
+def file_transfer_findings(name, text):
+    """Everything in one SDS source file that could start, steer or cancel a CFDP transfer, or write to cfdpDown.
+
+    Allowed: GETs of /filetransfer (the transfer list) and of /storage/buckets/cfdpDown (the downlinked record), and
+    one DELETE of a cfdpDown object, in a record module (the ingested record, on the opt-in Phase D path). A write
+    names the endpoint or the bucket when a string in the call does, or a variable assigned from one. upload and
+    download count as yamcs-client's unless the module defines a method of that name (publish.Publisher.upload
+    writes the doomsat-sds bucket).
+    """
+    out = []
+    base = os.path.basename(name)
+    tree = ast.parse(text)
+    own = {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    bound = {"/filetransfer": set(), "cfdpDown": set()}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for needle, names in bound.items():
+                if any(needle in s for s in _strings_in(node.value)):
+                    names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+
+    def names(call, needle):
+        return (any(needle in s for s in _strings_in(call))
+                or any(isinstance(n, ast.Name) and n.id in bound[needle] for n in ast.walk(call)))
+
+    for call in ast.walk(tree):
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)):
+            continue
+        attr = call.func.attr
+        if attr in TRANSFER_CONTROL:
+            out.append("line %d calls %s, which steers a file transfer" % (call.lineno, attr))
+        elif attr in TRANSFER_STARTS and attr not in own:
+            out.append("line %d calls %s, which starts a file transfer" % (call.lineno, attr))
+        method = attr if attr in HTTP_WRITES else None
+        if attr == "request" and call.args and isinstance(call.args[0], ast.Constant) \
+                and str(call.args[0].value).lower() in HTTP_WRITES:
+            method = str(call.args[0].value).lower()
+        if method is None:
+            continue
+        if names(call, "/filetransfer"):
+            out.append("line %d sends %s to /filetransfer" % (call.lineno, method.upper()))
+        if names(call, "cfdpDown") and not (method == "delete" and "record" in base):
+            out.append("line %d sends %s to the cfdpDown bucket" % (call.lineno, method.upper()))
+    if "record" not in base and re.search(r"\bforget_downlinked\s*\(", text):
+        out.append("deletes the ingested cfdpDown object (forget_downlinked) outside a record module")
     return out
 
 
@@ -468,7 +529,7 @@ class SdsNeverOpensAWad(unittest.TestCase):
 # ================================================================================================ 4. read-only
 class SdsIsReadOnlyByDefault(unittest.TestCase):
     def test_the_one_command_is_sendfile(self):
-        self.assertEqual(config.SENDFILE, "/DoomSat_DoomSat/FileHandling/fileDownlink/SendFile")
+        self.assertEqual(config.SENDFILE, "/DoomSat_DoomSat/DoomSat/cfdpManager/SendFile")
         bad = ["%s: %s" % (path, f) for path, text in sorted(sds_sources().items())
                for f in command_findings(path, text)]
         self.assertEqual(bad, [])
@@ -478,6 +539,77 @@ class SdsIsReadOnlyByDefault(unittest.TestCase):
         for path in users:
             self.assertIn("record", os.path.basename(path), path)
             self.assertIn("SENDFILE", sds_sources()[path], path)
+
+    def test_the_command_issued_keeps_the_file_on_board_and_is_class_2(self):
+        # keep DELETE (enum value 0) would remove the payload's record once sent, and Yamcs requires all seven
+        # arguments; what record.request hands yamcs-client is checked, not a constant beside it.
+        sent = []
+
+        class Processor:
+            def issue_command(self, command, args=None, comment=None):
+                sent.append((command, dict(args)))
+                return types.SimpleNamespace(id="c1", generation_time=dt.datetime(2026, 10, 4, tzinfo=dt.timezone.utc))
+
+        class Client:
+            def __init__(self, address):
+                pass
+
+            def get_processor(self, instance, processor):
+                return Processor()
+
+            def close(self):
+                pass
+
+        fake = types.ModuleType("yamcs.client")
+        fake.YamcsClient = Client
+        settings = config.Settings(home=Path("/x/sds"), doomsat_home=Path("/x"))
+        p = {"episode_id": "20261004T160006Z-e0001", "source": "/x/run/rec/1-11049.json",
+             "dest": "rec_20261004T160006Z-e0001.json"}
+        with mock.patch.dict(sys.modules, {"yamcs": types.ModuleType("yamcs"), "yamcs.client": fake}):
+            out = record.request(settings, p)
+        self.assertEqual(len(sent), 1)
+        command, args = sent[0]
+        self.assertEqual(command, config.SENDFILE)
+        self.assertEqual(args["keep"], "KEEP")
+        self.assertEqual(args["cfdpClass"], "CLASS_2")
+        self.assertEqual(sorted(args), sorted(["channelId", "destId", "cfdpClass", "keep", "priority",
+                                               "sourceFileName", "destFileName"]))
+        self.assertEqual((args["sourceFileName"], args["destFileName"]), (p["source"], p["dest"]))
+        self.assertEqual(out["args"], args)
+
+    def test_cfdp_is_read_only_but_for_the_ingested_object(self):
+        bad = ["%s: %s" % (path, f) for path, text in sorted(sds_sources().items())
+               for f in file_transfer_findings(path, text)]
+        self.assertEqual(bad, [])
+        users = [path for path, text in sds_sources().items() if "/filetransfer" in text]
+        self.assertEqual([os.path.basename(u) for u in users], ["record.py"])
+
+    def test_canary_planted_transfer_writes_are_caught(self):
+        planted = {
+            "record.py": 'requests.post("%s/api/filetransfer/%s/cfdp/transfers" % (url, inst), json=req)',
+            "record_x.py": 'url = base + "/api/filetransfer/fprime-project/cfdp/transfers/3:cancel"\nhttp.post(url)',
+            "pipeline.py": 'self.http.request("PUT", base + "/filetransfer/fprime-project/cfdp/transfers/3")',
+            "capture.py": 'svc = client.get_file_transfer_client(inst).get_service("cfdp")\nsvc.upload("b", "o")',
+            "quicklook.py": 'svc.download("cfdpDown", "rec_x.json")',
+            "store.py": "svc.cancel_transfer(t.id)",
+            "catalog.py": "svc.pause_transfer(t.id)",
+            "context.py": "svc.resume_transfer(t.id)",
+            "frames.py": "svc.run_file_action(t.id, 'x')",
+            "publish.py": 'requests.delete("%s/api/storage/buckets/cfdpDown/objects/%s" % (url, n), timeout=10)',
+            "record_y.py": 'requests.post(base + "/api/storage/buckets/cfdpDown/objects/x", data=b"")',
+            "lineage.py": "ref = record.forget_downlinked(settings, t)",
+        }
+        for name, text in planted.items():
+            self.assertTrue(file_transfer_findings(name, text), "not caught in %s: %s" % (name, text))
+        ok = {
+            "record.py": 'r = http.get("%s/api/filetransfer/%s/cfdp/transfers" % (u, i), params={})\n'
+                         'requests.delete(base + "/api/storage/buckets/cfdpDown/objects/x", timeout=10)\n'
+                         'requests.get(base + "/api/storage/buckets/cfdpDown/objects/x")',
+            "publish.py": "class P:\n    def upload(self, name, data):\n        pass\nyamcs.upload('x', b'')",
+            "sds_record.py": "ref = record.forget_downlinked(settings, t)",
+        }
+        for name, text in ok.items():
+            self.assertEqual(file_transfer_findings(name, text), [], name)
 
     @unittest.skipUnless(os.path.exists(os.path.join(REPO, "ground", "sds", "dags", "sds_record.py")),
                          "Phase D (the record DAG) is not in this tree")
@@ -586,7 +718,7 @@ class SdsImportsNothingFromThePilot(unittest.TestCase):
                      "from providers import Jev", "import after_action, graph_config", "from ground import pilot",
                      "import world_model", "mod = importlib.import_module('pilot')"):
             self.assertTrue(pilot_imports(line), "not caught: %r" % line)
-        self.assertEqual(pilot_imports("from airflow.providers.standard.sensors.filesystem import FileSensor\n"
+        self.assertEqual(pilot_imports("from airflow.providers.standard.operators.trigger_dagrun import X\n"
                                        "from doomsat_sds import pipeline, products\nfrom . import config"), [])
 
 

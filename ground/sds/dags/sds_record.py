@@ -4,7 +4,7 @@
     sds_record:  plan_request -> send_SendFile_command -> wait_for_downlinked_file -> ingest_record -> compare_with_l1
                                                                                \\-> report_downlink_events (always)
 
-This is the one place the data system commands anything, and the only command is FileDownlink's SendFile: the
+This is the one place the data system commands anything, and the only command is cfdpManager's SendFile: the
 task that sends it is named for it. It is off unless scripts/sds.sh runs with DOOMSAT_SDS_RECORDS=on, and it
 only finds a file if the flight runs with RECORDS=on (payload/episode_record.py).
 
@@ -13,9 +13,13 @@ the last two hours are asked for: any other episode has no record to send, and t
 episode and last tic, with the episode number restarting with the payload, so a much older request could find a
 different file (the comparison would say so, but there is no point asking).
 
-The command is never retried by itself: a failed run is re-requested by hand (clear it in the UI). The tasks
-around it retry, and report_downlink_events says why no file came: a FileOpenError on board (record_unavailable),
-or a FileSent whose file never reached the mirror (record_not_mirrored, e.g. a full fprimeFilesIn bucket).
+The file comes down as a CFDP transfer into Yamcs's bucket cfdpDown; there is no file on disk to watch, so the wait
+is a sensor that reads Yamcs (command history, events, the CFDP transfer list) and never writes to it: on a
+timeout the transfer is left alone. The command is never retried by itself: a failed run is re-requested by hand
+(clear it in the UI). The tasks around it retry, and report_downlink_events says why no record came:
+record_unavailable (SendFile refused, or the file could not be opened or was empty), record_transfer_failed (the
+transfer began and failed) or record_not_received (no answer within the wait). A record that arrived although F'
+never acknowledged Yamcs's Finished PDU is ingested, and record_fin_unacknowledged says so.
 """
 import os
 import sys
@@ -26,14 +30,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # ground/sds, how
 
 import pendulum
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
-from airflow.providers.standard.sensors.filesystem import FileSensor
 from airflow.sdk import dag, task
 
 ENABLED = os.environ.get("DOOMSAT_SDS_RECORDS", "off") == "on"
 # for the idempotent tasks, not the command; the timeout turns a hung Yamcs read into a retry
 RETRY = {"retries": 2, "retry_delay": timedelta(seconds=20), "execution_timeout": timedelta(minutes=15)}
 MAX_AGE_S = 2 * 3600
-REQUESTABLE = ("died", "level_finished", "reset")      # an interrupted episode never wrote a record
+# An interrupted episode never wrote a record. A WAD switch did: the payload's recorder closes the episode a
+# LOAD_WAD cut short as "reset", and record.compare accepts that against the ground's "wad_switch".
+REQUESTABLE = ("died", "level_finished", "reset", "wad_switch")
 
 
 @dag(
@@ -74,12 +79,12 @@ def sds_record_watch():
     schedule=None,
     start_date=pendulum.datetime(2026, 10, 1, tz="UTC"),
     catchup=False,
-    max_active_runs=1,                  # FprimeFilePacketService handles one transfer at a time
+    max_active_runs=1,                  # cfdpManager sends one file at a time per channel; one request at a time
     tags=["doomsat-sds", "phase-d"],
     doc_md=__doc__,
 )
 def sds_record():
-    @task(multiple_outputs=True, **RETRY)   # so the sensor can take p["mirror_path"] as its own XCom key
+    @task(**RETRY)
     def plan_request(**context) -> dict:
         from doomsat_sds import pipeline, record
         settings, _, catalog = pipeline.open_env(archive=False)
@@ -90,7 +95,7 @@ def sds_record():
 
     @task(execution_timeout=timedelta(minutes=2))     # never retried: a command is not sent twice by a machine
     def send_SendFile_command(p: dict) -> dict:
-        """The only command the SDS sends: FileHandling.fileDownlink.SendFile(source, dest)."""
+        """The only command the SDS sends: cfdpManager.SendFile(source, dest), class 2, keep the file on board."""
         if not ENABLED:
             raise RuntimeError("record requests are off (DOOMSAT_SDS_RECORDS=on)")
         from doomsat_sds import config, record
@@ -98,35 +103,52 @@ def sds_record():
         print(out)
         return out
 
+    # Read only, and every poke a fresh task process (reschedule): SendFile's answer, cfdpManager's events and
+    # Yamcs's CFDP transfer list. A read that fails is logged and the sensor pokes again (silent_fail); the
+    # verdicts that settle it are raised as AirflowFailException, which is never retried.
+    @task.sensor(poke_interval=5, timeout=120, mode="reschedule", silent_fail=True,
+                 execution_timeout=timedelta(minutes=1))
+    def wait_for_downlinked_file(p: dict, command: dict):
+        from airflow.sdk import PokeReturnValue
+        from airflow.sdk.exceptions import AirflowFailException
+        from doomsat_sds import config, pipeline, record
+        from doomsat_sds.archive import YamcsArchive
+        settings = config.Settings.from_env()
+        seen = record.observe(settings, YamcsArchive(settings.yamcs, settings.instance), p, command,
+                              pipeline.now_ms())
+        print(seen["state"], seen["why"])
+        if seen["state"] == "failed":
+            raise AirflowFailException("%s: %s" % (seen["finding"], seen["why"]))
+        return PokeReturnValue(is_done=seen["state"] == "received", xcom_value=seen)
+
     @task(trigger_rule="all_done", **RETRY)
-    def report_downlink_events(p: dict, command: dict) -> list:
-        """After the wait, whatever its outcome: what FileDownlink said, and whether the file reached the mirror."""
-        import os
+    def report_downlink_events(p: dict, command: dict, received: dict) -> list:
+        """After the wait, whatever its outcome: what cfdpManager and Yamcs said, and a finding when the record
+        did not come, or came without F' acknowledging Yamcs's Finished PDU."""
         from doomsat_sds import pipeline, record
         if not command:
             return []
         settings, archive, catalog = pipeline.open_env()
-        events = record.downlink_events(archive, command["issued_ms"] - 2000, pipeline.now_ms() + 5000)
-        for e in events:
+        seen = record.observe(settings, archive, p, command, pipeline.now_ms())
+        for e in seen["events"]:
             print(e)
-        sent = any(e["type"] == "FileSent" for e in events)
-        arrived = os.path.exists(p["mirror_path"])
+        detail = {"command": command, "events": seen["events"], "why": seen["why"], "transfer": seen["transfer"]}
         with catalog:
-            if not sent:
-                catalog.add_finding("record_unavailable", {"command": command, "events": events},
-                                    episode_id=p["episode_id"])
-            elif not arrived:
-                catalog.add_finding("record_not_mirrored", {"command": command, "events": events,
-                                                            "mirror": p["mirror_path"]}, episode_id=p["episode_id"])
-        return events
+            if seen["state"] == "failed" or (received and seen["finding"]):
+                catalog.add_finding(seen["finding"], detail, episode_id=p["episode_id"])
+            elif not received:
+                # The wait ended with no verdict: nothing failed that the ground saw, and nothing arrived in time.
+                # A transfer that finished since then is not ingested; its object stays in cfdpDown.
+                catalog.add_finding("record_not_received", detail, episode_id=p["episode_id"])
+        return seen["events"]
 
     @task(**RETRY)
-    def ingest_record(p: dict, command: dict, **context) -> dict:
+    def ingest_record(p: dict, command: dict, received: dict, **context) -> dict:
         from doomsat_sds import pipeline, record
         settings, _, catalog = pipeline.open_env(archive=False)
         with catalog:
-            ref = record.ingest(settings, catalog, p, command, run_id=context["run_id"])
-        ref["bucket_copy_deleted"] = record.forget_downlinked(settings, p)
+            ref = record.ingest(settings, catalog, p, command, received["transfer"], run_id=context["run_id"])
+        ref["bucket_copy_deleted"] = record.forget_downlinked(settings, received["transfer"])
         return ref
 
     @task(**RETRY)
@@ -140,12 +162,9 @@ def sds_record():
 
     p = plan_request()
     command = send_SendFile_command(p)
-    wait = FileSensor(task_id="wait_for_downlinked_file", filepath=p["mirror_path"], fs_conn_id="fs_default",
-                      deferrable=True, poke_interval=5, timeout=90)
-    command >> wait >> report_downlink_events(p, command)
-    l0 = ingest_record(p, command)
-    wait >> l0
-    compare_with_l1(p, l0)
+    received = wait_for_downlinked_file(p, command)
+    report_downlink_events(p, command, received)
+    compare_with_l1(p, ingest_record(p, command, received))
 
 
 sds_record_watch()

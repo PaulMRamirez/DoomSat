@@ -8,8 +8,9 @@
 #   scripts/sds.sh airflow ARGS...   the Airflow CLI with the SDS environment (e.g. dags list-runs sds_forward)
 #   scripts/sds.sh catalog ARGS...   the product catalog (python -m doomsat_sds.catalog --help)
 #
-# DOOMSAT_SDS_RECORDS=on scripts/sds.sh start  also requests each episode's record from the payload with SendFile
-# (Phase D; the flight must run with RECORDS=on). Off by default, and then the SDS sends no commands at all.
+# DOOMSAT_SDS_RECORDS=on scripts/sds.sh start  also requests each episode's record from the payload with
+# cfdpManager's SendFile and reads it from Yamcs's bucket cfdpDown once the CFDP downlink has finished (Phase D; the
+# flight must run with RECORDS=on). Off by default, and then the SDS sends no commands at all.
 #
 # Everything it creates lives under $DOOMSAT_HOME/sds (the venv, Airflow's home and SQLite database, the
 # catalog, the products, captured frames, logs); nothing goes in the repo. It runs next to scripts/flight.sh
@@ -62,10 +63,9 @@ sds_env() {
   export DOOMSAT_YAMCS="${DOOMSAT_YAMCS:-localhost:8090}"
   export PYTHON_YAMCS_CLIENT_UTC=1
   # Phase D: ask the payload for its episode records with SendFile (the SDS's only command). Off by default, and
-  # only for episodes whose payload ran with --records on (the episode's context says so).
+  # only for episodes whose payload ran with --records on (the episode's context says so). The wait for the file
+  # reads Yamcs's CFDP transfer list, so it needs no Airflow connection.
   export DOOMSAT_SDS_RECORDS="${DOOMSAT_SDS_RECORDS:-off}"
-  # The FileSensor's connection (Airflow 3 no longer creates fs_default).
-  export AIRFLOW_CONN_FS_DEFAULT='{"conn_type": "fs", "extra": {"path": "/"}}'
 }
 
 say() { printf '\n== %s\n' "$*"; }
