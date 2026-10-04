@@ -342,15 +342,20 @@ async function readWadTlm() {
   const loads = w.WAD_LOADS !== undefined && w.WAD_LOADS !== null ? Number(w.WAD_LOADS) : null;
   return {iwad: name(w.WAD_IWAD), pwad: name(w.WAD_PWAD), loads};
 }
-async function wadEvents() {   // the latest WadLoaded / WadLoadFailed events, each with a key that names it
-  const ev = await (await fetch("/api/archive/fprime-project/events?limit=20&order=desc&q=WadLoad")).json();
-  return (ev.events || ev.event || []).map(e => ({key: `${e.generationTime}|${e.seqNumber}|${e.message}`, message: e.message || ""}));
+// The latest WadLoaded / WadLoadFailed / WadAlreadyFlying events, newest first, each with a key that names it.
+// WadAlreadyFlying answers a LOAD_WAD for the game already flying (a repeat after a lost answer): nothing changed.
+async function wadEvents() {
+  const get = async q => (await (await fetch(`/api/archive/fprime-project/events?limit=20&order=desc&q=${q}`)).json());
+  const lists = await Promise.all(["WadLoad", "WadAlreadyFlying"].map(get));
+  return lists.flatMap(ev => ev.events || ev.event || [])
+    .map(e => ({t: e.generationTime || "", key: `${e.generationTime}|${e.seqNumber}|${e.message}`, message: e.message || ""}))
+    .sort((a, b) => (a.t < b.t ? 1 : a.t > b.t ? -1 : 0));
 }
-// What the spacecraft said to this load, or null for nothing yet: a WadLoaded or WadLoadFailed event not seen
-// before it was sent, or else the WAD channels showing this load (the count above the one before, and the
-// names asked for). Without a count from before, the channels prove nothing.
+// What the spacecraft said to this load, or null for nothing yet: a WadLoaded, WadLoadFailed or WadAlreadyFlying
+// event not seen before it was sent, or else the WAD channels showing this load (the count above the one before,
+// and the names asked for). Without a count from before, the channels prove nothing.
 function loadAnswer(before, events, tlm, args) {
-  const fresh = events.filter(e => !before.seen.has(e.key) && /\[WadLoad(ed|Failed)\]/.test(e.message));
+  const fresh = events.filter(e => !before.seen.has(e.key) && /\[Wad(Loaded|LoadFailed|AlreadyFlying)\]/.test(e.message));
   if (fresh.length) return fresh[fresh.length - 1].message;   // newest first: the last is the earliest
   if (tlm && before.loads !== null && tlm.loads !== null && tlm.loads > before.loads &&
       tlm.iwad === args.iwad && tlm.pwad === args.pwad)

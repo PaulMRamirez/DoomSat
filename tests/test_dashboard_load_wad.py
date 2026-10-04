@@ -67,6 +67,20 @@ console.log(JSON.stringify(loadAnswer(before, {json.dumps(events)}, {json.dumps(
     def ev(self, key, message):
         return {"key": key, "message": message}
 
+    def test_already_flying_is_an_answer(self):
+        # A repeat of a load whose answer was lost, or a load of what flies: the payload answers WadAlreadyFlying
+        msg = "[WadAlreadyFlying] Already flying basic.wad over freedoom2.wad on MAP01: LOAD_WAD changed nothing"
+        self.assertEqual(self.answer([], 0, [self.ev("b", msg)], None), msg)
+        self.assertIsNone(self.answer(["b"], 0, [self.ev("b", msg)], None), "seen before it was sent: old news")
+
+    def test_it_asks_the_archive_for_every_answer(self):
+        fetcher = PAGE[PAGE.index("async function wadEvents()"):PAGE.index("function loadAnswer(")]
+        for q in ("WadLoad", "WadAlreadyFlying"):
+            self.assertIn(f'"{q}"', fetcher)
+        fpp = read("flight/Components/Doom/Doom.fpp")
+        for event in ("WadLoaded", "WadLoadFailed"):
+            self.assertRegex(fpp, rf"event {event}\(")
+
     def test_nothing_new_is_no_answer(self):
         old = self.ev("a", "[WadLoaded] Now flying x.wad on E1M1")
         self.assertIsNone(self.answer(["a"], 0, [old], {"iwad": "freedoom1.wad", "pwad": "", "loads": 0}))
