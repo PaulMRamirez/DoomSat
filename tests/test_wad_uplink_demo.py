@@ -200,6 +200,15 @@ class TestTheDemo(unittest.TestCase):
         self.assertEqual(names, ["RXCRCCALCBYTESPERCYCLE_PRM_SET", "COMMIT_WAD", "LOAD_WAD"])
         self.assertEqual(stack.commands[1][1], {"part": stack.transfers[0][1]})
 
+    def test_a_cfdp_name_too_long_for_commit_wad_stops_before_anything_goes_up(self):
+        stack = FakeStack(cfdp=True)
+        with self.assertRaises(SystemExit):   # 20 characters + 19 is one over COMMIT_WAD's 38
+            self.run_demo(stack, "--wad", self.wad, "--as", "a_twenty_char_nm.wad", "--map", "MAP01", "--cfdp", "2")
+        self.assertEqual(stack.transfers, [])
+        self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--as", "nineteen_chars0.wad", "--iwad",
+                                       "freedoom2.wad", "--map", "MAP01", "--cfdp", "2"), 0)
+        self.assertEqual(len(stack.commands[1][1]["part"]), 38)
+
     def test_a_lost_commit_answer_is_asked_again_and_the_load_settles_it(self):
         # The first COMMIT_WAD works but its WadUplinked is lost; the second finds no .part (WadUplinkFailed)
         stack = FakeStack(cfdp=True, lose=["[WadUplinked]"])

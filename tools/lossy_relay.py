@@ -8,7 +8,7 @@
 
 Each --tm/--tc is LISTEN:FORWARD on 127.0.0.1. Every datagram (one TM or TC transfer frame) is dropped
 independently with probability --loss percent, separately per direction, from a seeded generator. Counts go to
-stdout every --report seconds and on exit.
+stdout every --report seconds and on exit (Ctrl-C or SIGTERM).
 
 Start Yamcs behind it with DOOMSAT_RELAY=1 (ground/yamcs/launch.py moves Yamcs's TM link to 51000 and its TC link
 to 51001; the bridge keeps 50000 and 50001):
@@ -21,6 +21,7 @@ With --loss 0 it is a plain pass-through, which is how to check the splice itsel
 import argparse
 import random
 import selectors
+import signal
 import socket
 import sys
 import time
@@ -53,6 +54,10 @@ def main():
     def report():
         print("[relay] " + "  ".join(f"{n} sent {st['sent']} dropped {st['dropped']}" for n, st in stats.items()),
               flush=True)
+
+    def stop(*_):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, stop)   # `kill` or pkill: still print the final counts
 
     last = time.time()
     try:

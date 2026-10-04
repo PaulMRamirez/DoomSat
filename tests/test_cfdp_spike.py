@@ -4,6 +4,7 @@ No network beyond 127.0.0.1, no game, no flight software, no Yamcs: the YAML and
 launcher wrapper runs against a stand-in fprime_yamcs, and the relay forwards between local sockets.
 """
 import importlib.util
+import json
 import os
 import re
 import socket
@@ -29,6 +30,7 @@ INSTANCE = yaml.safe_load(_read("ground", "yamcs", "etc", "yamcs.fprime-project.
 SQL = _read("ground", "yamcs", "etc", "cfdp_streams.sql")
 CFDP_CFG = _read("flight", "config", "CfdpCfg.fpp")
 FPP = _read("flight", "Components", "Doom", "Doom.fpp")
+PRM = json.loads(_read("flight", "config", "PrmDb.json"))["DoomSat.cfdpManager"]
 
 
 def cfdp_service():
@@ -67,6 +69,9 @@ class TestTheYamcsSide(unittest.TestCase):
         self.assertEqual([e["id"] for e in a["remoteEntities"]], [42], "cfdpManager's LocalEid")
         self.assertEqual([e["id"] for e in a["localEntities"]], [100], "cfdpManager's FileInDefaultDestEntityId")
         self.assertFalse(a["hasDownloadCapability"], "F' v4.3.0 has no Proxy Put; downlinks start on board")
+        # F' restarts its transaction numbers at every boot; Yamcs must not keep old ones answering for 10 min,
+        # but must outlast the FIN retries (ChannelConfig ack_timer 2 s x ack_limit 10)
+        self.assertTrue(20000 < a["pendingAfterCompletion"] <= 120000)
 
     def test_the_file_packet_service_is_gone(self):
         self.assertNotIn("com.example.myproject.FprimeFilePacketService", [s.get("class") for s in INSTANCE["services"]])
@@ -87,6 +92,16 @@ class TestTheFlightSide(unittest.TestCase):
         size = int(re.search(r"^\s*constant MaxPduSize = (\d+)", CFDP_CFG, re.M).group(1))
         # ComAggregator asserts on a space packet over TmFrameFixedSize 1024 - 15; a PDU rides behind 6 + 2 bytes
         self.assertLessEqual(size + 6 + 2, 1024 - 15)
+
+    def test_the_boot_parameters_match_the_ground(self):
+        # scripts/wsl_run_flight.sh builds PrmDb.dat from flight/config/PrmDb.json at every start
+        a = cfdp_service()
+        self.assertEqual(PRM["LocalEid"], a["remoteEntities"][0]["id"])
+        self.assertEqual(PRM["FileInDefaultDestEntityId"], a["localEntities"][0]["id"])
+        self.assertGreaterEqual(PRM["RxCrcCalcBytesPerCycle"], 4 << 20, "the default 64 KiB a tick: a minute for doom1")
+        self.assertEqual(PRM["FileInDefaultKeep"], "KEEP", "DELETE removes a file once downlinked")
+        self.assertEqual(PRM["FileInDefaultClass"], "CLASS_2")
+        self.assertEqual(len(PRM), 10, "every cfdpManager parameter, or prmDb warns PrmIdNotFound at boot")
 
     def test_commit_wad_takes_a_bare_name(self):
         self.assertRegex(FPP, r"async command COMMIT_WAD\(\s*part: string size 40")
@@ -149,6 +164,7 @@ class TestTheRelay(unittest.TestCase):
                                  "--seed", "3", "--report", "0", "--tm", f"{listen}:{target.getsockname()[1]}",
                                  "--tc", other], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         got = []
+        self.final = ""
 
         def drain():   # read as it arrives: a default receive buffer holds only about 256 small datagrams
             try:
@@ -170,17 +186,19 @@ class TestTheRelay(unittest.TestCase):
             return got
         finally:
             proc.terminate()
-            proc.communicate(timeout=5)
+            self.final = proc.communicate(timeout=5)[0]
             out.close()
             target.close()
 
     def test_no_loss_is_a_pass_through(self):
         self.assertEqual(self.run_relay(0), list(range(200)))
+        self.assertIn("TM sent 200 dropped 0", self.final, "SIGTERM still prints the final counts")
 
     def test_loss_drops_about_that_share_and_never_reorders(self):
         got = self.run_relay(20, n=500)
         self.assertEqual(got, sorted(got))
         self.assertTrue(330 < len(got) < 470, len(got))
+        self.assertIn(f"TM sent {len(got)} dropped {500 - len(got)}", self.final)
 
 
 if __name__ == "__main__":

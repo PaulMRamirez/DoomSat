@@ -74,6 +74,10 @@ services:
       nakTimeout: 3000              # longer than cfdpManager's 1 s cycle
       nakLimit: 10
       inactivityTimeout: 30000
+      # A finished transfer keeps answering PDUs by (entity, sequence number) this long. F' numbers its transactions
+      # from 1 at every boot, so after a flight-only restart a new downlink could land on an old transfer for the
+      # default 10 min. 60 s still outlasts F's FIN retries (ack_timer 2 s x ack_limit 10).
+      pendingAfterCompletion: 60000
       hasDownloadCapability: false  # F' v4.3.0 has no Proxy Put: downlinks start on board (cfdpManager.SendFile)
       hasFileListingCapability: false
       senderFaultHandlers:

@@ -263,6 +263,11 @@ def main():
                    or (loading[1] and wu.name_problem(loading[1], "PWAD")) or (not a.no_load and wu.map_problem(a.map)))
         if problem:
             p.error(problem)
+    # With --cfdp, COMMIT_WAD names the .part on board, in a command string of at most 38 characters (FPP size 40
+    # less Yamcs's 2-byte length): NAME + "." + 13-digit milliseconds + ".part"
+    if a.cfdp and name and len(name) + 19 > wu.NAME_MAX:
+        p.error(f"with --cfdp the uplinked file name may be at most {wu.NAME_MAX - 19} characters "
+                f"(COMMIT_WAD carries NAME.<ms>.part in {wu.NAME_MAX}); --as a shorter one")
 
     link = Link(a.yamcs.replace("http://", ""), a.instance)
     if not link.wait(lambda: "CMDS_RECEIVED" in link.values and "WAD_IWAD" in link.values, 15):
