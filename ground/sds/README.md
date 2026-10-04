@@ -14,6 +14,7 @@ cataloged products**, the way a science data system does, in its three usual mod
  FRAME_CHUNK ──► capture service ──► capture/ ──► sds_quicklook (every minute) ──► contact sheet + health
  (realtime only)   (scripts/sds.sh)
  catalog ──► sds_reprocess (by hand) ──► L1 rebuilt from the archive, checked ──► L2 at the current version
+ payload record ◄── SendFile ◄── sds_record (Phase D, opt-in) ──► L0 record ──► checked against L1
 ```
 
 ## The rule it lives by: products never flow back to the pilot
@@ -26,7 +27,8 @@ together with the rest of the boundary:
 
 - products are drawn from telemetry only, and nothing here opens a WAD;
 - nothing is written under `out/frames/`, which the pilot reads;
-- it sends no commands.
+- the only command the SDS can send is FileDownlink `SendFile`, from one task named for it, and only when
+  record requests are switched on (Phase D).
 
 Nothing here is part of a graded run. Fly demonstration episodes on the dev set (`WAD=freedoom1.wad`).
 
@@ -74,6 +76,7 @@ environment is `scripts/sds.sh airflow ...`, e.g. `scripts/sds.sh airflow dags l
 | `sds_rollup` | on the L2-summary asset | L3 rollup across the current summaries, copied to the bucket |
 | `sds_quicklook` | every minute | Contact sheet of the latest captured frames plus link and payload health |
 | `sds_reprocess` | by hand | Reprocessing campaign: rebuild L1 from the archive, check it reproduces, build every L2 lacking its current version, republish |
+| `sds_record_watch`, `sds_record` | every 2 minutes, per episode | Phase D: request the payload's record with `SendFile`, wait for the downlinked file, ingest it, compare with L1 |
 
 The capture service is not a DAG: it has to run continuously, so `scripts/sds.sh` runs it beside Airflow.
 
@@ -101,12 +104,14 @@ episode ended by `RESET_GAME` has no end event, and `EPISODE` restarts at 1 with
 
 | Level | Type | File | From |
 |---|---|---|---|
+| L0 | `l0_record` | JSON | the payload's own record, downlinked (Phase D) |
 | L1 | `l1_episode` | JSON | the archive: the ten science channels as one lossless time-ordered table, link housekeeping, the commands in the window (put on the TM time axis by the measured clock offset), the Doom events |
 | L2 | `l2_path` | PNG | L1: the path walked, from telemetry only |
 | L2 | `l2_summary` | JSON | L1: duration, kills, cells explored, health, outcome, distance |
 | L2 | `l2_linkstats` | JSON | L1: status-stream completeness, frames and chunks sent, uplink completeness, link uptime, clock offset |
 | L3 | `l3_rollup` | JSON | every current `l2_summary` |
 | QL | `ql_health`, `ql_contact_sheet` | JSON, PNG | the capture directory and realtime values (kept a day) |
+| QA | `qa_record_check` | JSON | `l0_record` against `l1_episode` (Phase D) |
 
 Products are pure functions of their inputs, serialised one way, with no processing time inside, so the same
 inputs and algorithm version give the same bytes and the same sha256. Algorithm versions are in
@@ -119,7 +124,7 @@ Nothing generated goes in the repo.
 
 `$DOOMSAT_HOME/sds/catalog.sqlite`: `episodes` (window, outcome, WAD, map, skill, seed, pilot mode, repo commit,
 dev/test set), `products` (id `<episode>/<type>@<version>`, level, version, path, sha256, input references,
-Airflow run id, code commit, `is_current`), and `findings` (a checksum that moved).
+Airflow run id, code commit, `is_current`), and `findings` (a checksum that moved, a record that disagrees).
 
 ```bash
 scripts/sds.sh catalog summary
@@ -140,6 +145,23 @@ counts as up to date only if it was built from the current L1's exact bytes; one
 moved to a new version is reported as stale and never rebuilt in place (bump its version too: an L1 change is a
 new processing baseline). Two campaigns have run so far: `l2_path` 2.0.0 (breaks the line at teleports, colours
 the path by time), and the 1.1.0 baseline after L1 stopped losing samples that share a time tag.
+
+## Phase D: the payload's own record (opt-in)
+
+```bash
+RECORDS=on WAD=freedoom1.wad scripts/flight.sh start   # the payload writes ~/doom/run/rec/<episode>-<last tic>.json
+DOOMSAT_SDS_RECORDS=on scripts/sds.sh start            # the SDS asks for each one with SendFile
+```
+
+The record is written when the episode ends, before its last status goes down, so it exists by the time the
+ground asks. `sds_record` sends `SendFile`, waits for the file in the downlink mirror (`$DOOMSAT_HOME/run/downlink`)
+with a deferrable FileSensor, ingests it as `l0_record` and compares it with L1: episode, outcome, last tic,
+kills, cells, final health and position, positions along the path, context, and how many of the statuses sent
+reached the archive. Every disagreement becomes a catalog finding.
+
+The flight software sets two traps here, both handled: F´ command strings hold at most 39 characters (the
+dictionary says 100), so paths are kept short, relative to the F´ binary's directory when the absolute one is too
+long; and `SendFile` answers OK even when it cannot open the file, so success is judged by the `FileSent` event.
 
 ## Publishing (Phase E)
 
@@ -180,6 +202,6 @@ them with `~/doom/sds/venv/bin/python` to include those.
 | Path | What |
 |---|---|
 | `dags/` | thin DAG files: each task calls one function in the package |
-| `doomsat_sds/` | the product code: `archive` (Yamcs reads, recorded or live), `episodes`, `products`, `png`, `catalog`, `context`, `pipeline`, `frames` and `capture` (Phase B), `quicklook`, `publish` (Phase E), `lineage`, `store`, `config` |
+| `doomsat_sds/` | the product code: `archive` (Yamcs reads, recorded or live), `episodes`, `products`, `png`, `catalog`, `context`, `pipeline`, `frames` and `capture` (Phase B), `quicklook`, `publish` (Phase E), `record` (Phase D), `lineage`, `store`, `config` |
 | `tests/` | unit tests and the recorded archive window |
 | `../../scripts/sds.sh` | setup, start, stop, status |

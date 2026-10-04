@@ -76,5 +76,10 @@ class Settings:
         return self.doomsat_home / "run"
 
     @property
+    def downlink(self) -> Path:
+        """Where FprimeFilePacketService mirrors downlinked files (FPRIME_DOWNLINK_DIR in wsl_run_flight.sh)."""
+        return Path(os.environ.get("FPRIME_DOWNLINK_DIR") or self.run_dir / "downlink")
+
+    @property
     def yamcs_url(self) -> str:
         return self.yamcs if "://" in self.yamcs else "http://" + self.yamcs

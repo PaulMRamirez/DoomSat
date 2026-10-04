@@ -8,6 +8,9 @@
 #   scripts/sds.sh airflow ARGS...   the Airflow CLI with the SDS environment (e.g. dags list-runs sds_forward)
 #   scripts/sds.sh catalog ARGS...   the product catalog (python -m doomsat_sds.catalog --help)
 #
+# DOOMSAT_SDS_RECORDS=on scripts/sds.sh start  also requests each episode's record from the payload with SendFile
+# (Phase D; the flight must run with RECORDS=on). Off by default, and then the SDS sends no commands at all.
+#
 # Everything it creates lives under $DOOMSAT_HOME/sds (the venv, Airflow's home and SQLite database, the
 # catalog, the products, captured frames, logs); nothing goes in the repo. It runs next to scripts/flight.sh
 # and never starts, stops or commands the flight side: with the SDS stopped, a flight is exactly as before.
@@ -58,6 +61,10 @@ sds_env() {
   export DOOMSAT_SDS_HOME="$SDS_HOME"
   export DOOMSAT_YAMCS="${DOOMSAT_YAMCS:-localhost:8090}"
   export PYTHON_YAMCS_CLIENT_UTC=1
+  # Phase D: ask the payload for its episode records with SendFile (the SDS's only command). Off by default.
+  # Only episodes that ended after requests were first switched on are asked for: earlier ones have no record.
+  export DOOMSAT_SDS_RECORDS="${DOOMSAT_SDS_RECORDS:-off}"
+  [ -f "$SDS_HOME/run/records_since_ms" ] && export DOOMSAT_SDS_RECORDS_SINCE_MS="$(cat "$SDS_HOME/run/records_since_ms")"
 }
 
 say() { printf '\n== %s\n' "$*"; }
@@ -139,9 +146,15 @@ stop() {
 }
 
 start() {
-  installed; sds_env
-  stop
+  installed
   mkdir -p "$SDS_HOME/logs" "$SDS_HOME/run"
+  if [ "${DOOMSAT_SDS_RECORDS:-off}" = on ]; then
+    [ -f "$SDS_HOME/run/records_since_ms" ] || date +%s%3N > "$SDS_HOME/run/records_since_ms"
+  else
+    rm -f "$SDS_HOME/run/records_since_ms"
+  fi
+  sds_env
+  stop
   "$VENV/bin/airflow" db migrate > "$SDS_HOME/logs/migrate.log" 2>&1 || { tail -20 "$SDS_HOME/logs/migrate.log"; exit 1; }
   for c in $COMPONENTS; do
     # --skip-serve-logs: the log servers would listen on every interface; one machine shares the log files anyway
