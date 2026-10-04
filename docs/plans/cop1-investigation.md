@@ -119,6 +119,10 @@ delays of 20 ms up and 50 ms down. Real TM cadence depends on `ComQueue` traffic
   - `RESET_GAME`, `EXPLORE_HINT` and `CONTROL`'s relative turn are not safe to repeat either. None of them is
     resent today.
 
+  That was the behaviour when this was written. Steps 1 and 2 below change the first two commands: on
+  `feature/idempotent-wad-commands` a repeated `COMMIT_WAD` for an upload already in place answers `WadUplinked`,
+  and a repeated `LOAD_WAD` answers `WadLoaded` with nothing changed.
+
 ## Options
 
 | Option | What it takes | Effort | What it gives | What it costs |
