@@ -272,3 +272,45 @@ Baseline → plan → Airflow stack → product package and tests → Phase A (f
     dictionary on every start.
   - `tools/serve_dashboard.py` serves the whole repo root, `.env` included, on 127.0.0.1:8070.
   - A research probe sent one `CMD_NO_OP` to the live stack while mapping the command API.
+- 2026-10-04, Airflow stack: `scripts/sds.sh setup` installs Airflow 3.3.2 with uv against
+  `constraints-3.3.2/constraints-3.11.txt` in 15 s, plus yamcs-client 2.1.0 and Pillow 12.3.0, which are not in
+  the constraints and are pinned. `start` brings up api-server, scheduler, dag-processor, triggerer and the
+  capture service; all report healthy about 10 s later.
+- Phase A, verified by running: the watcher triggered one `sds_forward` run per closed episode. Six runs
+  succeeded, each with all six tasks, and the L3 rollup was rebuilt by asset trigger after each.
+  - A flight's episode 1 shares `EPISODE == 1` with the previous flight's idle episode 1. The silence between
+    them was 26 s, under the 30 s threshold; the TIC-going-backwards rule is what split them.
+  - Findings:
+    - The status stream reached the archive only 91.8% complete in the first episode: 191 of 2332 statuses were
+      lost as 6-tic gaps.
+    - The archive starts about 20 s into a flight's first episode.
+    - With `--system-two none` the pilot never applies its 180 s level budget (the reset sits inside the
+      System Two check), so a code-autopilot episode can run indefinitely. One ran for 18 minutes until I
+      restarted the payload, and was closed correctly as `interrupted`.
+- Phase B, verified: in the window 01:05–01:09 the capture service counted 2432 complete frames, 0 incomplete,
+  0 missing and 57 maps, against 2488 images sent on board.
+  - The payload restart at 01:05 was counted as a sequence restart, not a gap.
+  - The one incomplete frame of the first subscription was a frame already half-sent when it subscribed;
+    those are now counted as `cut`.
+- Phase C, verified: `l2_path` went from 1.0.0 to 2.0.0 (breaks at teleports, colour by time, kill markers).
+  - `sds_reprocess` rebuilt L1 from the archive for all 5 episodes, and every one reproduced its cataloged
+    sha256 bit for bit. The ParameterArchive had been back-filled in between, but the replay-based reader
+    returns the same values.
+  - It built 5 `l2_path@2.0.0` products; the v1 ones stay in the catalog, not current. Every episode was
+    republished, so the Timeline items link to v2.
+- Phase E, verified:
+  - One Timeline item per episode, created through REST (`POST /api/timeline/.../items` with a uuid5 id); a
+    second publish overwrites rather than duplicates.
+  - Products are copied to bucket `doomsat-sds`, served with their content types.
+  - OpenLineage RunEvents are written to `lineage/openlineage.jsonl`.
+- Phase D, verified:
+  - With `RECORDS=on`, the payload wrote `run/rec/1-4247.json` when the episode died. `sds_record` sent
+    `SendFile`, the file arrived in `fprimeFilesIn` and in the mirror `run/downlink`, which only works since
+    the yaml fix (`downlinkMirror=/root/doom/run/downlink` in yamcs.log). The deferrable FileSensor fired, the
+    record was ingested as `l0_record` and compared.
+  - 15 of 16 checks agree exactly, including last tic, kills, cells, final health, final position, and 89 path
+    positions at 0.0 units. The one disagreement is a finding: the record's first tic is 4, the archive's 712.
+    Of the statuses sent while the archive was listening, 95.8% arrived.
+  - On the way, the record watcher first asked for records of episodes flown before records were on. Each got
+    a `FileOpenError` (found from the events, since `SendFile` itself answered OK) and a `record_unavailable`
+    finding. Requests are now limited to episodes closed after record requests were first switched on.

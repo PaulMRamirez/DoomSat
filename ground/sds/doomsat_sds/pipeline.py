@@ -246,6 +246,22 @@ QL_CHANNELS = ("PAYLOAD_LINK", "EPISODE", "HEALTH", "KILLS", "EXPLORED_CELLS", "
 QL_RETENTION_H = 24
 
 
+def frames_sent_between(series: list, start_ground_ms: int, stop_ground_ms: int) -> int | None:
+    """How far FRAMES_SENT rose between two ground-clock times.
+
+    The capture service counts by the ground's clock; FRAMES_SENT is stamped with F´ time, about a second ahead.
+    The offset is measured from the series itself (generation minus reception) and the counter read as it stood
+    at each edge, so the two counts cover the same stretch of time.
+    """
+    if len(series) < 2:
+        return None
+    offsets = sorted(g - r for g, r, _ in series if r is not None)
+    off = offsets[len(offsets) // 2] if offsets else 0
+    at = lambda t: next((v for g, _, v in reversed(series) if g <= t + off), None)
+    a, b = at(start_ground_ms), at(stop_ground_ms)
+    return b - a if a is not None and b is not None else None
+
+
 def quicklook(settings: Settings, catalog: Catalog, run_id: str | None = None, at_ms: int | None = None) -> dict:
     """Health and a contact sheet from the capture directory and a few realtime values (Phase B)."""
     import json
@@ -272,9 +288,9 @@ def quicklook(settings: Settings, catalog: Catalog, run_id: str | None = None, a
         if window["minutes"]:
             first = dt.datetime.strptime(window["minutes"][0], "%Y%m%dT%H%M").replace(tzinfo=dt.timezone.utc)
             last = dt.datetime.strptime(window["minutes"][-1], "%Y%m%dT%H%M").replace(tzinfo=dt.timezone.utc)
-            s = arch.parameters(["FRAMES_SENT"], int(first.timestamp() * 1000),
-                                int(last.timestamp() * 1000) + 60_000)["FRAMES_SENT"]
-            frames_sent = (s[-1][2] - s[0][2]) if len(s) > 1 else None
+            w0, w1 = int(first.timestamp() * 1000), int(last.timestamp() * 1000) + 60_000
+            s = arch.parameters(["FRAMES_SENT"], w0 - 5_000, w1 + 5_000)["FRAMES_SENT"]
+            frames_sent = frames_sent_between(s, w0, w1)
     except Exception as e:
         problems.append("%s: %s" % (type(e).__name__, str(e)[:200]))
     h = ql.health(stamp, status, window, realtime, links, frames_sent)
