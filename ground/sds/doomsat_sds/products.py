@@ -23,7 +23,7 @@ from .store import canonical_json, sha256
 ALGORITHMS = {
     # product type: (level, version, file extension, media type)
     "l1_episode": ("L1", "1.0.0", "json", "application/json"),
-    "l2_path": ("L2", "1.0.0", "png", "image/png"),
+    "l2_path": ("L2", "2.0.0", "png", "image/png"),         # 2.0.0: Phase C, see build_path_png
     "l2_summary": ("L2", "1.0.0", "json", "application/json"),
     "l2_linkstats": ("L2", "1.0.0", "json", "application/json"),
     "l3_rollup": ("L3", "1.0.0", "json", "application/json"),
@@ -232,11 +232,46 @@ def _scale_bar_units(span_units: float) -> int:
     return 2 ** max(4, int(round(math.log2(target))))
 
 
-def build_path_png(l1: dict, width: int = 600, height: int = 640) -> bytes:
-    """The walked path, v1: the raw position samples joined in order, start in green, end coloured by outcome.
+# Doom's running speed is about 500 units/s and status arrives at about 11 Hz, so consecutive samples are at most
+# ~50 units apart (twice that across a dropped status). A longer step is a teleporter, not a walk.
+JUMP_UNITS = 192
+TIME_STOPS = ((0.0, (48, 96, 240)), (0.5, (240, 208, 48)), (1.0, (240, 64, 48)))   # early blue, mid yellow, late red
 
-    Drawn from POS_X/POS_Y alone. There is no level geometry behind it: nothing here opens a WAD (charter
-    2.4), and this image never goes back to the pilot (charter 2.2; tests/test_guard.py).
+
+def _time_colour(f: float) -> tuple[int, int, int]:
+    for (f0, c0), (f1, c1) in zip(TIME_STOPS, TIME_STOPS[1:]):
+        if f <= f1:
+            k = (f - f0) / (f1 - f0) if f1 > f0 else 0.0
+            return tuple(int(round(a + (b - a) * k)) for a, b in zip(c0, c1))
+    return TIME_STOPS[-1][1]
+
+
+def kill_points(l1: dict) -> list[tuple[int, float, float]]:
+    """(t_ms, x, y) at each rise of KILLS, using the position held at that moment."""
+    cols = l1["telemetry"]["columns"]
+    ix, iy, ik = cols.index("POS_X"), cols.index("POS_Y"), cols.index("KILLS")
+    x = y = kills = None
+    out = []
+    for r in l1["telemetry"]["rows"]:
+        x = r[ix] if r[ix] is not None else x
+        y = r[iy] if r[iy] is not None else y
+        if r[ik] is not None:
+            if kills is not None and r[ik] > kills and x is not None and y is not None:
+                out.append((r[0], x, y))
+            kills = r[ik]
+    return out
+
+
+def build_path_png(l1: dict, width: int = 600, height: int = 640) -> bytes:
+    """The walked path, drawn from POS_X/POS_Y alone.
+
+    v2.0.0 (Phase C): the line breaks at jumps longer than JUMP_UNITS (teleporters; v1 drew a straight line across
+    the map for each), the path is coloured by elapsed time from blue through yellow to red so that revisits are
+    visible, and each kill is marked with a white cross. Start is the green disc, the end is coloured by outcome.
+    v1.0.0 joined every sample in one colour; its images stay in the catalog beside the v2 ones.
+
+    There is no level geometry behind it: nothing here opens a WAD (charter 2.4), and this image never goes back
+    to the pilot (charter 2.2; tests/test_sds_guard.py).
     """
     ep = l1["episode"]
     pts = path_points(l1)
@@ -256,14 +291,30 @@ def build_path_png(l1: dict, width: int = 600, height: int = 640) -> bytes:
     ox = margin + ((width - 2 * margin) - (x1 - x0) * scale) / 2
     oy = top + margin + ((height - top - 2 * margin) - (y1 - y0) * scale) / 2
     to_px = lambda x, y: (ox + (x - x0) * scale, oy + (y1 - y) * scale)   # Doom's y points up, the image's down
+    t0, t1 = pts[0][0], pts[-1][0]
+    jumps = 0
     for a, b in zip(pts, pts[1:]):
-        c.line(*to_px(a[1], a[2]), *to_px(b[1], b[2]), "#f0b030", 2)
+        if math.hypot(b[1] - a[1], b[2] - a[2]) > JUMP_UNITS:
+            jumps += 1
+            continue
+        c.line(*to_px(a[1], a[2]), *to_px(b[1], b[2]), _time_colour((a[0] - t0) / max(t1 - t0, 1)), 2)
+    for _, kx, ky in kill_points(l1):
+        px, py = to_px(kx, ky)
+        c.line(px - 4, py - 4, px + 4, py + 4, "#ffffff", 2)
+        c.line(px - 4, py + 4, px + 4, py - 4, "#ffffff", 2)
     c.disc(*to_px(pts[0][1], pts[0][2]), 6, "#40d070")
     c.disc(*to_px(pts[-1][1], pts[-1][2]), 6, END_COLOURS.get(ep["outcome"], "#ffffff"))
     bar = _scale_bar_units(span)
     bx, by = margin, height - 14
     c.line(bx, by, bx + bar * scale, by, "#d0d8e0", 2)
     c.text(int(bx + bar * scale) + 6, by - 3, "%d UNITS" % bar, "#d0d8e0", 1)
+    lx = width - margin - 150                                     # time legend, bottom right
+    for i in range(120):
+        c.line(lx + i, by - 3, lx + i, by + 3, _time_colour(i / 119), 1)
+    c.text(lx - 36, by - 3, "START", "#a8b4c0", 1)
+    c.text(lx + 124, by - 3, "END", "#a8b4c0", 1)
+    if jumps:
+        c.text(width - margin - 150, top + 4, "%d JUMP%s NOT DRAWN" % (jumps, "" if jumps == 1 else "S"), "#a8b4c0", 1)
     return c.to_png()
 
 
