@@ -277,8 +277,9 @@ Not restricted, because `cfdpManager` uses the metadata's destination path as it
   sending, and so do downlinks asked for through `fileIn` unless `FileInDefaultKeep` says KEEP, as `PrmDb.json`
   now does [read]. `PlaybackDirectory` and `PollDirectory` do the same for a whole directory: playback deletes with
   `keep` DELETE, and polling always deletes once a file is sent. A failed poll file is meant to move to
-  `fail_dir`, but F´ v4.3.0 renames it onto the `fail_dir` path itself (`Engine.cpp:1153-1166`), so with a
-  directory there the move fails and the file is deleted; `move_dir` has the same bug (F12) [read].
+  `fail_dir`, but F´ v4.3.0 renames it onto the `fail_dir` path itself (`Engine.cpp:1155-1156`), so with a
+  directory there the move fails and the file is deleted (`1164-1169`); `move_dir` has the same bug (`1135`,
+  `1143-1148`; F12) [read]. Neither applies to a received file, which is only ever removed (`1173-1179`).
 - All test files were removed afterwards.
 
 The component offers no hook to restrict the destination path. The one receive path it does let a deployment
@@ -371,8 +372,10 @@ Written for you to file. Each says what ran and what was only read.
 > `RxFileTransferCompleted` (ACTIVITY_HI), and the file stays at its destination at full size with zeroed holes
 > (seen on a lossy link, twice). On a checksum failure `r1SubstateRecvEof` only logs `RxCrcMismatch` and sets no
 > error status (`TransactionRx.cpp:649-663`), so `Engine::finishTransaction` reports completion
-> (`Engine.cpp:1006-1019`); keep is KEEP from reset (`TransactionRx.cpp:96`), so nothing removes the file. Suggest: treat a checksum failure as a failed transaction (condition code "file checksum failure"),
-> report `RxFileTransferFailed`, and delete the file or move it aside (see F12 on `fail_dir`).
+> (`Engine.cpp:1006-1019`); keep is KEEP from reset (`TransactionRx.cpp:96`), so nothing removes the file. Suggest:
+> treat a checksum failure as a failed transaction (condition code "file checksum failure"), report
+> `RxFileTransferFailed`, and delete the file. (`fail_dir` does not apply: it is used only for a failed send from a
+> polled directory; for a receive, `handleNotKeepFile` just removes the destination file, `Engine.cpp:1173-1179`.)
 
 **F4. Metadata PDU: closure-requested is written at bit 0x80, not 0x40**
 > `Svc/Ccsds/CfdpManager/Types/MetadataPdu.cpp:123` shifts `closureRequested` by 7 and line 180 reads it from bit
@@ -438,10 +441,10 @@ Written for you to file. Each says what ran and what was only read.
 > count, to `sentNakSegmentRequests`, which today counts gaps found rather than segments sent.
 
 **F12. `move_dir` and `fail_dir` are used as file names, not directories**
-> `Engine::handleNotKeepFile` passes the parameter itself to `Os::FileSystem::moveFile` (`Engine.cpp:1133-1135`,
-> `1153-1156`), which is `rename(source, destination)`. With a directory there the rename fails (EISDIR) and the file
-> is deleted; with a path that does not exist, the file is renamed to it and each later one overwrites it. The SDD
-> calls them directories. Suggest moving to `<dir>/<basename>`. (Read.)
+> `Engine::handleNotKeepFile` passes the parameter itself to `Os::FileSystem::moveFile` (`Engine.cpp:1135` and
+> `1155-1156`), which is `rename(source, destination)`. With a directory there the rename fails (EISDIR) and the file
+> is deleted (`1143-1148`, `1164-1169`); with a path that does not exist, the file is renamed to it and each later
+> one overwrites it. The SDD calls them directories. Suggest moving to `<dir>/<basename>`. (Read.)
 
 **nasa/fprime-gds**
 
