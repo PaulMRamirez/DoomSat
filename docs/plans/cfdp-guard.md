@@ -74,6 +74,7 @@ cfdpGuard.fileAnnounceOut -> doom.fileAnnounce
 | Class 1 WAD upload | Not committed by the guard; `COMMIT_WAD` with its checksum put it in place, and it flew |
 | `doom1.wad` (4.2 MB) at 5 % loss each way | FIN after 40.2 s, committed on board with no `COMMIT_WAD`, byte-identical; its first `LOAD_WAD` was lost and resent |
 | Class 2 downlink at 5 % loss (`SendFile`) | Completed and byte-identical, every PDU through the guard |
+| After the review fixes, on the build stacked on this branch (`feature/idempotent-wad-commands`, flight `2026_10_04-18_18_35`) | Class 2 uploads committed at the FIN, the demo matching this upload's own `UploadCommitted`. Uploads to `/tmp/…` and to `<uplink>.wad.1.part` (beside the directory) refused: ground FAILED `NAK_LIMIT_REACHED` after 28.0 s, no file at either target. Class 1 to `/tmp/…` refused, the ground showing COMPLETED. With the guard's events lost in a 12 s downlink blackout over the FIN, the file was committed all the same |
 
 The rename happens while `cfdpManager` still holds the file open read-only, between the FIN and the FIN-ACK.
 POSIX keeps the descriptor valid, and no error followed: `RxFileTransferCompleted` came as usual, naming the old
