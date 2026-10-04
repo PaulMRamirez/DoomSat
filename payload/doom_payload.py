@@ -47,6 +47,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import executor as ex_mod            # noqa: E402  the onboard executor (charter 3.1)
 import seen_geometry as geom_mod     # noqa: E402  exact lines, gated on the automap having drawn them
 import world_model as wm_mod         # noqa: E402  frontiers, objects, the planner (charter 3.2)
+import episode_record as rec_mod     # noqa: E402  a record of each episode for the ground to downlink, off by default
 
 TICRATE = 35
 STATUS_FMT = "!hhhhBBHfffBfHHHHHHHHBBBBBHfHfHHHHfffBBBIHBBHBBBhHHHHBBBBBBBBBBBB"   # 120 bytes, 64 fields (see pack_status)
@@ -689,6 +690,9 @@ class Payload:
         # seven; without this the only honest thing anyone could say about it was "slow".
         self.phase_s = {}
         self.exit_bearing_of = None
+        # The ground's science data system can ask for a record of each episode (payload/episode_record.py).
+        # None unless --records on; nothing on board reads it.
+        self.records = rec_mod.from_args(args, self)
         self.new_episode()
 
     @staticmethod
@@ -1356,6 +1360,9 @@ class Payload:
                 if self.last_obs is not None:
                     self.last_obs["dead"] = int(died)
                     self.last_obs["level_done"] = int(not died)
+                    if self.records:      # on disk before the ground hears of the end and asks for it
+                        self.records.status(self.last_obs)
+                        self.records.close("died" if died else "level_finished")
                     self.send(conn, 1, self.pack_status(self.last_obs))
                 print(f"[payload] episode {self.episode} over on {self.map}: {'died' if died else 'LEVEL FINISHED'} at tic {tic}", flush=True)
                 time.sleep(2.0)
@@ -1372,6 +1379,8 @@ class Payload:
             tic += 1
             if tic % self.args.status_every == 0:
                 self.send(conn, 1, self.pack_status(obs))
+                if self.records:
+                    self.records.status(obs)
             now = time.perf_counter()
             if self.frame_hz and now >= next_frame:
                 next_frame = now + 1.0 / self.frame_hz
@@ -1411,6 +1420,9 @@ def main():
     p.add_argument("--oracle", default="off", choices=["off", "L0", "L1", "L2"],
                    help="DIAGNOSTIC LADDER, never scored: L0 the whole level and the exit, L1 seen "
                         "geometry with the exit revealed once looked at, L2 the stack as flown")
+    p.add_argument("--records", default="off", choices=["off", "on"],
+                   help="write a record of each episode to $DOOMSAT_HOME/run/rec for the ground's science data "
+                        "system to downlink (payload/episode_record.py)")
     Payload(p.parse_args()).serve()
 
 

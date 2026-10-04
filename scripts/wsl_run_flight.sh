@@ -10,6 +10,8 @@ REPO=$DOOMSAT_REPO
 # GEOMETRY=on   exact lines, gated on the automap having drawn them (payload/seen_geometry.py)
 # ORACLE=L0|L1  the diagnostic ladder. Never on a shareware level, and never scored.
 # WAD=, MAP=    which level. A dev flight is WAD=freedoom1.wad.
+# RECORDS=on    the payload writes a record of each episode to $RUN/rec for the ground's science data system to
+#               downlink (payload/episode_record.py; ground/sds). Off by default.
 mkdir -p "$RUN" "$REPO/out"
 stop() {
   pkill -f "doom_payloa[d].py --fps" 2>/dev/null
@@ -29,7 +31,7 @@ start_payload() {
   # --skill must match research/levels.yaml run.skill, or the bench and the flight stack are playing
   # different games and their numbers cannot be compared. tests/test_runner.py pins the two together.
   cd "$PROJ" || exit 1
-  detach "'$PAYLOAD_PY' '$REPO'/payload/doom_payload.py --fps ${FPS:-10} --quality ${QUALITY:-45} --skill ${SKILL:-3} --wad ${WAD:-doom1.wad} --map ${MAP:-E1M1} --geometry ${GEOMETRY:-off} --oracle ${ORACLE:-off} --map-png '$REPO/out/payload_map.png' > '$RUN/payload.log' 2>&1"
+  detach "'$PAYLOAD_PY' '$REPO'/payload/doom_payload.py --fps ${FPS:-10} --quality ${QUALITY:-45} --skill ${SKILL:-3} --wad ${WAD:-doom1.wad} --map ${MAP:-E1M1} --geometry ${GEOMETRY:-off} --oracle ${ORACLE:-off} --records ${RECORDS:-off} --map-png '$REPO/out/payload_map.png' > '$RUN/payload.log' 2>&1"
 }
 start_yamcs() {
   cd "$PROJ" || exit 1

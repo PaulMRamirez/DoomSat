@@ -57,7 +57,7 @@ services:
       fileApid: 3
       downloadTimeoutMs: 8000
       uplinkChunkSize: ${FPRIME_UPLINK_CHUNK_SIZE:512}
-      downlinkMirrorDir: ${FPRIME_DOWNLINK_DIR:/tmp/runner/fprime-downlink}
+      downlinkMirrorDir: ${env.FPRIME_DOWNLINK_DIR:/tmp/runner/fprime-downlink}
       
 dataLinks:
   - name: UDP_TM_IN
