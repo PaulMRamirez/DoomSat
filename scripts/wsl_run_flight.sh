@@ -16,19 +16,38 @@ REPO=$DOOMSAT_REPO
 #                  for uplinks: see build_prmdb).
 mkdir -p "$RUN" "$REPO/out" "$WADS/uplink"   # uplink: where an uplinked WAD lands (LOAD_WAD, README)
 stop() {
+  local groups; groups=$(payload_groups)   # before the SIGTERM: a payload that dies on it takes its pid with it
   pkill -f "doom_payloa[d].py --fps" 2>/dev/null
   pkill -f "fprime_yamc[s]" 2>/dev/null; pkill -f "yamcs/launc[h].py" 2>/dev/null
   pkill -f "YamcsServe[r]" 2>/dev/null
   pkill -f "bin/DoomSa[t]" 2>/dev/null
   pkill -f "fprime-gd[s] " 2>/dev/null; pkill -f "fprime_gds[.]executables" 2>/dev/null   # flight.sh gds
   sleep 1
-  kill_hung_payload
+  reap_payload "$groups"
   # Yamcs takes up to ~15 s to shut down; a new one started sooner fails, and the flight software with it
   for _ in $(seq 1 40); do pgrep -f "YamcsServe[r]" >/dev/null || break; sleep 0.5; done
 }
 # The payload closes its game on SIGTERM, but one stuck inside ViZDoom never gets to run that handler (the
 # engine holds the GIL): kill it outright rather than leave it holding port 4242.
 kill_hung_payload() { pkill -KILL -f "doom_payloa[d].py --fps" 2>/dev/null; }
+# The engine ViZDoom spawns ignores SIGTERM (research/reap.py), so killing a hung payload by name, or a payload
+# dying without closing its game, leaves the engine running. detach's setsid makes each payload the leader of
+# its own process group, and the engine is in that group: these are the groups to reap. A group is only taken
+# when its leader is a payload; on macOS (nohup, no leader) there are none and kill_hung_payload is all there is.
+payload_groups() {
+  local pid
+  for pid in $(pgrep -f "doom_payloa[d].py --fps"); do
+    [ "$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" = "$pid" ] && echo "$pid"
+  done
+}
+# After the SIGTERM: up to 4 s for the payload to close its game, then whatever is left of each group that is
+# a payload or an engine, then any payload outside a group.
+reap_payload() {
+  local group
+  for _ in $(seq 1 8); do pgrep -f "doom_payloa[d].py --fps" >/dev/null || break; sleep 0.5; done
+  for group in $1; do pkill -KILL -g "$group" -f "doom_payloa[d].py --fps|/vizdoom/vizdoo[m]" 2>/dev/null; done
+  kill_hung_payload
+}
 # Detached, so it outlives this shell. setsid -f in WSL: anything started with plain nohup inside a
 # `wsl bash -c` call dies when that call returns. macOS has no setsid; nohup is enough there.
 detach() {
@@ -39,7 +58,7 @@ start_payload() {
   # --skill must match research/levels.yaml run.skill, or the bench and the flight stack are playing
   # different games and their numbers cannot be compared. tests/test_runner.py pins the two together.
   cd "$PROJ" || exit 1
-  detach "'$PAYLOAD_PY' '$REPO'/payload/doom_payload.py --fps ${FPS:-10} --quality ${QUALITY:-45} --skill ${SKILL:-3} --wad ${WAD:-doom1.wad} --map ${MAP:-E1M1} --geometry ${GEOMETRY:-off} --oracle ${ORACLE:-off} --map-png '$REPO/out/payload_map.png' > '$RUN/payload.log' 2>&1"
+  detach "exec '$PAYLOAD_PY' '$REPO'/payload/doom_payload.py --fps ${FPS:-10} --quality ${QUALITY:-45} --skill ${SKILL:-3} --wad ${WAD:-doom1.wad} --map ${MAP:-E1M1} --geometry ${GEOMETRY:-off} --oracle ${ORACLE:-off} --map-png '$REPO/out/payload_map.png' > '$RUN/payload.log' 2>&1"
 }
 # Parameters the flight software loads at boot: $RUN/PrmDb.dat (DoomSatTopology.cpp builds the same path from
 # DOOMSAT_HOME). Built from flight/config/PrmDb.json before every start, so the repo is what holds; a PRM_SAVE on
@@ -73,7 +92,8 @@ start_yamcs() {
 case "${1:-start}" in
   stop) stop; echo stopped ;;
   payload)
-    pkill -f "doom_payloa[d].py --fps" 2>/dev/null; sleep 1; kill_hung_payload
+    groups=$(payload_groups)
+    pkill -f "doom_payloa[d].py --fps" 2>/dev/null; reap_payload "$groups"
     start_payload; echo "payload restarted" ;;
   status)
     ps aux | grep -E "doom_payloa[d]|fprime_yamc[s]|YamcsServe[r]|bin/DoomSa[t]" | awk '{print $11, $12, $13}' | sort | uniq -c

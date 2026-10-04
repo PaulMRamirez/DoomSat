@@ -1579,19 +1579,25 @@ def main():
             os._exit(0)
         sys.exit(Payload(args).probe())
     wu.unpin()   # pinned links a previous flight left behind (only the flight payload pins or clears them)
-    payload = Payload(args)
+    payload = None
 
     def _stop(*_):
         # scripts/flight.sh stop and every restart send SIGTERM; without this the ViZDoom engine (and a
-        # LOAD_WAD probe's) outlives the payload, one more orphan per restart
-        if payload.wad_job is not None:
-            try:
-                os.killpg(payload.wad_job[0].pid, signal.SIGKILL)
-            except OSError:
-                pass
-        payload.game.close()
-        sys.exit(0)
+        # LOAD_WAD probe's) outlives the payload, one more orphan per restart. Armed before the game is built,
+        # so a SIGTERM during start-up still exits; scripts/wsl_run_flight.sh reaps an engine the payload could
+        # not close (it kills the payload's process group).
+        try:
+            if payload is not None:
+                if payload.wad_job is not None:
+                    try:
+                        os.killpg(payload.wad_job[0].pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+                payload.game.close()
+        finally:
+            sys.exit(0)
     signal.signal(signal.SIGTERM, _stop)
+    payload = Payload(args)
     payload.serve()
 
 
