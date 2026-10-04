@@ -138,14 +138,15 @@ tests, and half a day for a `DOOMSAT_RELAY=1` run at 5 % loss.
 
 1. **`COMMIT_WAD` answers OK when `NAME.wad` already matches.** When the `.part` is gone, check `NAME.wad`'s size
    and checksum against the arguments (`fileSum`, which the command already uses), and answer `WadUplinked` if
-   they match. About 15 lines in `Doom.cpp`, plus a test. *Not done.*
+   they match. About 15 lines in `Doom.cpp`, plus a test. *Done* on `feature/idempotent-wad-commands`
+   (`docs/plans/idempotent-wad-commands.md` there).
 2. **`LOAD_WAD` does nothing when the same WAD and map are already flying or being proven.** Compare with
    `wu.identity` in `request_wad` (`payload/doom_payload.py`). A no-op does not raise `WAD_LOADS`, so
-   `tools/wad_uplink_demo.py`'s check must accept that. About 15 lines, plus tests. *Not done.*
+   `tools/wad_uplink_demo.py`'s check must accept that. About 15 lines, plus tests. *Done* on the same branch.
 3. **The dashboard resends `LOAD_WAD`.** *Done* on `feature/dashboard-load-resend` (6ee396f3): up to 3 tries,
    each confirmed by `WadLoaded` / `WadLoadFailed` or the 1 Hz `WAD_*` channels within 25 s. Until step 2
    lands, a resend could still switch the game twice, but only if the event and 25 s of the `WAD_*` channels
-   were all lost.
+   were all lost. With step 2 in place, that cannot happen.
 4. **The guard commits uploads on board.** *Built* on `feature/cfdp-guard` (`docs/plans/cfdp-guard.md`): a Class
    2 upload is committed when the receiver's own FIN says it is complete, with no `COMMIT_WAD` from the ground.
    That takes the ambiguous retry out of the Class 2 path. Step 1 still matters for Class 1 and for a commit by
