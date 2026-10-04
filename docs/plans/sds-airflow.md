@@ -84,9 +84,191 @@ Push `feature/sds-airflow` to this fork and open a draft pull request inside the
 
 # Plan
 
-_To be written while the install runs._
+Written on 4 October 2026 after a full install and a baseline run, from six parallel reads of the code and
+the live stack (Yamcs, F´, payload, honesty suite, Airflow 3.3.2, yamcs-client 2.1.0). Where the code
+disagreed with the brief, the code won; each case is listed under "What the code says" and again under
+"Deviations".
+
+## What the code says (facts the design rests on)
+
+1. **Episode boundaries are edges, not messages.** The payload sends only STATUS and FRAME records. F´
+   derives `EpisodeStarted`, `PlayerDied`, `LevelFinished` and `LevelStarted` from changes in the STATUS
+   fields (`Doom.cpp:376-395`), and the `fprime-yamcs-events` sidecar republishes them as Yamcs events with
+   `source=FPrimeEventProcessor`, `event_type=DoomSat.doom.<Name>` and the arguments in `extra` as strings.
+2. **Episode 1 of every flight has no start event.** F´ emits it about 5 s before Yamcs listens, so it is
+   lost, along with the first seconds of telemetry. An episode ended by `RESET_GAME` (the pilot's 180 s
+   level budget) has no end event. `EPISODE` restarts at 1 whenever the payload restarts, so the number is
+   not an identity. `LEVEL` counts levels started; it is not a map name. `TIC` restarts each episode.
+3. **Frames are not archived anywhere.** `--yamcs-realtime-only-channels` marks the packets do-not-archive,
+   so `FRAME_CHUNK` is in neither the tm table nor the parameter archive, and no replay recovers it. Map PNGs
+   share the channel (`seq & 0x80000000`). Phase B's live capture is the only frame source.
+4. **Archive reads are fresh.** The runtime parameter archive uses the back-filler (every ~10 minutes), but
+   a read whose window runs past the archive's end is completed by an automatic replay, so a read made
+   seconds after an episode ends is complete. Each read spawns a replay processor, so reads are batched.
+5. **TM time runs about 0.95 s ahead of wall clock** (the preprocessor's leap-second offset is 38, not 37),
+   while command history is stamped with wall clock. Commands are placed on the TM time axis using the
+   offset measured from the samples themselves (generation minus reception).
+6. **The downlink mirror is not `$DOOMSAT_HOME/run/downlink`.** The yaml says
+   `${FPRIME_DOWNLINK_DIR:...}`, which Yamcs resolves from Java system properties, not the environment, so
+   files land in `/tmp/runner/fprime-downlink`. The mirror also cannot create subdirectories.
+7. **`SendFile` accepts at most 39 characters per path on board** (`FW_CMD_STRING_MAX_SIZE = 40`), although
+   the dictionary says 100. It reports OK even when the file cannot be opened; success is the `FileSent`
+   event. The F´ binary's working directory is `build-artifacts/<OS>/DoomSat/bin`, not the project.
+8. **The Timeline write calls in yamcs-client 2.1.0 do not work against Yamcs 5.12.8** (PUT-only, mismatched
+   field numbers). Items are created with a REST `POST /api/timeline/{instance}/items`; posting a known UUID
+   again overwrites, so a `uuid5` per episode makes publishing idempotent.
+9. **Buckets** hold at most 1000 objects / 100 MB by default, take object names matching `[ \w\s\-./]+`,
+   and must not be deleted on 5.12.8 (a deleted bucket becomes a ghost). The pilot wipes `doomframes` at
+   every start, so the SDS uses its own bucket.
+10. **Airflow 3.3.2** is the current stable release. It installs with uv against
+    `constraints-3.3.2/constraints-3.11.txt` and brings `providers-standard` (FileSensor,
+    TriggerDagRunOperator). Four processes: api-server, scheduler, dag-processor, triggerer.
+    LocalExecutor on SQLite is supported (WAL). `AssetWatcher` events are batched into one run, so they
+    cannot give "one run per episode"; explicit runs with `run_id=<episode id>` can.
+11. **The honesty suite scans a fixed file list** (`honesty.PILOT_SIDE`), so it cannot see `ground/sds/`
+    and does not enforce "products never flow back". The SDS adds its own guard test. The pilot already
+    reads `out/frames/latest_map.png`, so no SDS output goes anywhere near `out/frames/`.
+12. **Context is not in telemetry.** WAD, map, skill and seed exist only in the payload's arguments and in
+    `payload.log` ("episode N started on MAP"). Pilot mode exists only in the pilot's arguments.
+
+## Design
+
+**Layout.** `ground/sds/` holds `dags/` (thin DAG files), `doomsat_sds/` (the product package: plain Python,
+no Airflow imports), `tests/` (unittest, with recorded Yamcs responses under `tests/data/`), and
+`README.md`. `scripts/sds.sh setup|start|stop|status` mirrors `scripts/flight.sh`. Everything generated lives
+under `$DOOMSAT_HOME/sds/`: `venv/`, `airflow/` (home, SQLite DB, logs), `catalog.sqlite`, `products/`,
+`capture/`, `logs/`, `run/` (pid files), `lineage/`. The package name is `doomsat_sds` rather than `sds`
+because the test suite puts `ground/` on `sys.path`, where a bare `sds` would resolve to the directory.
+
+**Airflow.** Airflow 3.3.2 in `$DOOMSAT_HOME/sds/venv`, created with uv against the official constraints,
+plus yamcs-client 2.1.0 (the version `ground/.venv` uses) and Pillow (constrained). LocalExecutor, SQLite,
+parallelism 4, API server on 127.0.0.1:8080 in all-admins mode (local only, so no password to keep),
+examples off, new DAGs unpaused, DAG folder `ground/sds/dags`, the package on `PYTHONPATH`. The four
+Airflow processes and the capture service are started detached with `setsid`, like the flight side, with
+pid files so `stop` and `status` are exact. No SDS command line contains `pilot.py`, `runner.py`,
+`doom_payload.py` or `vizdoom` (preflight kills those) or the flight side's `pkill` patterns.
+
+**Episode identity and window.** An episode is closed by a `PlayerDied` or `LevelFinished` event, or by an
+`EpisodeStarted(n+1)` that follows `EpisodeStarted(n)` with no end event between (outcome `reset`). Its id is
+the closing event's TM time plus the number: `20261004T001512Z-e0003`. That is stable, sortable, unique
+across payload restarts, and legal as an Airflow run id and a Yamcs object name. The L1 window is the
+contiguous run of archived `EPISODE == n` samples that contains the closing event, so a lost start event (episode 1)
+does not matter.
+
+**Products** are pure functions of their inputs, serialized deterministically (sorted keys, fixed
+separators, no processing timestamps inside), so the same inputs and algorithm version give the same bytes
+and checksum. Processing times go in the catalog, not the file.
+
+- **L1 `l1_episode` (JSON):** the episode window, the ten science channels (`POS_X POS_Y KILLS HEALTH TIC
+  EPISODE DEAD LEVEL_DONE EXPLORED_CELLS LEVEL`) as one time-ordered table (one row per distinct TM time,
+  null where a channel did not update at that time, so it is lossless), the link housekeeping channels
+  (`FRAMES_SENT CHUNKS_SENT CMDS_RECEIVED PAYLOAD_LINK`), the commands in the window (placed on the TM axis
+  by the measured clock offset), and the F´ events in the window.
+- **L2** (each derived from L1 alone, so L2 can be rebuilt from any L1):
+  - `l2_path` (PNG): the walked path, start and end markers, drawn with a stdlib PNG writer (no WAD, no
+    background, telemetry only).
+  - `l2_summary` (JSON): duration, ticks, kills, cells explored, final health, outcome, distance walked.
+  - `l2_linkstats` (JSON): status-stream completeness from `TIC` gaps, frames and chunks sent, commands sent
+    versus `CMDS_RECEIVED` (uplink completeness), `PAYLOAD_LINK` uptime, TM latency.
+- **L3 `l3_rollup` (JSON):** totals and distributions across the current L2 summaries, grouped by WAD/map.
+- **QL `ql_quicklook` (PNG + JSON):** contact sheet of the latest captured frames with link and payload health.
+
+**Catalog** (`catalog.sqlite`): `episodes` (id, number, window, outcome, closing event, WAD, map, skill,
+pilot mode, repo commit, level set dev/test from `research/levels.yaml` read-only, context source) and
+`products` (id `<episode>/<type>@<version>`, level, type, algorithm version, path, sha256, size, input
+references, Airflow run id, created time, `current`). A small CLI (`python -m doomsat_sds.catalog`) prints
+it. Context is captured once at forward time (from the running payload's and pilot's arguments, `payload.log`
+and `git rev-parse HEAD`) and reused by reprocessing, because it describes the flight rather than the
+algorithm.
+
+**DAGs.**
+- `sds_episode_watch` runs every minute. It reads the end and start events over a look-back window, works out
+  the closed episodes not yet cataloged, and fans out one `sds_forward` run per episode with
+  `TriggerDagRunOperator(...).expand_kwargs`, using `run_id=fwd__<episode id>`, `logical_date=None` and
+  `skip_when_already_exists=True`, so a run is never duplicated. Polling every minute was chosen over an
+  `AssetWatcher` because watcher events are batched (fact 10) and its trigger state does not survive a
+  restart. This is the "trigger when an end-of-episode event appears".
+- `sds_forward` (one run per episode): locate window → build L1 → build the three L2 products → register →
+  publish (Phase E). The summary task updates an Airflow Asset that schedules `sds_rollup` (L3) after every
+  run; batching is what an L3 wants.
+- `sds_quicklook` runs every minute from the capture directory and Yamcs realtime values.
+- `sds_reprocess` (manual): maps over every cataloged episode, re-reads the archive, rebuilds L1, checks its
+  checksum against the cataloged L1 (a reproducibility finding if it differs), builds every L2 type that lacks
+  the current algorithm version, and registers them as current. Old versions stay.
+- Phase D: `sds_record_watch` and `sds_record` (in their own file and commits).
+
+**Capture service** (`doomsat_sds/capture.py`, PEP 723 header, run by `sds.sh` from the SDS venv):
+subscribes to `FRAME_CHUNK`, reassembles by `seq`/`index`, writes JPEGs (and the payload's map PNGs
+separately) under `$DOOMSAT_HOME/sds/capture/`, and keeps per-minute counts: complete, incomplete (not all
+chunks within 3 s, checked by a timer and not only on arrival), missing (whole-`seq` gaps), duplicates,
+bytes. It writes nothing to Yamcs, so it cannot collide with the pilot's `/DoomGround` parameters. It
+resubscribes when the stream goes quiet, because yamcs-client does not reconnect.
+
+**Phase D, the file seam** (the only edits to existing code):
+- A new `payload/episode_record.py` keeps a small per-episode accumulator: status count, first and last tic,
+  decimated path, final values, and context (WAD, map, skill, seed). It writes
+  `$DOOMSAT_HOME/run/rec/e<NNNN>.json` atomically.
+- Hooks in `Payload.run()` only. The record is written before the final STATUS of an ending episode, so the
+  file exists before the ground sees the event; an episode change seen by the tracker closes it as `reset`.
+- `new_episode` is not touched. The recorder is created with `getattr(args, "records", "off")`, so the bench
+  (which builds the payload from its own Namespace and never calls `run()`) is unaffected.
+- Off by default; on with `RECORDS=on scripts/flight.sh start` (one more pass-through in
+  `wsl_run_flight.sh`).
+- The yaml mirror path is fixed to read the environment.
+- The DAG sends `SendFile` with paths of 39 characters or fewer: absolute if it fits, otherwise relative to the
+  binary's directory. A deferrable FileSensor watches the mirror, then the DAG ingests the file and compares
+  it with L1. Disagreements are reported as findings.
+
+**Phase E.** One Timeline item per episode (`uuid5`, REST POST, properties linking to products). Products
+are copied to bucket `doomsat-sds` as `episodes/<id>/<type>-<version>.<ext>` plus fixed names for the latest
+quicklook and rollup, within the 1000-object cap. Stretch: OpenLineage RunEvents written by the product layer
+to `$DOOMSAT_HOME/sds/lineage/openlineage.jsonl`.
+
+**Honesty.**
+- No pilot-side file may reference the SDS (package, `$DOOMSAT_HOME/sds`, the bucket, `out/sds`). A new
+  test enforces this over `honesty.PILOT_SIDE` plus the pilot-process modules it omits.
+- Path images are drawn from telemetry alone; nothing opens a WAD.
+- Demonstration flights use the dev set (`WAD=freedoom1.wad`), not the locked test level.
+
+**Tests.** `ground/sds/tests/` with recorded Yamcs responses, no network, game or Airflow. A shim
+`tests/test_sds.py` loads them, so the repo's one test command covers them.
+
+## Deviations from the brief (and why)
+
+1. The mirror directory is not where the brief says (fact 6). Phase D fixes the yaml in its own commit.
+2. "Between an episode's start and end events" becomes "the contiguous run of `EPISODE == n` samples that
+   contains the closing event", because start events are lost and resets have no end event (fact 2).
+   Reset-ended episodes are cataloged too, with outcome `reset`.
+3. Frames cannot come "from the archive" for reprocessing (fact 3). Only the capture service sees them.
+4. The F´ binary's working directory is `bin/`, and `SendFile` paths are limited to 39 characters (fact 7).
+5. Timeline items are created through REST rather than yamcs-client (fact 8).
+6. One file outside `ground/sds/` and `scripts/sds.sh` is new: `tests/test_sds.py`, a loader so that
+   `python -m unittest discover -s tests` also runs the SDS tests.
+7. The demonstration flights use `WAD=freedoom1.wad` (dev set) rather than the default test level.
+
+## Order of work
+
+Baseline → plan → Airflow stack → product package and tests → Phase A (fly 3+ episodes) → B → C → E → D
+(last, own commits) → review → push and draft PR in the fork.
+
 
 # Progress and findings
 
 - 2026-10-03: branch `feature/sds-airflow` cut from `main` at `fe2666b`. Install started
   (`scripts/flight.sh setup`, then `scripts/setup_ground.sh python`).
+- 2026-10-04: install finished (about 3 minutes; nothing refused, including deb.debian.org for doom1.wad).
+  Baseline verified by running:
+  - doctor clean except Open MCT, which was skipped as asked;
+  - `play.py --check` passes;
+  - 369 unit tests pass; honesty 8/8 and canary 17/17 pass;
+  - `flight.sh check` shows FRAMES_SENT rising and PAYLOAD_LINK True.
+
+  Findings on the way:
+  - `scripts/flight.sh` is committed without the executable bit (mode 100644), so it has to be run as
+    `bash scripts/flight.sh`. Left alone, since it is an existing file.
+  - fprime-bootstrap installed fprime-gds 4.4.0 where it expected 4.3.0 (a warning only).
+  - `scripts/wsl_check.sh` polls TARGET_KIND and ROUTE_BEARING, which no longer exist (404).
+  - The repo's `ground/yamcs/mdb/fprime.xtce.xml` is stale; the runtime MDB is regenerated from the
+    dictionary on every start.
+  - `tools/serve_dashboard.py` serves the whole repo root, `.env` included, on 127.0.0.1:8070.
+  - A research probe sent one `CMD_NO_OP` to the live stack while mapping the command API.
