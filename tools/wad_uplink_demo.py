@@ -229,7 +229,10 @@ def main():
                    help="the uplink directory on the spacecraft, as an absolute path (default %(default)s)")
     p.add_argument("--yamcs", default="localhost:8090")
     p.add_argument("--instance", default="fprime-project")
-    p.add_argument("--service", default="FprimeFilePacketService")
+    p.add_argument("--service", help="Yamcs file transfer service (default: FprimeFilePacketService, or cfdp with --cfdp)")
+    p.add_argument("--cfdp", type=int, choices=(1, 2),
+                   help="send the file with CCSDS CFDP class 1 or 2 (Stage 2: the flight software runs cfdpManager), "
+                        "then COMMIT_WAD it into place once the transfer is known whole")
     p.add_argument("--bucket", default="wadUplink")
     p.add_argument("--out", default=str(ROOT / "out"), help="where the frame from after the switch goes")
     a = p.parse_args()
@@ -279,10 +282,19 @@ def main():
             say(f"Yamcs would not take {len(content)} bytes into bucket {a.bucket}: {e}. A bucket upload is capped at "
                 "maxContentLength (ground/yamcs/etc/yamcs.yaml) and the bucket at 100 MiB / 1000 objects")
             return 2
-        service = link.client.get_file_transfer_client(a.instance).get_service(a.service)
+        service = link.client.get_file_transfer_client(a.instance).get_service(a.service or ("cfdp" if a.cfdp else
+                                                                                            "FprimeFilePacketService"))
+        if a.cfdp:
+            # The on-board CRC check of a received file otherwise runs at 64 KiB a second (cfdpManager's default)
+            link.processor.issue_command("/DoomSat_DoomSat/DoomSat/cfdpManager/RXCRCCALCBYTESPERCYCLE_PRM_SET",
+                                         args={"val": 16 * 1024 * 1024})
         updates = service.create_transfer_subscription()
         t0 = time.time()
-        transfer = service.upload(a.bucket, part, remote)
+        if a.cfdp:
+            transfer = service.upload(a.bucket, part, remote, source_entity="ground", destination_entity="doomsat",
+                                      options={"reliable": a.cfdp == 2})
+        else:
+            transfer = service.upload(a.bucket, part, remote)
         say(f"uplink started: {len(content)} bytes -> {remote} (transfer {transfer.id})")
 
         def refresh():   # a Transfer is a snapshot: the subscription has the live one
@@ -327,7 +339,22 @@ def main():
             say(f"FAIL: transfer {transfer.state} {transfer.error or ''}")
             return 1
         sent = time.time() - t0
-        say(f"all packets sent in {sent:.1f} s ({len(content) / sent / 1000:.1f} KB/s); waiting for the spacecraft")
+        if a.cfdp == 2:
+            say(f"CFDP class 2 transfer finished (FIN) in {sent:.1f} s ({len(content) / sent / 1000:.1f} KB/s): "
+                "the spacecraft has the whole file")
+        else:
+            say(f"all packets sent in {sent:.1f} s ({len(content) / sent / 1000:.1f} KB/s); waiting for the spacecraft")
+        if a.cfdp:
+            # cfdpManager writes the file in place and has no fileAnnounce: commit it once it is known whole.
+            # Class 1 has no FIN, and F' v4.3.0 reports a class 1 file whose CRC failed as completed anyway.
+            if a.cfdp == 1:
+                done = link.wait_event(t0, "[RxFileTransferCompleted]", "[RxFileTransferFailed]", "[RxCrcMismatch]",
+                                       timeout=30)
+                say(f"event: {done}")
+                if not done or "[RxFileTransferCompleted]" not in done or link.wait_event(t0, "[RxCrcMismatch]", timeout=1):
+                    say("FAIL: the class 1 file did not arrive whole (no retransmission in class 1); not committing it")
+                    return 1
+            link.command("COMMIT_WAD", part=part)
         said = link.wait_event(t0, f"[WadUplinked] Uplinked WAD ready to load: {a.remote_dir.rstrip('/')}/{name}",
                                "[BadChecksum]", "[WadUplinkFailed]", "[FileWriteError]", "[FileOpenError]", timeout=30)
         received = link.wait_event(t0, "[FileReceived]", timeout=1)

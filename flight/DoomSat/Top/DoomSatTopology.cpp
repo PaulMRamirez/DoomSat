@@ -29,6 +29,10 @@ Svc::ActiveRateGroup::ContextArray rateGroup_0_25HzContext(0);
 
 enum TopologyConstants {
     COMM_PRIORITY = 34,
+    CFDP_FILE_IN_QUEUE_DEPTH = 10,   // fileIn (DpCatalog) requests waiting for the next run1Hz
+    CFDP_BUFFER_MANAGER_ID = 400,    // distinct from commsBufferManager (200) and dpBufferManager (300)
+    CFDP_BUFFER_SIZE = 1024,         // >= CfdpCfg MaxPduSize + 2-byte packet descriptor
+    CFDP_BUFFER_COUNT = 96,          // > 2 channels' per-cycle PDU limit in flight to ComQueue
 };
 
 /**
@@ -47,7 +51,17 @@ void configureTopology() {
     cmdSeq.allocateBuffer(0, mallocator, 5 * 1024);
 
     // Parameter database is configured with a database file name, and that file must be initially read.
-    FileHandling::prmDb.configure("PrmDb.dat");
+    prmDb.configure("PrmDb.dat");
+
+    // CFDP engine (transaction pools, chunk lists, histories) comes from the heap, plus the fileIn handoff queue
+    cfdpManager.configure(mallocator, CFDP_FILE_IN_QUEUE_DEPTH);
+
+    // Dedicated PDU buffer pool for cfdpManager
+    Svc::BufferManager::BufferBins cfdpBins;
+    memset(&cfdpBins, 0, sizeof(cfdpBins));
+    cfdpBins.bins[0].bufferSize = CFDP_BUFFER_SIZE;
+    cfdpBins.bins[0].numBuffers = CFDP_BUFFER_COUNT;
+    cfdpBufferManager.setup(CFDP_BUFFER_MANAGER_ID, 0, mallocator, cfdpBins);
 }
 
 // Public functions for use in main program are namespaced with deployment name DoomSat
@@ -103,6 +117,8 @@ void teardownTopology(const TopologyState& state) {
 
     // Resource deallocation
     cmdSeq.deallocateBuffer(mallocator);
+    cfdpManager.cleanup();
+    cfdpBufferManager.cleanup();
     tearDownComponents(state);
     deinitComponents(state);
 }

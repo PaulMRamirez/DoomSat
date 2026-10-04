@@ -44,6 +44,9 @@ class Doom final : public DoomComponentBase {
     void FRAME_RATE_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, U8 hz, U8 quality) override;
     void LOAD_WAD_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, const Fw::CmdStringArg& iwad,
                              const Fw::CmdStringArg& pwad, const Fw::CmdStringArg& map) override;
+    void COMMIT_WAD_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, const Fw::CmdStringArg& part) override;
+    // Rename an uplinked NAME.wad.<nonce>.part to NAME.wad; false (and no event) if it is not one
+    bool placeWad(const Fw::StringBase& path);
 
     // Payload link
     void connectPayload();

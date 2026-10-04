@@ -7,6 +7,7 @@
 
 #include <arpa/inet.h>
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -105,10 +106,35 @@ void Doom ::run_handler(FwIndexType portNum, U32 context) {
 // ----------------------------------------------------------------------
 
 void Doom ::fileAnnounce_handler(FwIndexType portNum, Fw::StringBase& file_name) {
+    (void)this->placeWad(file_name);  // anything else FileUplink receives (a sequence, a parameter file) is left alone
+}
+
+void Doom ::COMMIT_WAD_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, const Fw::CmdStringArg& part) {
+    this->m_cmdsReceived++;
+    // A bare name: the directory is always the uplink directory, never one the command names
+    if (std::strchr(part.toChar(), '/') != nullptr || wadDestLength(part.toChar(), part.length()) == 0) {
+        this->log_WARNING_HI_WadUplinkFailed(part);
+        this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::VALIDATION_ERROR);
+        return;
+    }
+    // $DOOMSAT_HOME/wads/uplink, as the run script creates it and the payload looks in it
+    const char* const home = std::getenv("DOOMSAT_HOME");
+    const char* const user = std::getenv("HOME");
+    Fw::String path;
+    if (home != nullptr && home[0] != '\0') {
+        path.format("%s/wads/uplink/%s", home, part.toChar());
+    } else {
+        path.format("%s/doom/wads/uplink/%s", (user != nullptr) ? user : "", part.toChar());
+    }
+    const bool ok = this->placeWad(path);
+    this->cmdResponse_out(opCode, cmdSeq, ok ? Fw::CmdResponse::OK : Fw::CmdResponse::EXECUTION_ERROR);
+}
+
+bool Doom ::placeWad(const Fw::StringBase& file_name) {
     const char* const path = file_name.toChar();
     const FwSizeType destLen = wadDestLength(path, file_name.length());
     if (destLen == 0) {
-        return;  // not an uplinked WAD (a sequence, a parameter file): nothing to do
+        return false;
     }
     // A fresh .part name for every uplink, renamed over NAME.wad in the same directory: rename(2) is
     // atomic, and FileUplink, which opens without truncating, never writes into an older file.
@@ -116,9 +142,10 @@ void Doom ::fileAnnounce_handler(FwIndexType portNum, Fw::StringBase& file_name)
     dest.format("%.*s", static_cast<int>(destLen), path);
     if (Os::FileSystem::rename(path, dest.toChar()) == Os::FileSystem::OP_OK) {
         this->log_ACTIVITY_HI_WadUplinked(dest);
-    } else {
-        this->log_WARNING_HI_WadUplinkFailed(file_name);
+        return true;
     }
+    this->log_WARNING_HI_WadUplinkFailed(file_name);
+    return false;
 }
 
 // ----------------------------------------------------------------------

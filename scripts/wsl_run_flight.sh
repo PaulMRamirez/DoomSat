@@ -10,10 +10,11 @@ REPO=$DOOMSAT_REPO
 # GEOMETRY=on   exact lines, gated on the automap having drawn them (payload/seen_geometry.py)
 # ORACLE=L0|L1  the diagnostic ladder. Never on a shareware level, and never scored.
 # WAD=, MAP=    which level. A dev flight is WAD=freedoom1.wad.
+# DOOMSAT_RELAY=1  Yamcs's TM/TC links behind tools/lossy_relay.py (ground/yamcs/launch.py); off by default.
 mkdir -p "$RUN" "$REPO/out" "$WADS/uplink"   # uplink: where an uplinked WAD lands (LOAD_WAD, README)
 stop() {
   pkill -f "doom_payloa[d].py --fps" 2>/dev/null
-  pkill -f "fprime_yamc[s]" 2>/dev/null
+  pkill -f "fprime_yamc[s]" 2>/dev/null; pkill -f "yamcs/launc[h].py" 2>/dev/null
   pkill -f "YamcsServe[r]" 2>/dev/null
   pkill -f "bin/DoomSa[t]" 2>/dev/null
   pkill -f "fprime-gd[s] " 2>/dev/null; pkill -f "fprime_gds[.]executables" 2>/dev/null   # flight.sh gds
@@ -39,7 +40,7 @@ start_payload() {
 }
 start_yamcs() {
   cd "$PROJ" || exit 1
-  detach "cd '$PROJ' && . fprime-venv/bin/activate && export FPRIME_DOWNLINK_DIR='$RUN/downlink' && fprime-yamcs --deployment $DEPLOY --skip-browser-open --yamcs-config-dir '$REPO/ground/yamcs' --yamcs-data-dir '$RUN/yamcs-data' --yamcs-realtime-only-channels DoomSat.doom.FRAME_CHUNK > '$RUN/yamcs.log' 2>&1"
+  detach "cd '$PROJ' && . fprime-venv/bin/activate && export FPRIME_DOWNLINK_DIR='$RUN/downlink' && python '$REPO/ground/yamcs/launch.py' --deployment $DEPLOY --skip-browser-open --yamcs-config-dir '$REPO/ground/yamcs' --yamcs-data-dir '$RUN/yamcs-data' --yamcs-realtime-only-channels DoomSat.doom.FRAME_CHUNK > '$RUN/yamcs.log' 2>&1"
 }
 case "${1:-start}" in
   stop) stop; echo stopped ;;

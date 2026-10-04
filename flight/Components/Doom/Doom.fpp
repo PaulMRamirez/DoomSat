@@ -184,6 +184,14 @@ module DoomMission {
             $map: string size 10  @< the map to start on (Yamcs counts the length tag, so 10 carries 8)
         ) opcode 0x06
 
+        @ Put an uplinked WAD in place: rename UPLINK/NAME.wad.<nonce>.part to UPLINK/NAME.wad, where UPLINK is
+        @ $DOOMSAT_HOME/wads/uplink. FileUplink's fileAnnounce does this by itself; CFDP has no such signal and
+        @ writes in place, so the ground sends this once its Class 2 transfer has finished (FIN), when the file
+        @ is known to be whole.
+        async command COMMIT_WAD(
+            part: string size 40  @< the bare name it was uplinked under: NAME.wad.<nonce>.part
+        ) opcode 0x07
+
         # ----------------------------------------------------------------------
         # Telemetry (downlink)
         # ----------------------------------------------------------------------
