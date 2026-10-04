@@ -70,7 +70,7 @@ Source paths: `F´:` is `lib/fprime` in the F´ project (v4.3.0, `7d8f579`), `Y:
 **Ready to merge, Class 2 only. No upstream work is needed first, and waiting for a later F´ release would not
 help.** On the pinned versions the whole demonstration ran: CFDP Class 1 and Class 2 up and down, a 4.2 MB IWAD
 both ways, native file packets failing 3 of 3 at 5 % frame loss each way while CFDP Class 2 delivered every file
-whole, then `COMMIT_WAD` and `LOAD_WAD` with the level flying. The suite (434 tests) and the honesty suite pass.
+whole, then `COMMIT_WAD` and `LOAD_WAD` with the level flying. The suite (465 tests) and the honesty suite pass.
 
 What makes that true is six local workarounds, each small. Five are pinned by tests; the local instances only by
 the build:
@@ -128,7 +128,7 @@ has one file output and CFDP and `Fw::FilePacket` both arrive on APID 3 (Q1). Th
 | Destination paths outside the uplink directory | Written; see "Destination paths" | ran |
 | Boot parameters (`flight/config/PrmDb.json` → `PrmDb.dat`) | `PrmFileLoadComplete`, 10 records, no warnings; the fast CRC pass with no `PRM_SET` sent | ran |
 | CONTROL round trips during Class 2 uplinks | Median 100 ms during the uplink at 10 ms and at 5 ms pacing; 100 and 108 ms with the link idle | ran |
-| Unit tests | 434 pass (412 before this stage); honesty 8 checks and 17 with `--canary`, 0 failed | ran |
+| Unit tests | 465 pass (412 before this stage, 434 before the review); honesty 8 checks and 17 with `--canary`, 0 failed | ran |
 
 The relay's drops are seeded and reproducible. In the Class 1 runs on 4 October its TC drop list, replayed
 offline (`random.Random("11-TC")`), matched the `UnexpectedSequenceCount` gaps the flight software logged one for
@@ -344,6 +344,45 @@ order:
    takes its 64 a cycle, channel 1 gets the other 32 and logs `BuffersExhausted` [read].
 10. **Cosmetic**: one command-history entry per transfer, rewritten for every PDU; APID 3 packets archived with a
    1970 gentime; the XTCE decodes CFDP PDUs as file-packet noise [read].
+
+### Review of this branch (4 October)
+
+A review of the whole branch found 21 problems, and an adversarial check of each one refuted none (15 confirmed as
+stated, 6 confirmed with their severity or reach cut back). All are fixed on this branch, with a test each where
+one could be written, with two exceptions. The guard component that would commit on board is described under risk 3
+and not built. For class 1, the suggested check of `cfdpManager`'s `faultCrcMismatch` counter is not needed: the
+on-board checksum check below refuses a damaged file whether or not its `RxCrcMismatch` reaches the ground. The
+fixes that changed behaviour:
+
+- **The native branch could not come back.** This branch's sync left a topology header without FileHandling,
+  and its start left `PrmDb.dat` in `bin/`, which stops fprime-gds's `find_app`. `feature/wad-uplink` now
+  commits its own header and passes `--app`, and this branch's `prmDb` reads `$DOOMSAT_HOME/run/PrmDb.dat`. On
+  the install this branch had used, the native branch built, flew, and uplinked `basic.wad` through FileUplink
+  to `WadLoaded` [ran]. This branch then rebuilt, and booted with `PrmFileLoadComplete ... Records: 10` from
+  `run/` and only the binary in `bin/` [ran].
+- **`COMMIT_WAD` trusted the ground's timing.** It now carries the size and CFDP checksum of what was sent, and
+  the Doom component checks both before the rename. On the live stack [ran]:
+  - a commit sent with 1.4 of 4.2 MB on board was refused (`WadCommitRefused ... has 1417011 bytes`), and the
+    transfer still finished;
+  - after the FIN, with one byte flipped on board, the commit was refused; a wrong size was refused; the right
+    numbers committed a byte-identical `doom1.wad`. The ground's Python checksum and F´'s `CFDP::Checksum`
+    agree: 0x7f3981da both ways;
+  - at 5 % loss each way, class 1 `doom1.wad` arrived damaged (`RxCrcMismatch`, actual 0xa6254fea), the demo did
+    not commit it, and a `COMMIT_WAD` sent by hand with the true numbers was refused on board with the same
+    0xa6254fea;
+  - at the same loss, class 2 `cig.wad` committed and flew on MAP02 (FIN after 6.1 s).
+- **The parameter file failed open.** If `PrmDb.dat` cannot be built the start now stops (opt in to the defaults
+  with `DOOMSAT_PRM_DEFAULTS=1`). The path goes into the JSON escaped, so `&`, `#`, `\` and `"` survive.
+  Leftover temp files are cleared at start; a planted one was gone after `flight.sh start` [ran].
+- **The demo**: no fixed time budget (it gives up when a transfer stops moving, then cancels it); the bucket
+  object is deleted on every exit; `--service cfdp` alone means class 2; `--tries` and `--pdu-delay` are
+  checked; no `PRM_SET`; an unconfirmed commit fails under `--no-load`, and a negative test refused only because
+  the file was never put in place fails; the telemetry stand-in for a lost `WadLoaded` must show this load.
+- **`DOOMSAT_RELAY=0`** now means off.
+
+The rest were comments that no longer matched the code (the dedicated pool, the buffer count, `fileAnnounce`) and
+a relay test that could not pass on Windows. This document's claim that a failed receive is removed was wrong:
+nothing removes one (Destination paths).
 
 ### The reading notes at the top, checked
 
