@@ -251,7 +251,7 @@ undeclared), and it could not start either: with two files in `bin/`, fprime-gds
 "Multiple app candidates". This branch now commits its own `DoomSatTopologyDefs.hpp` (the `fprime-util new`
 template for this topology), `wsl_sync.sh` copies it, and both launchers pass `--app`.
 `tests/test_flight_scripts.py` checks the header against the topology and checks that the launchers pass
-`--app`.
+`--app`. With its 4 tests the suite is 416, all passing (the 412 above is the 3 October count).
 
 Proof on this VM, after a CFDP flight that left both behind: `scripts/flight.sh build` built this branch,
 with `bin/PrmDb.dat` still present. `scripts/flight.sh start` came up with `PAYLOAD_LINK` True and frames
