@@ -257,8 +257,8 @@ frame links to 51000/51001 and the relay forwards to the comm bridge's 50000/500
   reached the ground, so the demo sent it again, and the retry found no `.part` and said `WadUplinkFailed` [ran].
   The first time (`cig.wad`, before `--tries` handled that case) the demo stopped there with FAIL, and `LOAD_WAD`
   went up from a second run, which had to resend it once. The second time the demo carried on, and `LOAD_WAD`
-  showed the file was in place [ran]. (Since then a repeated `COMMIT_WAD` finds `NAME.wad` with the size and
-  checksum it names and answers `WadUplinked`, and a repeated `LOAD_WAD` changes nothing:
+  showed the file was in place [ran]. (Since then a repeated `COMMIT_WAD` finds that this upload is in place as
+  `NAME.wad` and answers `WadUplinked`, and a repeated `LOAD_WAD` changes nothing:
   `docs/plans/idempotent-wad-commands.md`.)
 - **CFDP Class 1** at the same loss: 0 of 4 whole (see "What ran"). The demo refused to commit [ran].
 
@@ -273,8 +273,8 @@ Restricted [ran]:
   `$DOOMSAT_HOME/wads/uplink`, and only when the file's size and CFDP modular checksum are the ones the ground
   sent (`flight/Components/Doom/Doom.cpp:115-180`): any `/` is a VALIDATION_ERROR, a missing file an
   EXECUTION_ERROR with `WadUplinkFailed`, and a file that differs an EXECUTION_ERROR with `WadCommitRefused`.
-  (Since then a missing `.part` whose `NAME.wad` already has that size and checksum is OK with `WadUplinked`,
-  so the command is safe to repeat.)
+  (Since then a missing `.part` that this upload was put in place from, its `NAME.wad` still with that size and
+  checksum, is OK with `WadUplinked`, so the command is safe to repeat.)
 - `LOAD_WAD` names only bare `.wad` files in `wads/uplink` and `wads/`, refuses `.part` names, and proves the
   file in a child process before the game switches (Stage 1).
 
@@ -397,7 +397,8 @@ fixes that changed behaviour:
   checked; no `PRM_SET`; a `COMMIT_WAD` with no answer at all fails (`LOAD_WAD` could otherwise fly an older
   file of the same name), as does an unconfirmed one under `--no-load`; the telemetry stand-in for a lost
   `WadLoaded` must show this load. (Since then there is no unconfirmed case: a repeated `COMMIT_WAD` answers as
-  the first did, so `WadUplinkFailed` means the file is not on board, and the demo fails on it.)
+  the first did, so `WadUplinkFailed` means this upload was not put in place (no `.part`, or a rename that failed),
+  and the demo fails on it.)
 - **`DOOMSAT_RELAY=0`** now means off.
 
 The rest were comments that no longer matched the code (the dedicated pool, the buffer count, `fileAnnounce`) and

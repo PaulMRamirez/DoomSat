@@ -28,6 +28,8 @@ class DoomTester final : public DoomGTestBase {
     void testACommitSentAgainAnswersAsTheFirstDid();
     void testACommitAfterTheGuardsAnswersAsTheGuardDid();
     void testAnOlderFileOfTheSameNameIsNotTakenForThisOne();
+    void testARenameThatFailsIsOneFailure();
+    void testOnlyThisUploadAnswersARepeat();
     void testNothingOnBoardIsAFailure();
     void testAPartThatIsNotTheFileSentStaysAPart();
     void testACommitNamesABareUplinkName();

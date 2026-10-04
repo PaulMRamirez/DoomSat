@@ -55,6 +55,7 @@ class FakeStack:
         self.parts = {}           # with cfdp: .part files on board (name -> bytes), waiting for COMMIT_WAD
         self.placed = set()       # names put in place on board
         self.files = {}           # what those hold, where the stand-in put them (name -> bytes)
+        self.placed_from = {}     # the .part each was last renamed from (Doom.cpp's record, kept until a restart)
         self.flying = ("freedoom1.wad", "", "E1M1")   # what the game runs: iwad, pwad, map
         self.fresh = set()        # names uplinked since the game last loaded them: a new file each
         self.switches, self.seq = 0, 500
@@ -160,6 +161,7 @@ class FakeStack:
                     threading.Timer(0.05, self.event, [f"[WadUplinkFailed] Uplinked WAD could not be renamed into place: {remote}"]).start()
                 else:
                     self.files[final] = self.parts.pop(obj)
+                    self.placed_from[final] = obj
                     self.placed.add(final)
                     threading.Timer(0.05, self.event, [f"[WadUplinked] Uplinked WAD ready to load: /home/x/doom/wads/uplink/{final}"]).start()
             return self.live() if self.live else self.snapshot("COMPLETED", len(content))
@@ -182,8 +184,9 @@ class FakeStack:
             sent = (args["fileSize"], args["checksum"])
             onboard = self.parts.get(args["part"])
             if onboard is None:
-                there = self.files.get(final)   # put in place already, by an earlier commit or by cfdpGuard?
-                if there is not None and (len(there), demo.cfdp_checksum(there)) == sent:
+                there = self.files.get(final)   # this upload put in place already, by an earlier commit or cfdpGuard?
+                if self.placed_from.get(final) == args["part"] and there is not None and \
+                        (len(there), demo.cfdp_checksum(there)) == sent:
                     threading.Timer(0.1, self.event, [f"[WadUplinked] Uplinked WAD ready to load: /home/x/doom/wads/uplink/{final}"]).start()
                 else:
                     threading.Timer(0.1, self.event, [f"[WadUplinkFailed] Uplinked WAD could not be renamed into place: {path}"]).start()
@@ -193,6 +196,7 @@ class FakeStack:
                 threading.Timer(0.1, self.event, [f"[WadUplinkFailed] Uplinked WAD could not be renamed into place: {path}"]).start()
             else:
                 self.files[final] = self.parts.pop(args["part"])
+                self.placed_from[final] = args["part"]
                 self.placed.add(final)
                 threading.Timer(0.1, self.event, [f"[WadUplinked] Uplinked WAD ready to load: /home/x/doom/wads/uplink/{final}"]).start()
         if name.endswith("LOAD_WAD"):
@@ -214,9 +218,15 @@ class FakeStack:
                     self.tlm.update(WAD_IWAD=wad_bytes(args["iwad"]), WAD_PWAD=wad_bytes(args["pwad"]),
                                     WAD_LOADS=(self.tlm.get("WAD_LOADS") or 0) + 1, EPISODE=self.tlm["EPISODE"] + 1)
                 threading.Timer(0.1, self.event, [f"[WadLoaded] Now flying {args['iwad']} on {args['map']}"]).start()
+                threading.Timer(0.3, self.channels).start()   # the WAD channels again, a little later
                 for i in range(10):      # the game flies on: frames keep coming
                     threading.Timer(0.3 + 0.2 * i, self.frame, [self.seq + i]).start()
                 self.seq += 10
+        if not self.dropped("tlm"):
+            self.publish()
+
+    def channels(self):
+        """The once-a-second WAD channels: lost on a lossy link like the rest (\"tlm\" in `lose`)."""
         if not self.dropped("tlm"):
             self.publish()
 
@@ -279,6 +289,7 @@ class TestTheDemo(unittest.TestCase):
             patches.enter_context(mock.patch.object(sys, "argv", argv))
             patches.enter_context(mock.patch.object(demo, "say", say))
             patches.enter_context(mock.patch.object(demo, "GUARD_ANSWER_S", 0.3))   # most stand-ins have no guard
+            patches.enter_context(mock.patch.object(demo, "TLM_FRESH_S", 0.05))
             patches.enter_context(mock.patch.object(demo.time, "sleep", clock.sleep if clock else lambda _s: None))
             if clock:
                 patches.enter_context(mock.patch.object(demo.time, "time", clock.time))
@@ -408,15 +419,56 @@ class TestTheDemo(unittest.TestCase):
         self.assertEqual(stack.switches, 0)
         self.assertTrue([m for m in said if m.startswith("OK: already flying freedoom1.wad")], said)
 
-    def test_a_load_sent_again_after_its_answer_was_lost_switches_once(self):
-        # The first LOAD_WAD switches the game, but its WadLoaded and the WAD channels after it are lost; the second
-        # finds the game already flying it and answers without a second switch
-        stack, said = FakeStack(lose=["[WadLoaded]", "tlm"]), []
+    def test_a_load_resent_after_its_answer_was_lost_takes_the_repeats_answer(self):
+        # The first LOAD_WAD switches the game, but its WadLoaded and the WAD channels after it are lost: the tool sends
+        # it again, takes the repeat's WadLoaded, sees the count moved since before the first, and finds a frame from
+        # after the switch. (That the payload switches once is its own test, tests/test_payload_load_wad.py; here the
+        # stand-in's copy of that rule only keeps the scene consistent.)
+        stack, said = FakeStack(lose=["[WadLoaded]", "tlm", "tlm"]), []
         with mock.patch.object(demo, "LOAD_RETRY_ANSWER_S", 0.5), mock.patch.object(demo, "TLM_STANDIN_S", 0.2):
             self.assertEqual(self.run_demo(stack, "--iwad", "freedoom1.wad", "--map", "E1M2", "--tries", "3",
                                            said=said), 0)
         self.assertEqual(self.names(stack), ["LOAD_WAD", "LOAD_WAD"])
         self.assertEqual(stack.switches, 1)
+        self.assertTrue([m for m in said if m.startswith("frame ") and "from after the switch" in m], said)
+
+    def test_an_answer_naming_other_files_fails_even_when_the_count_did_not_move(self):
+        # The LOAD_WAD was lost, and a WadLoaded for what was already flying came anyway (another load's): the WAD
+        # channels name other files, which is a failure, not "already flying"
+        stack, said = FakeStack(lose=["LOAD_WAD"]), []
+        real = stack.issue_command
+
+        def issue(name, args):
+            real(name, args)
+            if name.endswith("LOAD_WAD"):
+                threading.Timer(0.1, stack.event, ["[WadLoaded] Now flying freedoom1.wad on E1M1"]).start()
+        stack.issue_command = issue
+        with mock.patch.object(demo, "TLM_STANDIN_S", 0.3):
+            self.assertEqual(self.run_demo(stack, "--iwad", "freedoom2.wad", "--map", "MAP01", said=said), 1)
+        self.assertFalse([m for m in said if m.startswith("OK: already flying")], said)
+
+    def test_a_count_that_comes_down_late_is_a_switch(self):
+        # The WAD channels sent with the answer are lost, and the next ones come a second later: a switch
+        stack, said = FakeStack(lose=["tlm", "tlm"]), []
+        real = stack.issue_command
+
+        def issue(name, args):
+            real(name, args)
+            if name.endswith("LOAD_WAD"):
+                threading.Timer(1.0, stack.publish).start()
+        stack.issue_command = issue
+        with mock.patch.object(demo, "TLM_STANDIN_S", 2.0), mock.patch.object(demo, "TLM_FRESH_S", 1.5):
+            self.assertEqual(self.run_demo(stack, "--iwad", "freedoom1.wad", "--map", "E1M2", said=said), 0)
+        self.assertEqual(stack.switches, 1)
+        self.assertFalse([m for m in said if m.startswith("OK: already flying")], said)
+
+    def test_a_switch_whose_channels_are_lost_is_not_called_already_flying(self):
+        # The count did not come down after the answer: that is no evidence the game stayed as it was
+        stack, said = FakeStack(lose=["tlm", "tlm"]), []
+        with mock.patch.object(demo, "TLM_STANDIN_S", 0.2):
+            self.assertEqual(self.run_demo(stack, "--iwad", "freedoom1.wad", "--map", "E1M2", said=said), 0)
+        self.assertEqual(stack.switches, 1)
+        self.assertFalse([m for m in said if m.startswith("OK: already flying")], said)
         self.assertTrue([m for m in said if m.startswith("frame ") and "from after the switch" in m], said)
 
     def test_a_refused_load_fails_unless_expected(self):
@@ -701,6 +753,8 @@ class TestTheDemo(unittest.TestCase):
                                            said=said), 1)
         self.assertEqual(self.names(stack), ["COMMIT_WAD"])
         self.assertEqual(len(stack.parts), 1)
+        fail = [m for m in said if m.startswith("FAIL:")]
+        self.assertTrue(fail and "could not be renamed" in fail[-1], said)
 
     def test_the_guard_leaves_class_1_to_commit_wad(self):
         stack = FakeStack(cfdp=True, guard=True)

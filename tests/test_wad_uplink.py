@@ -126,11 +126,20 @@ class TestTheFlightSoftwareAgrees(unittest.TestCase):
         handler = PAYLOAD[PAYLOAD.index("    def request_wad(self, body):"):PAYLOAD.index("    def poll_wad(self):")]
         start = handler.index("self.wad_serial += 1")   # where a new load begins
         for step in ('key == self.wad_job[2]["key"]', 'why = "another LOAD_WAD is still being checked"',
-                     "key == wu.load_key(self.wad, self.pwad, self.map)", "self.wad_report(wu.ALREADY, name)"):
+                     "key == (*self.wad_files, self.map.upper())", "self.wad_report(wu.ALREADY, name)"):
             self.assertLess(handler.index(step), start, step)
         self.assertLess(handler.index("wu.resolve(iwad, pwad, map_name)"), handler.index("wu.load_key(ipath"))
         self.assertIn("key=key)", handler, "the request being proven keeps its key")
+        # what flies is remembered from the load, not looked up again from a path a new uplink may have taken over
+        poll = PAYLOAD[PAYLOAD.index("    def poll_wad(self):"):PAYLOAD.index("    def switch_wad(")]
+        self.assertIn('self.wad_files = request["key"][:2]', poll)
+        self.assertIn("self.wad_files = wu.files_key(self.wad, self.pwad)", PAYLOAD[:PAYLOAD.index("    def _find_wad(")])
         self.assertNotIn("wad_loads", handler, "only a switch counts")
+        self.assertLess(handler.index("if self.wad_job is not None:"), handler.index("key == (*self.wad_files"),
+                        "a repeat of the load being proven is caught before the flying check")
+        absorbed = handler[handler.index('key == self.wad_job[2]["key"]'):
+                           handler.index('why = "another LOAD_WAD is still being checked"')]
+        self.assertNotIn("outbox", absorbed, "the proof's answer serves the repeat too")
 
     def test_the_sizes(self):
         command = FPP[FPP.index("async command LOAD_WAD("):]

@@ -51,7 +51,11 @@ enum WadResult : U8 { WAD_REPORT = 0, WAD_LOADED = 1, WAD_FAILED = 2, WAD_ALREAD
 Doom ::Doom(const char* const compName)
     : DoomComponentBase(compName), m_sock(-1), m_retryTicks(0), m_rx(new U8[RX_CAPACITY]), m_rxLen(0),
       m_framesSent(0), m_chunksSent(0), m_cmdsReceived(0), m_lastEpisode(0), m_wasDead(false), m_wasDone(false), m_lastLevel(0), m_lastKeys(0),
-      m_lastIntentId(0), m_watchdogTrips(0), m_ticks(0), m_wadKnown(false), m_wadLoads(0) {}
+      m_lastIntentId(0), m_watchdogTrips(0), m_ticks(0), m_wadKnown(false), m_wadLoads(0), m_placedNext(0) {
+    for (FwSizeType i = 0; i < PLACED_MAX; i++) {
+        this->m_placed[i].used = false;
+    }
+}
 
 Doom ::~Doom() {
     this->dropPayload();
@@ -120,31 +124,48 @@ void Doom ::COMMIT_WAD_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, const Fw::Cmd
     // then ends with a file-size error, so the ground waits for the FIN.
     FwSizeType haveSize = 0;
     U32 haveSum = 0;
-    if (!fileSum(path.toChar(), haveSize, haveSum)) {
-        // No .part. If NAME.wad is already the file the ground sent, this COMMIT_WAD repeats one that worked (its
-        // WadUplinked lost on the way down), or cfdpGuard committed the file at its FIN: answer as that commit
-        // did, so the ground can ask again until it hears. Otherwise the file is on board under neither name (not
-        // yet arrived, or an older NAME.wad with other bytes), and the answer is WadUplinkFailed.
-        const FwSizeType destLen = WadPath::destLength(path.toChar(), path.length());
-        Fw::String dest;
-        dest.format("%.*s", static_cast<int>(destLen), path.toChar());
-        if (destLen > 0 && fileSum(dest.toChar(), haveSize, haveSum) && haveSize == fileSize &&
-            haveSum == checksum) {
-            this->log_ACTIVITY_HI_WadUplinked(dest);
-            this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
-            return;
-        }
-        this->log_WARNING_HI_WadUplinkFailed(path);
-        this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::EXECUTION_ERROR);
-        return;
-    }
-    if (haveSize != fileSize || haveSum != checksum) {
+    const bool partThere = fileSum(path.toChar(), haveSize, haveSum);
+    if (partThere && (haveSize != fileSize || haveSum != checksum)) {
         this->log_WARNING_HI_WadCommitRefused(path, static_cast<U64>(haveSize), haveSum, fileSize, checksum);
         this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::EXECUTION_ERROR);
         return;
     }
-    const bool ok = this->placeWad(path);
-    this->cmdResponse_out(opCode, cmdSeq, ok ? Fw::CmdResponse::OK : Fw::CmdResponse::EXECUTION_ERROR);
+    if (partThere && this->placeWad(path, false)) {
+        this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
+        return;
+    }
+    // No .part, or its rename failed because it went in the meantime (cfdpGuard's commit at the FIN runs on
+    // cfdpManager's thread). If this very upload was put in place since start and NAME.wad still has the size and
+    // checksum sent, this COMMIT_WAD repeats one that worked (its WadUplinked lost on the way down), or cfdpGuard
+    // committed the file: answer as that commit did, so the ground can ask again until it hears. Otherwise the
+    // answer is WadUplinkFailed: not arrived, an older NAME.wad from another upload (whatever its bytes), a rename
+    // that failed, or a restart since the commit.
+    Fw::String dest;
+    if (this->placedFrom(path, fileSize, checksum, dest)) {
+        this->log_ACTIVITY_HI_WadUplinked(dest);
+        this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
+        return;
+    }
+    this->log_WARNING_HI_WadUplinkFailed(path);
+    this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::EXECUTION_ERROR);
+}
+
+bool Doom ::placedFrom(const Fw::StringBase& path, U32 fileSize, U32 checksum, Fw::String& dest) {
+    const FwSizeType destLen = WadPath::destLength(path.toChar(), path.length());
+    if (destLen == 0) {
+        return false;
+    }
+    dest.format("%.*s", static_cast<int>(destLen), path.toChar());
+    // Held over the read too, so no rename lands between the record and the bytes
+    Os::ScopeLock lock(this->m_placedLock);
+    bool fromThis = false;
+    for (FwSizeType i = 0; i < PLACED_MAX; i++) {
+        const Placed& p = this->m_placed[i];
+        fromThis = fromThis || (p.used && p.dest == dest && p.part == path);
+    }
+    FwSizeType haveSize = 0;
+    U32 haveSum = 0;
+    return fromThis && fileSum(dest.toChar(), haveSize, haveSum) && haveSize == fileSize && haveSum == checksum;
 }
 
 bool Doom ::fileSum(const char* path, FwSizeType& size, U32& checksum) {
@@ -178,7 +199,7 @@ bool Doom ::fileSum(const char* path, FwSizeType& size, U32& checksum) {
     return true;
 }
 
-bool Doom ::placeWad(const Fw::StringBase& file_name) {
+bool Doom ::placeWad(const Fw::StringBase& file_name, bool logFailure) {
     const char* const path = file_name.toChar();
     const FwSizeType destLen = WadPath::destLength(path, file_name.length());
     if (destLen == 0) {
@@ -189,11 +210,33 @@ bool Doom ::placeWad(const Fw::StringBase& file_name) {
     // leave an older file's tail; cfdpManager truncates and would destroy it).
     Fw::String dest;
     dest.format("%.*s", static_cast<int>(destLen), path);
-    if (Os::FileSystem::rename(path, dest.toChar()) == Os::FileSystem::OP_OK) {
+    bool renamed = false;
+    {
+        // The rename and its record together, so a COMMIT_WAD on the other thread sees both or neither
+        Os::ScopeLock lock(this->m_placedLock);
+        renamed = (Os::FileSystem::rename(path, dest.toChar()) == Os::FileSystem::OP_OK);
+        if (renamed) {
+            FwSizeType slot = this->m_placedNext;  // NAME.wad's own record if it has one, else the oldest
+            for (FwSizeType i = 0; i < PLACED_MAX; i++) {
+                if (this->m_placed[i].used && this->m_placed[i].dest == dest) {
+                    slot = i;
+                }
+            }
+            if (slot == this->m_placedNext) {
+                this->m_placedNext = (this->m_placedNext + 1) % PLACED_MAX;
+            }
+            this->m_placed[slot].used = true;
+            this->m_placed[slot].dest = dest;
+            this->m_placed[slot].part = file_name;
+        }
+    }
+    if (renamed) {
         this->log_ACTIVITY_HI_WadUplinked(dest);
         return true;
     }
-    this->log_WARNING_HI_WadUplinkFailed(file_name);
+    if (logFailure) {
+        this->log_WARNING_HI_WadUplinkFailed(file_name);
+    }
     return false;
 }
 

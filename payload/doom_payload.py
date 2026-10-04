@@ -702,6 +702,9 @@ class Payload:
         # LOAD_WAD: switches made, the request being proven in a child process, and reports for the flight
         # software that wait for the main loop (which holds the link).
         self.wad_loads, self.wad_job, self.outbox = 0, None, []
+        # The files the game was built on, as they were then (wad_uplink.files_key): what "already flying" compares
+        # against. Not looked up again from the path, which a new uplink of the same name may have taken over.
+        self.wad_files = wu.files_key(self.wad, self.pwad)
         self.wad_serial, self.wad_pinned = 0, None   # LOAD_WAD's pinned links (wad_uplink.pin): the request, the one flying
         self.new_episode()
 
@@ -1296,7 +1299,7 @@ class Payload:
                           "answer will serve both", flush=True)
                     return
                 why = "another LOAD_WAD is still being checked"
-            elif key is not None and key == wu.load_key(self.wad, self.pwad, self.map):
+            elif key is not None and self.wad_files is not None and key == (*self.wad_files, self.map.upper()):
                 print(f"[payload] LOAD_WAD {name} on {map_name}: already flying it; nothing to do", flush=True)
                 self.outbox.append(self.wad_report(wu.ALREADY, name))
                 return
@@ -1313,6 +1316,7 @@ class Payload:
         else:
             wu.unpin(self.wad_serial)
         ident = (wu.identity(ipath), wu.identity(ppath) if ppath else None)
+        key = wu.load_key(ipath, ppath, map_name)   # the files being proven, as pinned: what flies if they pass
         cmd = [sys.executable, os.path.abspath(__file__), "--probe", "--wad", ipath, "--map", map_name,
                "--skill", str(self.args.skill), "--seed", str(self.args.seed), "--geometry", self.geometry]
         if ppath:
@@ -1359,6 +1363,7 @@ class Payload:
             if self.wad_pinned is not None:
                 wu.unpin(self.wad_pinned)               # the links of the WAD that just stopped flying
             self.wad_pinned = request["serial"]
+            self.wad_files = request["key"][:2] if request["key"] else wu.files_key(self.wad, self.pwad)
             self.wad_loads += 1
             self.outbox.append(self.wad_report(wu.LOADED, request["name"]))
             print(f"[payload] LOAD_WAD {request['name']}: now flying it on {self.map}", flush=True)

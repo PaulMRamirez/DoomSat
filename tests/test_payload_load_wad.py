@@ -2,12 +2,11 @@
 
 On a lossy link the ground sends LOAD_WAD again when no answer comes (tools/wad_uplink_demo.py --tries, the
 dashboard), and the answer may have been all that was lost. These tests run the payload's own methods with the game
-and the probe child stood in for, so nothing is started and nothing is read. They need the payload's imports
-(ViZDoom, numpy, Pillow), so they run with the payload venv and are skipped in the ground venv:
+and the probe child stood in for, so nothing is started and nothing is read. In the ground venv, which has neither
+ViZDoom nor Pillow, the payload module is imported with empty stand-ins for those two (nothing here calls them), and
+the stand-ins are taken out of sys.modules again so no other test sees them. The payload venv imports the real ones:
 
     ~/doom/payload-venv/bin/python -m unittest tests.test_payload_load_wad
-
-tests/test_wad_uplink.py pins the same branches as text, and runs anywhere.
 """
 import contextlib
 import io
@@ -21,16 +20,32 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "payload"))
 
-try:
-    import doom_payload as dp  # noqa: E402  needs ViZDoom, numpy and Pillow (the payload venv)
-except ImportError:  # pragma: no cover
-    dp = None
+
+def _import_payload():
+    try:
+        import doom_payload  # noqa: E402  the payload venv: ViZDoom, numpy, Pillow
+        return doom_payload
+    except ImportError:
+        pass
+    stand_ins = [n for n in ("vizdoom", "PIL", "PIL.Image", "PIL.ImageDraw") if n not in sys.modules]
+    sys.modules.update({n: mock.MagicMock() for n in stand_ins})
+    try:
+        import doom_payload  # noqa: E402
+        return doom_payload
+    except ImportError:  # pragma: no cover  (numpy missing too)
+        return None
+    finally:
+        for n in stand_ins + ["doom_payload"]:
+            sys.modules.pop(n, None)
+
+
+dp = _import_payload()
 
 if dp is not None:
     wu = dp.wu
 
 
-@unittest.skipIf(dp is None, "needs the payload venv (ViZDoom, numpy, Pillow)")
+@unittest.skipIf(dp is None, "needs numpy (both venvs have it)")
 class TestALoadWadSentAgain(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -47,6 +62,7 @@ class TestALoadWadSentAgain(unittest.TestCase):
         p.wad, p.pwad, p.map = self.iwad, None, "MAP01"
         p.wad_loads, p.wad_job, p.outbox = 0, None, []
         p.wad_serial, p.wad_pinned = 0, None
+        p.wad_files = wu.files_key(p.wad, p.pwad)   # as __init__ sets it
         p.oracle, p.geometry = "off", "off"
         p.args = types.SimpleNamespace(skill=3, seed=1)
         p.switch_wad = mock.Mock(side_effect=self.switch)   # stands for rebuilding the game on the new files
@@ -120,6 +136,31 @@ class TestALoadWadSentAgain(unittest.TestCase):
         self.assertIsNotNone(self.p.wad_job, "a new file: proven and switched to")
         self.assertTrue(self.p.poll_wad())
         self.assertEqual([a[:2] for a in self.answers()], [(wu.LOADED, 1), (wu.LOADED, 2)])
+
+    def test_a_new_uplink_of_the_same_name_is_loaded_when_no_pin_could_be_made(self):
+        # On another file system the payload flies the uplinked path itself, which a new upload then takes over: what
+        # flies is still the file it loaded, not whatever the name holds now
+        with mock.patch.object(wu, "pin", return_value=None):
+            self.load("freedoom2.wad", "basic.wad", "MAP01")
+            self.assertTrue(self.p.poll_wad())
+            self.assertEqual(self.p.pwad, self.level, "no pin: the game flies the uplinked path")
+            newer = self.level + ".123.part"
+            self.write(newer, b"\1")
+            os.replace(newer, self.level)
+            self.load("freedoom2.wad", "basic.wad", "MAP01")
+            self.assertIsNotNone(self.p.wad_job, "a new file under the same name: proven and switched to")
+            self.assertTrue(self.p.poll_wad())
+        self.assertEqual([a[:2] for a in self.answers()], [(wu.LOADED, 1), (wu.LOADED, 2)])
+
+    def test_a_game_launched_under_a_linked_name_is_already_flying(self):
+        alias = os.path.join(wu.wads_dir(), "alias.wad")
+        os.symlink(self.iwad, alias)
+        self.p.wad = alias
+        self.p.wad_files = wu.files_key(self.p.wad, self.p.pwad)
+        self.load("alias.wad", "", "MAP01")
+        self.load("freedoom2.wad", "", "MAP01")
+        self.assertEqual([a[0] for a in self.answers()], [wu.ALREADY, wu.ALREADY])
+        self.assertEqual(self.children, [])
 
     def test_the_game_as_launched_is_already_flying(self):
         self.load("freedoom2.wad", "", "map01")

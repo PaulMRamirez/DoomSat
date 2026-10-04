@@ -122,7 +122,7 @@ for the dev set. The shareware `doom1.wad` E1M1 is the test level.
   destination and renames a class 2 upload on board at its FIN. `COMMIT_WAD(part, fileSize, checksum)` is for
   class 1 or a commit by hand, and renames only if the size and CFDP checksum match
   (`wad_uplink_demo.py --checksum FILE` prints both). `COMMIT_WAD` and `LOAD_WAD` are safe to send again: a repeat
-  answers as the first did and changes nothing. `scripts/flight.sh ut` runs the guard's GTest suite. Use absolute paths: F´ command strings hold 40
+  answers as the first did and changes nothing. `scripts/flight.sh ut` runs the guard's and the Doom component's GTest suites. Use absolute paths: F´ command strings hold 40
   characters on board, and a relative path lands in the flight binary's working directory
   (`build-artifacts/Linux/DoomSat/bin`).
 - Yamcs starts through `ground/yamcs/launch.py`, not `fprime-yamcs` itself: fprime-yamcs writes the instance YAML

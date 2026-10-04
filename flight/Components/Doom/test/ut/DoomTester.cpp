@@ -7,6 +7,7 @@
 
 #include "CFDP/Checksum/Checksum.hpp"
 
+#include <algorithm>
 #include <ftw.h>
 #include <sys/stat.h>
 #include <cstdio>
@@ -152,7 +153,9 @@ void DoomTester ::testAnOlderFileOfTheSameNameIsNotTakenForThisOne() {
     // The upload never arrived, and NAME.wad is an older upload: other bytes, or another size
     std::vector<U8> otherBytes(this->m_wad);
     otherBytes[100] = static_cast<U8>(otherBytes[100] + 1);
-    std::vector<U8> otherSize(this->m_wad.begin(), this->m_wad.end() - 4);
+    std::vector<U8> otherSize(this->m_wad);  // four zero bytes more: another size, the same modular checksum
+    otherSize.insert(otherSize.end(), 4, 0);
+    ASSERT_EQ(checksum(this->m_wad), checksum(otherSize));
     for (const std::vector<U8>* older : {&otherBytes, &otherSize}) {
         this->write(this->uplink("basic.wad"), *older);
         this->commit(PART, this->m_wad, 5);
@@ -162,6 +165,60 @@ void DoomTester ::testAnOlderFileOfTheSameNameIsNotTakenForThisOne() {
         EXPECT_EQ(*older, this->read(this->uplink("basic.wad")));
         this->clearHistory();
     }
+}
+
+void DoomTester ::testARenameThatFailsIsOneFailure() {
+    // The .part checks out but cannot be renamed (here NAME.wad is a directory): one WadUplinkFailed, the .part kept
+    this->write(this->uplink(PART), this->m_wad);
+    ASSERT_EQ(0, ::mkdir(this->uplink("basic.wad").c_str(), 0755));
+    this->commit(PART, this->m_wad, 9);
+    this->assertAnswer(9, Fw::CmdResponse::EXECUTION_ERROR);
+    ASSERT_EVENTS_SIZE(1);
+    ASSERT_EVENTS_WadUplinkFailed(0, this->uplink(PART).c_str());
+    EXPECT_EQ(this->m_wad, this->read(this->uplink(PART)));
+}
+
+void DoomTester ::testOnlyThisUploadAnswersARepeat() {
+    // An older NAME.wad with the words of the file sent in another order (two 8-byte runs swapped: the same size and
+    // modular checksum, as reordered lumps in a WAD would give), and no .part: not this upload
+    std::vector<U8> reordered(this->m_wad);
+    std::swap_ranges(reordered.begin() + 1000, reordered.begin() + 1008, reordered.begin() + 1016);
+    ASSERT_NE(this->m_wad, reordered);
+    ASSERT_EQ(checksum(this->m_wad), checksum(reordered));
+    this->write(this->uplink("basic.wad"), reordered);
+    this->commit(PART, this->m_wad, 10);
+    this->assertAnswer(10, Fw::CmdResponse::EXECUTION_ERROR);
+    ASSERT_EVENTS_SIZE(1);
+    ASSERT_EVENTS_WadUplinkFailed(0, this->uplink(PART).c_str());
+    EXPECT_EQ(reordered, this->read(this->uplink("basic.wad")));
+    this->clearHistory();
+    // This upload committed for real; then a COMMIT_WAD for another upload of the same bytes, which never arrived
+    this->write(this->uplink(PART), this->m_wad);
+    this->commit(PART, this->m_wad, 11);
+    this->assertAnswer(11, Fw::CmdResponse::OK);
+    this->clearHistory();
+    this->commit("basic.wad.1700000000001.part", this->m_wad, 12);
+    this->assertAnswer(12, Fw::CmdResponse::EXECUTION_ERROR);
+    ASSERT_EVENTS_WadUplinkFailed_SIZE(1);
+    this->clearHistory();
+    // ... while this upload's own repeat is still answered, until another upload of NAME is put in place
+    this->commit(PART, this->m_wad, 13);
+    this->assertAnswer(13, Fw::CmdResponse::OK);
+    this->clearHistory();
+    // ... but not once NAME.wad has changed since, even to the same checksum (four zero bytes more)
+    std::vector<U8> grown(this->m_wad);
+    grown.insert(grown.end(), 4, 0);
+    this->write(this->uplink("basic.wad"), grown);
+    this->commit(PART, this->m_wad, 16);
+    this->assertAnswer(16, Fw::CmdResponse::EXECUTION_ERROR);
+    this->clearHistory();
+    const char* const next = "basic.wad.1700000000002.part";
+    this->write(this->uplink(next), this->m_wad);
+    this->commit(next, this->m_wad, 14);
+    this->assertAnswer(14, Fw::CmdResponse::OK);
+    this->clearHistory();
+    this->commit(PART, this->m_wad, 15);
+    this->assertAnswer(15, Fw::CmdResponse::EXECUTION_ERROR);
 }
 
 void DoomTester ::testNothingOnBoardIsAFailure() {
@@ -189,6 +246,17 @@ void DoomTester ::testAPartThatIsNotTheFileSentStaysAPart() {
         EXPECT_EQ(damaged, this->read(this->uplink(PART)));
         this->clearHistory();
     }
+    // Another size with the same modular checksum (four zero bytes more) is refused too: the size is checked
+    std::vector<U8> padded(this->m_wad);
+    padded.insert(padded.end(), 4, 0);
+    ASSERT_EQ(checksum(this->m_wad), checksum(padded));
+    this->write(this->uplink(PART), padded);
+    ::remove(this->uplink("basic.wad").c_str());
+    this->commit(PART, this->m_wad, 8);
+    this->assertAnswer(8, Fw::CmdResponse::EXECUTION_ERROR);
+    ASSERT_EVENTS_WadCommitRefused_SIZE(1);
+    EXPECT_EQ(padded, this->read(this->uplink(PART)));
+    EXPECT_FALSE(this->exists(this->uplink("basic.wad")));
 }
 
 void DoomTester ::testACommitNamesABareUplinkName() {

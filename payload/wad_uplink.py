@@ -195,20 +195,28 @@ def identity(path):
     return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
 
 
-def load_key(ipath, ppath, map_name):
-    """What a LOAD_WAD asks for as files: each WAD's name and identity, and the map; None if a file is not there.
+def files_key(ipath, ppath):
+    """The IWAD and the PWAD (None for none) as files: each one's name, through any symbolic link, and identity.
+    None if a file is not there.
 
-    Two requests with the same key ask for the same game, so the second changes nothing. Names alone would not do:
-    an uplink of the same name renamed over the file is a new file, and a load of it must still switch. A pinned
-    link (`pin`) has the name and the identity of the file it pins.
+    Names alone would not do: an uplink of the same name renamed over the file is a new file. A pinned link (`pin`)
+    has the name and the identity of the file it pins, and `find` returns real paths, so a game launched under a
+    linked name compares equal to a request that resolves to the same file.
     """
     files = []
     for path in (ipath, ppath):
         ident = identity(path) if path else None
         if path and ident is None:
             return None
-        files.append((os.path.basename(path), ident) if path else None)
-    return files[0], files[1], map_name.upper()
+        files.append((os.path.basename(os.path.realpath(path)), ident) if path else None)
+    return files[0], files[1]
+
+
+def load_key(ipath, ppath, map_name):
+    """What a LOAD_WAD asks for: its files (`files_key`) and the map; None if a file is not there. Two requests
+    with the same key ask for the same game, so the second changes nothing."""
+    files = files_key(ipath, ppath)
+    return None if files is None else (files[0], files[1], map_name.upper())
 
 
 def resolve(iwad, pwad, map_name, dirs=None):

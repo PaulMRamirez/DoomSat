@@ -181,9 +181,10 @@ ground/.venv/bin/python tools/wad_uplink_demo.py --iwad freedoom1.wad --map E1M1
    whole, stays a `.part` and can't be loaded. `COMMIT_WAD(NAME.<nonce>.part, fileSize, checksum)` is for the rest
    (a class 1 upload, a commit by hand): the Doom component checks the size and CFDP checksum against the file on
    board and only then renames it (`WadCommitRefused` otherwise). `tools/wad_uplink_demo.py --checksum FILE`
-   prints the two numbers. The tool falls back to it when no `WadUplinked` comes. It is safe to send again: once
-   the file is in place, a repeat finds `NAME` with that size and checksum and answers `WadUplinked` as the first
-   commit did.
+   prints the two numbers. The tool falls back to it when no `WadUplinked` comes. It is safe to send again: a repeat
+   for an upload already put in place (by the guard or an earlier commit) answers `WadUplinked` as the first commit
+   did. The Doom component remembers which upload each `NAME` came from until a restart, and checks that `NAME`
+   still has that size and checksum.
 3. **`LOAD_WAD(iwad, pwad, map)`.** It names bare `.wad` files in the uplink directory or `~/doom/wads`. The
    payload first proves the game starts on them in a separate process, because a damaged WAD kills ViZDoom
    rather than raising an error. Only then does it rebuild its game and start a fresh episode
