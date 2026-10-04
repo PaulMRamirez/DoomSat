@@ -391,3 +391,5 @@ Baseline → plan → Airflow stack → product package and tests → Phase A (f
     - Every record stayed in the `fprimeFilesIn` bucket, which holds 1000.
     - The SDS's downlink directory followed its own environment rather than the launcher's.
     All six are fixed.
+  - After the Yamcs replay hang (above), `sds_record`'s tasks got timeouts too: 15 minutes for the idempotent
+    ones, which keep their retries, and 2 minutes for the SendFile task, which is still never retried.

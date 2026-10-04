@@ -30,7 +30,8 @@ from airflow.providers.standard.sensors.filesystem import FileSensor
 from airflow.sdk import dag, task
 
 ENABLED = os.environ.get("DOOMSAT_SDS_RECORDS", "off") == "on"
-RETRY = {"retries": 2, "retry_delay": timedelta(seconds=20)}          # for the idempotent tasks, not the command
+# for the idempotent tasks, not the command; the timeout turns a hung Yamcs read into a retry
+RETRY = {"retries": 2, "retry_delay": timedelta(seconds=20), "execution_timeout": timedelta(minutes=15)}
 MAX_AGE_S = 2 * 3600
 REQUESTABLE = ("died", "level_finished", "reset")      # an interrupted episode never wrote a record
 
@@ -87,7 +88,7 @@ def sds_record():
         print(p)
         return p
 
-    @task
+    @task(execution_timeout=timedelta(minutes=2))     # never retried: a command is not sent twice by a machine
     def send_SendFile_command(p: dict) -> dict:
         """The only command the SDS sends: FileHandling.fileDownlink.SendFile(source, dest)."""
         if not ENABLED:
