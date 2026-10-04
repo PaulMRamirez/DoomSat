@@ -18,7 +18,8 @@ from pathlib import Path
 from .config import Settings
 
 LOG_START = re.compile(r"^\[payload\] episode (\d+) started on (\S+) \(level (\d+)\)")
-PAYLOAD_DEFAULTS = {"--wad": "doom1.wad", "--map": "E1M1", "--skill": "2", "--seed": "7"}   # doom_payload.py argparse
+PAYLOAD_DEFAULTS = {"--wad": "doom1.wad", "--map": "E1M1", "--skill": "2", "--seed": "7",   # doom_payload.py argparse
+                    "--geometry": "off", "--oracle": "off"}
 
 
 def _boot_time() -> float | None:
@@ -56,15 +57,21 @@ def _find(procs: list[dict], script: str) -> dict | None:
 
 
 def _options(argv: list[str]) -> dict:
-    opts, it = {}, iter(argv)
-    for a in it:
+    """--key value, --key=value and bare flags (true). A flag never swallows the option after it; a repeated
+    option keeps its last value, as argparse does."""
+    opts, i = {}, 0
+    while i < len(argv):
+        a = argv[i]
         if a.startswith("--"):
             if "=" in a:
                 k, v = a.split("=", 1)
                 opts[k] = v
+            elif i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+                opts[a] = argv[i + 1]
+                i += 1
             else:
-                nxt = next(it, None)
-                opts[a] = nxt if nxt is not None and not nxt.startswith("--") else "true"
+                opts[a] = "true"
+        i += 1
     return opts
 
 

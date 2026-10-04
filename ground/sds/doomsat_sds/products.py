@@ -22,10 +22,12 @@ from .store import canonical_json, sha256
 
 ALGORITHMS = {
     # product type: (level, version, file extension, media type)
-    "l1_episode": ("L1", "1.0.0", "json", "application/json"),
-    "l2_path": ("L2", "2.0.0", "png", "image/png"),         # 2.0.0: Phase C, see build_path_png
-    "l2_summary": ("L2", "1.0.0", "json", "application/json"),
-    "l2_linkstats": ("L2", "1.0.0", "json", "application/json"),
+    # 1.1.0 / 2.1.0 / 1.1.0 / 1.1.0: a new processing baseline, after L1 stopped losing same-time samples (_table).
+    # An L1 change reaches every L2, so their versions move with it; reprocess never rebuilds an L2 in place.
+    "l1_episode": ("L1", "1.1.0", "json", "application/json"),
+    "l2_path": ("L2", "2.1.0", "png", "image/png"),         # 2.0.0: Phase C, see build_path_png
+    "l2_summary": ("L2", "1.1.0", "json", "application/json"),
+    "l2_linkstats": ("L2", "1.1.0", "json", "application/json"),
     "l3_rollup": ("L3", "1.0.0", "json", "application/json"),
     "ql_health": ("QL", "1.0.0", "json", "application/json"),
     "ql_contact_sheet": ("QL", "1.0.0", "png", "image/png"),
@@ -66,17 +68,23 @@ def clock_offset(series: dict) -> dict:
 
 
 def _table(series: dict, names: list, start_ms: int, end_ms: int) -> dict:
-    """One row per distinct TM time at which any of `names` updated; null where a channel did not.
+    """One row per TM time at which any of `names` updated; null where a channel did not.
 
     Lossless: every archived sample in the window is in exactly one cell, so consumers can forward-fill or
-    not as their algorithm needs.
+    not as their algorithm needs. F' time tags are coarse (the rate group's), and two statuses handled within
+    one tag give a channel two samples with the same time: those go in consecutive rows with the same t_ms,
+    in reception order, so rows are non-decreasing (not strictly increasing) in time. (1.0.0 kept one row per
+    time and so lost the earlier of such a pair: 8 samples in a 34 s episode.)
     """
-    rows: dict[int, list] = {}
+    rows: dict[tuple[int, int], list] = {}
     for i, n in enumerate(names):
-        for t, _, v in series.get(n, []):
+        nth: dict[int, int] = {}
+        for t, r, v in sorted(series.get(n, []), key=lambda s: (s[0], -1 if s[1] is None else s[1], repr(s[2]))):
             if start_ms <= t <= end_ms:
-                rows.setdefault(t, [None] * len(names))[i] = v
-    return {"columns": ["t_ms"] + list(names), "rows": [[t] + rows[t] for t in sorted(rows)]}
+                k = nth.get(t, 0)
+                nth[t] = k + 1
+                rows.setdefault((t, k), [None] * len(names))[i] = v
+    return {"columns": ["t_ms"] + list(names), "rows": [[t] + rows[(t, k)] for t, k in sorted(rows)]}
 
 
 def build_l1(ep, window, science: dict, link: dict, commands: list, events: list, context: dict,

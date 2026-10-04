@@ -202,7 +202,9 @@ def reprocess(settings: Settings, archive: Archive, catalog: Catalog, episode_id
     no longer returns what it returned, and that is a finding. The rebuilt file is kept beside the original
     (never over it) and the new L2s are built from it, so they are what the archive says today.
     Every L2 type without a product at its current version is then built and becomes current; older versions
-    stay in the catalog.
+    stay in the catalog. An L2 that exists at its current version but was built from another L1 version (L1 was
+    bumped, the L2 was not) is reported as stale and left alone: rebuilding it under the same id would overwrite a
+    product with different bytes. Bump its version to rebuild it.
     """
     row = catalog.episode(episode_id)
     if row is None:
@@ -214,7 +216,7 @@ def reprocess(settings: Settings, archive: Archive, catalog: Catalog, episode_id
     ver = products.version("l1_episode")
     pid = f"{episode_id}/l1_episode@{ver}"
     old = catalog.product(pid)
-    report = {"episode_id": episode_id, "l1": None, "built": [], "up_to_date": []}
+    report = {"episode_id": episode_id, "l1": None, "built": [], "up_to_date": [], "stale": []}
     if old is None:
         l1_ref = _register(settings, catalog, product_type="l1_episode", episode_id=episode_id, product_id=pid,
                            path=episode_product_path(settings, episode_id, "l1_episode", ver, "json"), data=data,
@@ -232,10 +234,14 @@ def reprocess(settings: Settings, archive: Archive, catalog: Catalog, episode_id
         l1_ref = {"product_id": pid, "path": str(rebuilt), "sha256": sha256(data)}
         report["l1"] = "NOT reproduced: rebuilt %s, cataloged %s" % (sha256(data)[:12], old["sha256"][:12])
     for t in types:
-        have = {p["algorithm_version"] for p in catalog.products(episode_id, t)}
-        if products.version(t) in have and report["l1"].startswith("reproduced"):
-            report["up_to_date"].append(t)
-            continue
+        existing = catalog.product(f"{episode_id}/{t}@{products.version(t)}")
+        if existing is not None:
+            if pid not in [i.get("product_id") for i in existing["inputs"]]:
+                report["stale"].append(t)            # made from another L1 version: bump t's version to rebuild
+                continue
+            if report["l1"].startswith("reproduced"):
+                report["up_to_date"].append(t)
+                continue
         report["built"].append(l2(settings, catalog, l1_ref, t, run_id)["product_id"])
     return report
 
@@ -250,16 +256,21 @@ def frames_sent_between(series: list, start_ground_ms: int, stop_ground_ms: int)
     """How far FRAMES_SENT rose between two ground-clock times.
 
     The capture service counts by the ground's clock; FRAMES_SENT is stamped with F´ time, about a second ahead.
-    The offset is measured from the series itself (generation minus reception) and the counter read as it stood
-    at each edge, so the two counts cover the same stretch of time.
+    The offset is measured from the series itself (generation minus reception), and the counter's rises are
+    summed between the two edges, so a restart of the flight software (the counter falling back to zero) inside
+    the window costs only the frames sent between its last sample and the restart, never a negative count.
     """
     if len(series) < 2:
         return None
     offsets = sorted(g - r for g, r, _ in series if r is not None)
     off = offsets[len(offsets) // 2] if offsets else 0
-    at = lambda t: next((v for g, _, v in reversed(series) if g <= t + off), None)
-    a, b = at(start_ground_ms), at(stop_ground_ms)
-    return b - a if a is not None and b is not None else None
+    # the counter as it stood at the start edge (its last value at or before it), then every value up to the end
+    before = [v for g, _, v in series if g <= start_ground_ms + off]
+    inside = [v for g, _, v in series if start_ground_ms + off < g <= stop_ground_ms + off]
+    values = before[-1:] + inside
+    if len(values) < 2:
+        return None
+    return sum(b - a for a, b in zip(values, values[1:]) if b > a)
 
 
 def quicklook(settings: Settings, catalog: Catalog, run_id: str | None = None, at_ms: int | None = None) -> dict:

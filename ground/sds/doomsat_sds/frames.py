@@ -59,6 +59,13 @@ class FrameAssembler:
             self.counts[kind + "_late_chunks"] += 1
             return
         p = self.partial.get(seq)
+        if p is not None and now - p["t0"] > self.timeout_s:
+            # Too late, whenever the timer last ran: the image is incomplete, and this chunk a straggler.
+            self.counts[kind + ("s_cut" if p["cut"] else "s_incomplete")] += 1
+            del self.partial[seq]
+            self.dead[seq] = now
+            self.counts[kind + "_late_chunks"] += 1
+            return
         if p is None:
             self._note_seq(kind, seq & ~MAP_BIT)
             p = self.partial[seq] = {"count": count, "parts": {}, "t0": now, "t_ms": t_ms,

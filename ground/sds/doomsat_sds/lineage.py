@@ -14,17 +14,19 @@ import datetime as dt
 import json
 import os
 import uuid
+from pathlib import Path
 
 from .config import Settings
 
 PRODUCER = "https://github.com/PaulMRamirez/DoomSat/tree/main/ground/sds"
-SCHEMA = "https://openlineage.io/spec/2-0-2/OpenLineage.json#/definitions/RunEvent"
-FACET = "https://openlineage.io/spec/facets/1-0-1/%s.json"
+SCHEMA = "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent"
+FACET = "https://openlineage.io/spec/facets/1-0-1/%s.json#/$defs/%s"        # as openlineage-python writes them
+CUSTOM_FACET = PRODUCER + "/README.md#publishing-phase-e"                   # our own run facet's description
 NAMESPACE = "doomsat-sds"
 
 
 def _facet(facet_name: str, **fields) -> dict:
-    return dict(fields, _producer=PRODUCER, _schemaURL=FACET % facet_name)
+    return dict(fields, _producer=PRODUCER, _schemaURL=FACET % (facet_name, facet_name))
 
 
 def _dataset(ref: dict) -> dict:
@@ -45,7 +47,8 @@ def event(row: dict, status: str, at: str | None = None) -> dict:
         "schemaURL": SCHEMA,
         "job": {"namespace": NAMESPACE, "name": row["product_type"]},
         "run": {"runId": str(uuid.uuid5(uuid.NAMESPACE_URL, "doomsat-sds/%s/%s" % (run_id, row["product_id"]))),
-                "facets": {"doomsat_sds": dict(_facet("RunFacet"), airflow_run_id=run_id, status=status,
+                "facets": {"doomsat_sds": dict(_producer=PRODUCER, _schemaURL=CUSTOM_FACET, airflow_run_id=run_id,
+                                               status=status,
                                                algorithm_version=row["algorithm_version"],
                                                code_commit=row.get("code_commit"), level=row["level"],
                                                episode_id=row.get("episode_id"))}},
@@ -53,7 +56,7 @@ def event(row: dict, status: str, at: str | None = None) -> dict:
         "outputs": [{"namespace": NAMESPACE, "name": row["product_id"],
                      "facets": {"version": _facet("DatasetVersionDatasetFacet", datasetVersion=row["sha256"]),
                                 "dataSource": _facet("DatasourceDatasetFacet", name="product store",
-                                                     uri="file://" + row["path"])}}],
+                                                     uri=Path(row["path"]).resolve().as_uri())}}],
     }
 
 

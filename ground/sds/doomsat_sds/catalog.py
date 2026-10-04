@@ -208,7 +208,7 @@ class Catalog:
         n = 0
         for pid in product_ids:
             n += self.db.execute("DELETE FROM products WHERE product_id = ? AND episode_id IS NULL"
-                                 " AND product_type LIKE 'ql_%'", (pid,)).rowcount
+                                 " AND substr(product_type, 1, 3) = 'ql_'", (pid,)).rowcount
         return n
 
     # ------------------------------------------------------------------ findings
