@@ -10,7 +10,7 @@ REPO=$DOOMSAT_REPO
 # GEOMETRY=on   exact lines, gated on the automap having drawn them (payload/seen_geometry.py)
 # ORACLE=L0|L1  the diagnostic ladder. Never on a shareware level, and never scored.
 # WAD=, MAP=    which level. A dev flight is WAD=freedoom1.wad.
-mkdir -p "$RUN" "$REPO/out"
+mkdir -p "$RUN" "$REPO/out" "$WADS/uplink"   # uplink: where an uplinked WAD lands (LOAD_WAD, README)
 stop() {
   pkill -f "doom_payloa[d].py --fps" 2>/dev/null
   pkill -f "fprime_yamc[s]" 2>/dev/null
@@ -18,7 +18,13 @@ stop() {
   pkill -f "bin/DoomSa[t]" 2>/dev/null
   pkill -f "fprime-gd[s] " 2>/dev/null; pkill -f "fprime_gds[.]executables" 2>/dev/null   # flight.sh gds
   sleep 1
+  kill_hung_payload
+  # Yamcs takes up to ~15 s to shut down; a new one started sooner fails, and the flight software with it
+  for _ in $(seq 1 40); do pgrep -f "YamcsServe[r]" >/dev/null || break; sleep 0.5; done
 }
+# The payload closes its game on SIGTERM, but one stuck inside ViZDoom never gets to run that handler (the
+# engine holds the GIL): kill it outright rather than leave it holding port 4242.
+kill_hung_payload() { pkill -KILL -f "doom_payloa[d].py --fps" 2>/dev/null; }
 # Detached, so it outlives this shell. setsid -f in WSL: anything started with plain nohup inside a
 # `wsl bash -c` call dies when that call returns. macOS has no setsid; nohup is enough there.
 detach() {
@@ -33,12 +39,14 @@ start_payload() {
 }
 start_yamcs() {
   cd "$PROJ" || exit 1
-  detach "cd '$PROJ' && . fprime-venv/bin/activate && export FPRIME_DOWNLINK_DIR='$RUN/downlink' && fprime-yamcs --deployment $DEPLOY --skip-browser-open --yamcs-config-dir '$REPO/ground/yamcs' --yamcs-data-dir '$RUN/yamcs-data' --yamcs-realtime-only-channels DoomSat.doom.FRAME_CHUNK > '$RUN/yamcs.log' 2>&1"
+  # --app: without it the launcher guesses the binary as the only file in bin/, and exits if it finds two
+  # (a PrmDb.dat saved there, or one an older feature/cfdp-spike start wrote on the same install).
+  detach "cd '$PROJ' && . fprime-venv/bin/activate && export FPRIME_DOWNLINK_DIR='$RUN/downlink' && fprime-yamcs --deployment $DEPLOY --app $DEPLOY/bin/DoomSat --skip-browser-open --yamcs-config-dir '$REPO/ground/yamcs' --yamcs-data-dir '$RUN/yamcs-data' --yamcs-realtime-only-channels DoomSat.doom.FRAME_CHUNK > '$RUN/yamcs.log' 2>&1"
 }
 case "${1:-start}" in
   stop) stop; echo stopped ;;
   payload)
-    pkill -f "doom_payloa[d].py --fps" 2>/dev/null; sleep 1
+    pkill -f "doom_payloa[d].py --fps" 2>/dev/null; sleep 1; kill_hung_payload
     start_payload; echo "payload restarted" ;;
   status)
     ps aux | grep -E "doom_payloa[d]|fprime_yamc[s]|YamcsServe[r]|bin/DoomSa[t]" | awk '{print $11, $12, $13}' | sort | uniq -c

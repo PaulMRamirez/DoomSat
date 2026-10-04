@@ -154,6 +154,44 @@ side.
 `--autopilot` flies the pilot with `--system-one code`, the exact rules jev's questions restate. It is the
 same code baseline as `research/runner.py --decider code`, flown on the full stack.
 
+## Uplink a new level
+
+The WAD is chosen at launch (`WAD=`, `MAP=`), but a running spacecraft can also be sent a new one and switched
+to it without restarting anything:
+
+```bash
+# a PWAD over an installed IWAD: uplink basic.wad from the ViZDoom package, then fly it on freedoom2.wad
+ground/.venv/bin/python tools/wad_uplink_demo.py --wad ~/doom/payload-venv/lib/python3*/site-packages/vizdoom/scenarios/basic.wad \
+    --iwad freedoom2.wad --map MAP01
+# a whole IWAD under a new name (4.2 MB, about 3 minutes)
+ground/.venv/bin/python tools/wad_uplink_demo.py --wad ~/doom/wads/doom1.wad --as shareware.wad --map E1M1
+# no uplink: switch to a WAD already on board
+ground/.venv/bin/python tools/wad_uplink_demo.py --iwad freedoom1.wad --map E1M1
+```
+
+1. **Up the command link.** The file goes into a Yamcs bucket, then up as F´ file packets (fprime-yamcs's file
+   transfer service, the same one behind the File Transfer page in the Yamcs web UI) to
+   `~/doom/wads/uplink/NAME.<nonce>.part`, at about 25 KB/s. Commands keep flowing alongside it.
+2. **Into place.** FileUplink checks the file's checksum (`FileReceived`). Only then does the Doom component
+   rename it to `NAME` (`WadUplinked`). A file that is still arriving, or that lost a packet on the way (the F´
+   file packets are not retransmitted, so one lost packet fails the checksum), stays a `.part` and can't be
+   loaded.
+3. **`LOAD_WAD(iwad, pwad, map)`.** It names bare `.wad` files in the uplink directory or `~/doom/wads`. The
+   payload first proves the game starts on them in a separate process, because a damaged WAD kills ViZDoom
+   rather than raising an error. Only then does it rebuild its game and start a fresh episode
+   (`WadLoaded`, `EPISODE` steps). If anything is wrong, it reports `WadLoadFailed` with the reason and
+   carries on with the WAD it had.
+
+The demo takes the uplink directory from `DOOMSAT_HOME` (the environment, then `.env`), as the scripts do. With
+the ground on Windows and the flight side in WSL, pass the WSL path explicitly, for example
+`--remote-dir /home/you/doom/wads/uplink`.
+
+The dashboard's Level file panel shows the active WAD (`WAD_IWAD`, `WAD_PWAD`, `WAD_LOADS`) and the last
+result, and it can send `LOAD_WAD`. `scripts/flight.sh check` prints the WAD too.
+
+Flights on an uplinked WAD are demonstrations only. Never bench or grade them: the dev set is Freedoom Phase 1
+and the test set is the shareware episode (`docs/CHARTER.md` 2.5).
+
 ## Use each piece on its own
 
 <details>

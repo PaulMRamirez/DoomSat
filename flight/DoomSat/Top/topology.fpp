@@ -84,6 +84,11 @@ module DoomSat {
       comDriver.ready         -> ComCcsds.comStub.drvConnected
     }
 
+    connections FileHandling_Doom {
+      # A verified uplinked WAD (NAME.wad.<anything>.part) is renamed into place, ready for LOAD_WAD
+      FileHandling.fileUplink.fileAnnounce -> doom.fileAnnounce
+    }
+
     connections FileHandling_DataProducts {
       # Data Products to File Downlink
       DataProducts.dpCat.fileOut -> FileHandling.fileDownlink.SendFile
