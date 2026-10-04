@@ -242,6 +242,22 @@ raising upstream".
 Afterwards only the flying WAD's pin was left, and no ViZDoom engine was orphaned. 412 unit tests pass (369 before this branch), and
 honesty plus the canary report 17 checks, 0 failed.
 
+### Sharing one install with feature/cfdp-spike (2026-10-04)
+
+The CFDP spike builds into the same F´ project in `$DOOMSAT_HOME`. Its sync replaced
+`DoomSat/Top/DoomSatTopologyDefs.hpp` with a header that has no FileHandling entries, and its start left a
+`PrmDb.dat` next to the binary. After that this branch could not compile (`PingEntries::FileHandling_*`
+undeclared), and it could not start either: with two files in `bin/`, fprime-gds's `find_app` exits with
+"Multiple app candidates". This branch now commits its own `DoomSatTopologyDefs.hpp` (the `fprime-util new`
+template for this topology), `wsl_sync.sh` copies it, and both launchers pass `--app`.
+`tests/test_flight_scripts.py` checks the header against the topology and checks that the launchers pass
+`--app`.
+
+Proof on this VM, after a CFDP flight that left both behind: `scripts/flight.sh build` built this branch,
+with `bin/PrmDb.dat` still present. `scripts/flight.sh start` came up with `PAYLOAD_LINK` True and frames
+rising. `tools/wad_uplink_demo.py --wad basic.wad --as natback.wad --iwad freedoom2.wad --map MAP01` then
+reported FileReceived, WadUplinked, WadLoaded and OK, with `WAD_LOADS` going 0 to 1.
+
 ### Suggested charter note (for the PR; the charter is not edited)
 
 > A flight in which `WAD_LOADS > 0` is a demonstration and is never scored. Its `out/decisions.jsonl` must
