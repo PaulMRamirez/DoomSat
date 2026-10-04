@@ -54,7 +54,8 @@ Each claim is marked with how it is known:
   wall clock on the ground unless they say "on board". The flight logs are on the spike's container, not in git:
   `$DOOMSAT_HOME/DoomSat/logs/fprime-yamcs-2026_10_04-*` (`00_02_51` no loss; `00_11_14` and `00_42_42` at 5 %
   loss; `00_15_20` latency and 2 ms; `00_40_41` paths and boot parameters; `00_51_38` the README command and 263
-  downlinks; `02_00_48` the receive-chunk, temp-directory and data-cap runs), and
+  downlinks; `02_00_48` the receive-chunk, temp-directory and first data-cap runs; `02_29_13` the final
+  configuration: the data cap at 981 and the README command again), and
   `…-2026_10_03-23_59_21` for the native run at 5 % loss.
 - **ran (harness)**: ran in an isolated scratch harness during the spike (a separate F´ build, an in-process
   Yamcs), not on the stack.
@@ -76,14 +77,15 @@ the build:
 
 - local instances in place of the `FileHandlingCfdp` subtopology, which does not compile;
 - `MaxPduSize` 1001 in place of a stock 1024 that asserts;
-- `OutgoingFileChunkSize` 987, because F´ sizes a PDU's data from an uninitialised header (F10);
+- `OutgoingFileChunkSize` 981, because F´ sizes a PDU's data from an uninitialised header (F10);
 - 2048 receive chunks in place of 58, without which a lossy upload resends most of the file (F11);
 - a 42-line launcher wrapper, because fprime-yamcs sorts the keys of the instance YAML;
 - `COMMIT_WAD`, because `cfdpManager` has no `fileAnnounce`.
 
 The upstream drafts below would retire them, but none blocks. F´ v4.4.0 and `devel` (`55f597d`, 2 October 2026)
 still carry the `configure` bug, still have no reference wiring and still have no CFDP sandbox. For this work an
-upgrade buys the framer fix (risk 4) and sandboxes for FileManager and PrmDb, none for `cfdpManager`, and it
+upgrade buys the framer fix (risk 4), a FileManager sandbox, and a PrmDb sandbox widened from parameter loads
+(which v4.3.0 already confines) to all its file access; `cfdpManager` gets none, and the upgrade
 costs a port (v4.4.0 removes `ComCfg.AggregationSize`, which the PDU size here is set against) [read]. Revisit at
 the next planned F´ bump.
 
@@ -112,13 +114,13 @@ has one file output and CFDP and `Fw::FilePacket` both arrive on APID 3 (Q1). Th
 | Native file packets at 5 % loss each way (Stage 1 build), `cig.wad` (214,730 B) ×3 | 3 of 3 `BadChecksum`; 59 `PacketOutOfOrder` in all, about 20 lost packets a file. The same file through the relay at 0 % arrived whole | ran: `$DOOMSAT_HOME/DoomSat/logs/fprime-yamcs-2026_10_03-23_59_21` |
 | Class 2 up at 5 % each way, `cig.wad` ×2 and `doom1.wad` | All byte-identical | ran |
 | Class 2 down at 5 % each way, `doom1.wad` | Byte-identical, 74.6 s | ran |
-| Class 2 up at 5 % each way, `doom1.wad`, 10 ms, before and after the receive-chunk override | One run each: 121.1 s and about 9,820 PDUs sent (about 5,590 of them resends, for 238 lost); then 61.1 s and 4,476 PDUs sent (248 resends). Both byte-identical | ran: `00_11_14`; `02_00_48` and Yamcs's vc2 frame count, matching the relay's 4,229 + 247 |
+| Class 2 up at 5 % each way, `doom1.wad`, 10 ms, before and after the receive-chunk override | One run each: 121.1 s and about 9,820 PDUs sent (about 5,590 of them resends, for 238 lost); then 61.1 s and 4,476 PDUs sent: 248 after the first pass, so at most 247 resends (the FIN's ACK is among them). Both byte-identical | ran: `00_11_14`; `02_00_48` and Yamcs's vc2 frame count, matching the relay's 4,229 + 247 |
 | Uploads at 50 % TC loss, `basic.wad` ×4 | All byte-identical. Twice the metadata was lost and `cfdpManager` staged the data in `<uplink>/.cfdp-tmp/` (`RxTempFileCreated`), then moved it in place | ran: `02_00_48` |
-| Downlink transaction numbers past 255 in one boot | 263 downlinks; a full-size Class 2 downlink as transaction 263 went down whole with no assert, its data PDUs 981 and 989 bytes where one-byte numbers had carried 990 (F10) | ran: `00_51_38`; packet sizes from the Yamcs archive |
-| The data cap (`OutgoingFileChunkSize` 987) | A downlink's data PDUs: 981, 987, 736 bytes, none over 987 | ran: `02_00_48`; Yamcs archive |
+| Downlink transaction numbers past 255 in one boot | 263 downlinks; a 2,704-byte Class 2 downlink as transaction 263 went down whole with no assert, with 981 and then 989 bytes of file data per PDU (its second PDU a full 1001 bytes) where one-byte numbers had carried 990 (F10) | ran: `00_51_38`; packet sizes from the Yamcs archive |
+| The data cap (`OutgoingFileChunkSize` 981) | File data per PDU in a Class 1 downlink of `basic.wad`: 981, 981, 742 bytes. (At 987, the first setting: 981, 987, 736.) | ran: `02_29_13` (`02_00_48`); Yamcs archive |
 | Class 1 up at 5 % each way, `cig.wad` ×4 | 0 of 4 whole. Twice the metadata PDU was lost: nothing written on board, only `RxInactivityTimeout` (WARNING_LO). Twice data PDUs were lost: `RxCrcMismatch` (WARNING_LO), then `RxFileTransferCompleted` (ACTIVITY_HI), and the corrupt file kept at full size. Yamcs reported all four COMPLETED | ran |
 | `COMMIT_WAD` then `LOAD_WAD` after a Class 2 upload at 5 % each way | `WadUplinked`, `WadLoaded`, a frame from the new level (`cig.wad` over `freedoom2.wad` on MAP02) | ran, twice (flights `00_11_14` and `00_42_42`) |
-| The README's own command, unchanged, on this build | Detected CFDP, Class 2 up, committed, loaded, frame saved | ran |
+| The README's own command, unchanged, on this build | Detected CFDP, Class 2 up, committed, loaded, frame saved | ran: `00_51_38`, and again on the final configuration (`02_29_13`) |
 | `COMMIT_WAD` refusals | `../etc/x.wad.1.part` VALIDATION_ERROR; a missing `.part` EXECUTION_ERROR | ran |
 | Destination paths outside the uplink directory | Written; see "Destination paths" | ran |
 | Boot parameters (`flight/config/PrmDb.json` → `PrmDb.dat`) | `PrmFileLoadComplete`, 10 records, no warnings; the fast CRC pass with no `PRM_SET` sent | ran |
@@ -168,7 +170,7 @@ with descriptor 3 and CFDP version 1, strip 6 + 2 bytes. Up: prepend `1003 C000 
 | Checksum | MODULAR or NULL; no CRC32 [read] | Always modular, whatever the metadata says [read] | MODULAR; NULL would fail on board [read] |
 | PDU CRC, large file | Never set; refuses large-file PDUs [read] | Ignores both flags on receipt instead of refusing them [read] | Off |
 | Largest PDU up | `maxPduSize` | No limit checked on receipt [read] | 1009 = 1024 − 5 (TC frame header) − 2 (FECF) − 6 (space packet header) − 2 (descriptor). 1010 is refused as "cmd size 1018" [ran (harness)]; 1009 ran |
-| Largest PDU down | Any | `ComAggregator` asserts on a space packet over `AggregationSize` 1009 (`F´:Svc/ComAggregator/ComAggregator.cpp:124`), so `MaxPduSize` ≤ 1001 [read]; the stock 1024 is FATAL on the first full file-data PDU [ran (harness)] | `MaxPduSize = 1001` (`flight/config/CfdpCfg.fpp:69`); 4.2 MB down with no assert [ran]. But F´ sizes file data from a header it has not filled in yet (`TransactionTx.cpp:346-350`; F10), so `MaxPduSize` alone does not bound the PDU: one more byte once the transaction number needs two would make 1010 [read]. `OutgoingFileChunkSize` 987 caps the data so a PDU is at most 1001 with any number up to four bytes [ran: data PDUs 987 at most] |
+| Largest PDU down | Any | `ComAggregator` asserts on a space packet over `AggregationSize` 1009 (`F´:Svc/ComAggregator/ComAggregator.cpp:124`), so `MaxPduSize` ≤ 1001 [read]; the stock 1024 is FATAL on the first full file-data PDU [ran (harness)] | `MaxPduSize = 1001` (`flight/config/CfdpCfg.fpp:69`); 4.2 MB down with no assert [ran]. But F´ sizes file data from a header it has not filled in yet (`TransactionTx.cpp:346-350`; F10), so `MaxPduSize` alone does not bound the PDU: one more byte once the transaction number needs two would make 1010 [read]. `OutgoingFileChunkSize` 981 caps the data so a PDU is at most 1001 bytes whatever the entity ids (`SendFile` takes any `destId`) and transaction number, up to four bytes each [inferred, from the header arithmetic; ran: file data ≤ 981 per PDU] |
 | NAK segments | Up to 124 in one NAK | Keeps the first 58 [read] | Harmless: the rest are asked for again |
 | Closure requested (Class 1) | Bit 0x40, as the CFDP standard lays out the byte | Bit 0x80 (`F´:.../Types/MetadataPdu.cpp:123,180`) [read] | Not used |
 | Proxy put, directory listing | On by default | Not implemented [read] | `hasDownloadCapability` and `hasFileListingCapability` false: downlinks start on board with `cfdpManager.SendFile` |
@@ -222,12 +224,16 @@ kB is 1000 bytes. How to read it:
   TELEMETRY 2), so a big downlink holds up game frames while it runs [read; not measured].
 - Under loss, the tail is resending. Stock F´ v4.3.0 tracks at most 58 received runs per transaction
   (`F´:default/config/CfdpCfg.hpp:37`) and, once that list is full, drops a new run unless it is larger than the
-  smallest it holds (`Chunk.cpp:275-298`), so it forgets data it has already written; its next NAK then asks for
-  much of the rest of the file, and Yamcs resends every PDU inside a NAK segment (`Y:cfdp/CfdpOutgoingTransfer.java:309-318`)
-  [read]. At 5 % loss the 4.2 MB upload lost 238 PDUs on its first pass and Yamcs then sent about 5,590 more, 1.3
-  times the file, in bursts 4 to 8 s apart [ran]. With 2048 receive chunks (`flight/config/CfdpCfg.hpp`) the same
-  upload sent 248 resends and took half the time [ran]. Each NAK still carries the first 58 gaps
-  (`NakPdu::addSegment` refuses more) and the next round the rest [read].
+  smallest it holds (`Chunk.cpp:275-298`), so it forgets data it has already written. Its first NAK leaves that out;
+  a later one, once the gaps it can still see are refilled, asks for much of the rest of the file, and Yamcs
+  resends every PDU inside a NAK segment (`Y:cfdp/CfdpOutgoingTransfer.java:309-318`) [read]. At 5 % loss the
+  4.2 MB upload lost 238 PDUs on its first pass and Yamcs then sent about 5,590 more, 1.3 times the file, mostly in
+  two continuous runs (about 3,050 PDUs over 30 s, then about 1,870 over 19 s), with shorter runs between and
+  pauses of 2 to 4 s [ran]. With 2048 receive chunks (`flight/config/CfdpCfg.hpp`) the same upload sent at most 247
+  resends and took half the time [ran]. Each NAK carries at most 58 gaps (`NakPdu::addSegment` refuses more), and
+  the next goes out only after an `ack_timer` (2 s) with no data, so 238 gaps take about five rounds: most of
+  that run's 18 s tail is waiting [read; the tail ran]. A 28.8 MB IWAD at 5 % (about 1,400 gaps) would need about
+  24 rounds [inferred].
 - At the default 40 ms, CFDP Class 2 matches the native rate; at 5 ms it is seven times faster, and it survives
   loss.
 
@@ -270,15 +276,18 @@ Not restricted, because `cfdpManager` uses the metadata's destination path as it
 - `cfdpManager.SendFile` downlinked `/etc/hostname` [ran]. With `keep` DELETE it deletes the source after
   sending, and so do downlinks asked for through `fileIn` unless `FileInDefaultKeep` says KEEP, as `PrmDb.json`
   now does [read]. `PlaybackDirectory` and `PollDirectory` do the same for a whole directory: playback deletes with
-  `keep` DELETE, polling always deletes once a file is sent, and a failed poll file moves to `fail_dir` [read].
+  `keep` DELETE, and polling always deletes once a file is sent. A failed poll file is meant to move to
+  `fail_dir`, but F´ v4.3.0 renames it onto the `fail_dir` path itself (`Engine.cpp:1153-1166`), so with a
+  directory there the move fails and the file is deleted; `move_dir` has the same bug (F12) [read].
 - All test files were removed afterwards.
 
 The component offers no hook to restrict the destination path. The one receive path it does let a deployment
 choose is `ChannelConfig.tmp_dir`: when Class 2 file data arrives before its metadata, the file is written there as
 `<eid>:<seq>.tmp` and moved to the destination once the metadata arrives (`F´:Svc/Ccsds/CfdpManager/TransactionRx.cpp:347-362,
 1094-1097`) [read]. That happened once at 5 % loss, into `/tmp` (`RxTempFileCreated ... /tmp/100:23.tmp`) [ran].
-`PrmDb.json` now sets `tmp_dir`, and the poll `fail_dir`, under the uplink directory (`<uplink>/.cfdp-tmp`,
-`<uplink>/.cfdp-fail`, filled in per machine at start): that, and `COMMIT_WAD`, is all the component allows.
+`PrmDb.json` now sets `tmp_dir` to `<uplink>/.cfdp-tmp` (filled in per machine at start), where it worked at 50 %
+TC loss [ran], and leaves `fail_dir` and `move_dir` empty, which F´ treats as "delete" (DoomSat runs no polls).
+That, and `COMMIT_WAD`, is all the component allows.
 
 F´ file packets on the Stage 1 build were open too, but only because that build never confined them: FileUplink
 writes through `Os::SandboxedFile` and has `configure(directory)` (`F´:Svc/FileUplink/FileUplink.hpp:192-201`),
@@ -363,7 +372,7 @@ Written for you to file. Each says what ran and what was only read.
 > (seen on a lossy link, twice). On a checksum failure `r1SubstateRecvEof` only logs `RxCrcMismatch` and sets no
 > error status (`TransactionRx.cpp:649-663`), so `Engine::finishTransaction` reports completion
 > (`Engine.cpp:1006-1019`); keep is KEEP from reset (`TransactionRx.cpp:96`), so nothing removes the file. Suggest: treat a checksum failure as a failed transaction (condition code "file checksum failure"),
-> report `RxFileTransferFailed`, and move the file to `fail_dir` or delete it.
+> report `RxFileTransferFailed`, and delete the file or move it aside (see F12 on `fail_dir`).
 
 **F4. Metadata PDU: closure-requested is written at bit 0x80, not 0x40**
 > `Svc/Ccsds/CfdpManager/Types/MetadataPdu.cpp:123` shifts `closureRequested` by 7 and line 180 reads it from bit
@@ -402,25 +411,37 @@ Written for you to file. Each says what ran and what was only read.
 > (lines 120, 618); in fact they are written at the destination once the metadata has arrived, and go to
 > `tmp_dir` only when file data comes first, moving when the metadata arrives (`TransactionRx.cpp:347-368,
 > 1094-1097`). The same SDD gives default timers (`ack_timer` 3 s, `inactivity_timer` 30 s, line 625) that differ
-> from `Parameters.fppi` (2 s, 120 s). (Read; the temp file was seen once on a lossy link.)
+> from `Parameters.fppi` (2 s, 120 s). (Read; the temp file was seen three times on lossy links: once at 5 % loss
+> each way, twice at 50 % TC loss.)
 
 **F10. `sSendFileData` sizes file data from an uninitialised header**
 > `TransactionTx.cpp:346-350` calls `fdPdu.getMaxFileDataSize()` on a freshly declared `FileDataPdu`, whose
 > `PduHeader` has no constructor (`PduBase() {}`), and only fills in the header with `initialize()` later (around
 > line 388). `getMaxFileDataSize` sizes from that header (`FileDataPdu.cpp:45-56`), so the data size is decided by
 > whatever was on the stack. On a v4.3.0 deployment with `MaxPduSize` 1001, one-byte transaction numbers gave 990
-> bytes of data a PDU; at transaction 263 the same code gave 981 and then 989 (seen). If the stale header is ever
+> bytes of file data a PDU; at transaction 263 the same code gave 981 and then 989 (seen). If the stale header is ever
 > narrower than the real one (a one-byte number left over, a two-byte number now), a full PDU is a byte over
 > `MaxPduSize` and, with the stock `ComCcsds`, asserts in `ComAggregator`. Suggest `initialize()` before sizing,
-> or sizing from the real EIDs and sequence number. Workaround: `OutgoingFileChunkSize` ≤ `MaxPduSize` − 14.
+> or sizing from the real EIDs and sequence number. Workaround: `OutgoingFileChunkSize` ≤ `MaxPduSize` −
+> (8 + 2 × entity-id bytes + transaction-number bytes), which is − 20 for the U32 types; − 14 holds only while both
+> entity ids fit in a byte, and `SendFile` takes any `destId`.
 
 **F11. Class 2 receive forgets data once 58 runs are tracked, so a lossy upload is mostly resent**
 > `CFDP_CHANNEL_NUM_RX_CHUNKS_PER_TRANSACTION` defaults to `{NakMaxSegments, NakMaxSegments}` (58)
 > (`default/config/CfdpCfg.hpp:37`). Past about 57 losses, `CfdpChunkList::insert` drops new received runs
-> (`Chunk.cpp:275-298`), and the next NAK asks for data already written. Seen on v4.3.0: a 4.2 MB upload from Yamcs
+> (`Chunk.cpp:275-298`), and a later NAK asks for data already written. Seen on v4.3.0: a 4.2 MB upload from Yamcs
 > at 5 % loss lost 238 PDUs and had about 5,590 resent (121 s); with the RX chunk count raised to 2048 by a config
-> override, 248 resent (61 s). Suggest a larger default, or decoupling the RX chunk count from `NakMaxSegments` in
-> the docs, which today present them as one setting.
+> override, at most 247 (61 s). The default ties the RX chunk count to `NakMaxSegments`, and neither `CfdpCfg.hpp`
+> nor the SDD says that it caps how many received runs a Class 2 receive can track, or that past it the receiver
+> forgets data it has written and asks for it again. Suggest a default sized for file size × expected loss, and
+> saying so. If the two are decoupled, `rSubstateSendNak` should add the NAK's segment count, not the `computeGaps`
+> count, to `sentNakSegmentRequests`, which today counts gaps found rather than segments sent.
+
+**F12. `move_dir` and `fail_dir` are used as file names, not directories**
+> `Engine::handleNotKeepFile` passes the parameter itself to `Os::FileSystem::moveFile` (`Engine.cpp:1133-1135`,
+> `1153-1156`), which is `rename(source, destination)`. With a directory there the rename fails (EISDIR) and the file
+> is deleted; with a path that does not exist, the file is renamed to it and each later one overwrites it. The SDD
+> calls them directories. Suggest moving to `<dir>/<basename>`. (Read.)
 
 **nasa/fprime-gds**
 
@@ -429,7 +450,7 @@ Written for you to file. Each says what ran and what was only read.
 > `EnumMismatchException: Invalid enum member Fw.Enabled.ENABLED` for `ChannelConfig`: the dictionary gives the
 > default as `Fw.Enabled.ENABLED`, and the enum type accepts `ENABLED`. Writing the value explicitly as `ENABLED`
 > works. By reading, plain enum parameters with qualified defaults (`FileInDefaultClass`,
-> `Svc.Ccsds.Cfdp.Class.CLASS_2`) take the same path (`params.py:50-51,152`). Seen with fprime-gds 4.4.0, which
+> `Svc.Ccsds.Cfdp.Class.CLASS_2`) take the same path (`params.py:51-52,152`). Seen with fprime-gds 4.4.0, which
 > fprime-yamcs 0.2.1 pulls in (F´ v4.3.0 itself pins 4.3.0).
 
 **G2. A parameter file next to the binary stops the launcher finding the app**
@@ -485,8 +506,8 @@ Written for you to file. Each says what ran and what was only read.
   `topology.fpp` to the com queue's FILE slot, the router's `fileOut`, the 1 Hz group and `dpCat`.
   `DoomSatTopologyDefs.hpp` is committed because the generated one names FileHandling. `MaxPduSize` 1001
   (`CfdpCfg.fpp`) and 2048 receive chunks (`CfdpCfg.hpp`). `COMMIT_WAD` in the Doom component. Boot parameters in
-  `flight/config/PrmDb.json`: the data cap, the fast CRC pass, KEEP, the entity ids, and temp and fail
-  directories under the uplink directory.
+  `flight/config/PrmDb.json`: the data cap, the fast CRC pass, KEEP, the entity ids, and the temp directory
+  under the uplink directory.
 - **Ground**: `CfdpService` in `ground/yamcs/etc/yamcs.fprime-project.yaml` with TC virtual channel 2,
   `cfdp_streams.sql`, `ground/yamcs/launch.py`.
 - **Tools**: `tools/lossy_relay.py`; `tools/wad_uplink_demo.py` uses CFDP Class 2 when Yamcs offers it, with

@@ -168,7 +168,7 @@ Integration findings worth keeping:
     (1001 fits). CFDP class 1 keeps a file whose checksum failed and reports it completed: WADs go class 2.
     Stock receive tracks 58 runs of data and forgets the rest, so at 5 % loss a 4.2 MB upload was resent 1.3
     times over (121 s); 2048 receive chunks (`flight/config/CfdpCfg.hpp`) brought it to 61 s. F´ sizes downlink
-    data from a header it has not filled in yet, so `OutgoingFileChunkSize` caps it at 987.
+    data from a header it has not filled in yet, so `OutgoingFileChunkSize` caps it at 981.
 12. fprime-yamcs rewrites the instance YAML with sorted keys, which puts a `streamConfig` `sqlFile` before the
     streams it reads; `ground/yamcs/launch.py` writes it back in order. Yamcs packs several TC packets into one
     frame unless told not to, and F´'s deframer keeps only the first (`multiplePacketsPerFrame: false`).
