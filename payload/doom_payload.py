@@ -1272,6 +1272,10 @@ class Payload:
         Proven elsewhere first because a damaged WAD does not raise in ViZDoom: it kills the process (a
         truncated doom1.wad segfaults in init), and this process holds the flight link. The game here keeps
         running until the child has flown a second on the new file; only then does it switch.
+
+        Safe to send again, which the ground does when no answer comes on a lossy link: a request for the files
+        and map already flying changes nothing and is answered ALREADY (WadLoaded on the ground, WAD_LOADS
+        unmoved), and one that repeats the request being proven waits for that request's answer.
         """
         try:
             iwad, pwad, map_name = wu.decode_load_wad(body)
@@ -1279,13 +1283,23 @@ class Payload:
             self.outbox.append(self.wad_report(wu.FAILED, "?", "malformed LOAD_WAD record"))
             return
         name, map_name = wu.display_name(iwad, pwad), map_name.upper()   # next_map() reads upper case
-        ipath = ppath = None
-        if self.wad_job is not None:
-            why = "another LOAD_WAD is still being checked"
-        elif self.oracle != "off":
+        ipath = ppath = key = None
+        if self.oracle != "off":
             why = "the diagnostic ladder (--oracle) only knows the level it was launched on"
         else:
             ipath, ppath, why = wu.resolve(iwad, pwad, map_name)
+        if not why:
+            key = wu.load_key(ipath, ppath, map_name)
+            if self.wad_job is not None:
+                if key is not None and key == self.wad_job[2]["key"]:
+                    print(f"[payload] LOAD_WAD {name} on {map_name}: sent again while it is being proven; its "
+                          "answer will serve both", flush=True)
+                    return
+                why = "another LOAD_WAD is still being checked"
+            elif key is not None and key == wu.load_key(self.wad, self.pwad, self.map):
+                print(f"[payload] LOAD_WAD {name} on {map_name}: already flying it; nothing to do", flush=True)
+                self.outbox.append(self.wad_report(wu.ALREADY, name))
+                return
         if why:
             print(f"[payload] LOAD_WAD {name}: {why}", flush=True)
             self.outbox.append(self.wad_report(wu.FAILED, name, why))
@@ -1308,7 +1322,7 @@ class Payload:
         # orphan, still loading, still growing), so it is the group that gets killed.
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                                 start_new_session=True)
-        request = dict(name=name, map=map_name, ipath=ipath, ppath=ppath, serial=self.wad_serial, ident=ident)
+        request = dict(name=name, map=map_name, ipath=ipath, ppath=ppath, serial=self.wad_serial, ident=ident, key=key)
         self.wad_job = (proc, out, request, time.time())
         print(f"[payload] LOAD_WAD {name} on {map_name}: proving the game starts on it", flush=True)
 

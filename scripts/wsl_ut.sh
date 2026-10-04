@@ -16,6 +16,10 @@ if [ ! -f "$UT/CMakeCache.txt" ]; then
 else
   cmake --build "$UT" --target refresh_cache 2>&1 | tail -1
 fi
-cd DoomMission/Components/CfdpGuard
-fprime-util check -j "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)" 2>&1 | grep -v "fprime-gds has unexpected"
-exit "${PIPESTATUS[0]}"
+rc=0
+for c in CfdpGuard Doom; do
+  (cd "DoomMission/Components/$c" &&
+   fprime-util check -j "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)" 2>&1 | grep -v "fprime-gds has unexpected"
+   exit "${PIPESTATUS[0]}") || rc=1
+done
+exit $rc

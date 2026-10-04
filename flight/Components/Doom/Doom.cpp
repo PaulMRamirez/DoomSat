@@ -44,8 +44,8 @@ constexpr U16 STATUS_LEN = STATUS_CORE_LEN + 1 + CAND_LEN * MAX_CANDIDATES + THR
 constexpr U8 WAD_ARG_MAX = 40;        // LOAD_WAD's string sizes in Doom.fpp, and the WadName array size
 constexpr U8 WAD_TEXT_MAX = 120;      // longest WAD report text kept (the reason; WadLoadFailed's size)
 // The payload's WAD report (kind 3): what it did with a LOAD_WAD, or, with result REPORT, what it is
-// running when the link comes up.
-enum WadResult : U8 { WAD_REPORT = 0, WAD_LOADED = 1, WAD_FAILED = 2 };
+// running when the link comes up. ALREADY answers a LOAD_WAD for the game already flying: nothing changed.
+enum WadResult : U8 { WAD_REPORT = 0, WAD_LOADED = 1, WAD_FAILED = 2, WAD_ALREADY = 3 };
 }  // namespace
 
 Doom ::Doom(const char* const compName)
@@ -115,13 +115,25 @@ void Doom ::COMMIT_WAD_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, const Fw::Cmd
     path.format("%s/%s", dir.toChar(), part.toChar());
     // cfdpManager writes the file in place and announces nothing, so check here that it is the whole file the
     // ground sent before it gets its real name: a commit before the last byte has landed, or after a damaged
-    // Class 1 upload, leaves a .part that LOAD_WAD will not use. A file that is not there at all (already
-    // committed by an earlier COMMIT_WAD whose answer was lost, or not yet created) is WadUplinkFailed, as before.
+    // Class 1 upload, leaves a .part that LOAD_WAD will not use.
     // A commit between the last byte and cfdpManager's CRC pass does rename the whole file, and that transfer
     // then ends with a file-size error, so the ground waits for the FIN.
     FwSizeType haveSize = 0;
     U32 haveSum = 0;
     if (!fileSum(path.toChar(), haveSize, haveSum)) {
+        // No .part. If NAME.wad is already the file the ground sent, this COMMIT_WAD repeats one that worked (its
+        // WadUplinked lost on the way down), or cfdpGuard committed the file at its FIN: answer as that commit
+        // did, so the ground can ask again until it hears. Otherwise the file is on board under neither name (not
+        // yet arrived, or an older NAME.wad with other bytes), and the answer is WadUplinkFailed.
+        const FwSizeType destLen = WadPath::destLength(path.toChar(), path.length());
+        Fw::String dest;
+        dest.format("%.*s", static_cast<int>(destLen), path.toChar());
+        if (destLen > 0 && fileSum(dest.toChar(), haveSize, haveSum) && haveSize == fileSize &&
+            haveSum == checksum) {
+            this->log_ACTIVITY_HI_WadUplinked(dest);
+            this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
+            return;
+        }
         this->log_WARNING_HI_WadUplinkFailed(path);
         this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::EXECUTION_ERROR);
         return;
@@ -610,6 +622,10 @@ void Doom ::handleWad(const U8* body, U16 length) {
     this->writeWadTlm();
     if (result == WAD_LOADED) {
         this->m_lastLevel = 0;  // the new WAD starts at level 1: announce it even if the old one was on 1 too
+        this->log_ACTIVITY_HI_WadLoaded(Fw::String(text[NAME]), Fw::String(text[MAP]));
+    } else if (result == WAD_ALREADY) {
+        // The same answer a load gives, so a LOAD_WAD sent again after its answer was lost hears one; WAD_LOADS
+        // does not move and the level goes on as it was
         this->log_ACTIVITY_HI_WadLoaded(Fw::String(text[NAME]), Fw::String(text[MAP]));
     } else if (result == WAD_FAILED) {
         this->log_WARNING_HI_WadLoadFailed(Fw::String(text[NAME]), Fw::String(text[REASON]));

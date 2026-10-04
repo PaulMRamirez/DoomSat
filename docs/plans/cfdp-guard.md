@@ -59,7 +59,10 @@ cfdpGuard.fileAnnounceOut -> doom.fileAnnounce
   RETAINED. The first such FIN commits and ends the record, so F´'s repeats (sent until the ground ACKs) commit
   nothing. `UPLOADS_COMMITTED` counts these announcements; Doom's `WadUplinked` or `WadUplinkFailed` says how the
   rename went. Class 1 has no FIN, so the guard lets it into the uplink directory but never commits it.
-  `COMMIT_WAD`, with its size and checksum check, stays for class 1 and for commits by hand.
+  `COMMIT_WAD`, with its size and checksum check, stays for class 1 and for commits by hand. It is also the
+  ground's fallback when the guard's `WadUplinked` is lost on the way down: with the `.part` gone, it finds
+  `NAME.wad` with the size and checksum it names and answers `WadUplinked` again
+  (`docs/plans/idempotent-wad-commands.md`).
 - **Belt and braces.** `Doom::fileAnnounce_handler` now refuses any path outside the uplink directory as well.
 
 ## What ran (4 October 2026, this VM)

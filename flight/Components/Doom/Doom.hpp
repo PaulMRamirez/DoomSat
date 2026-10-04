@@ -17,6 +17,8 @@
 namespace DoomMission {
 
 class Doom final : public DoomComponentBase {
+    friend class DoomTester;  //!< the unit tests (test/ut) hand it WAD reports directly
+
   public:
     Doom(const char* const compName);
     ~Doom();

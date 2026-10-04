@@ -7,6 +7,8 @@ on a COMMIT_WAD whose size and CFDP checksum match the file on board (class 1, o
 then commands LOAD_WAD; the Doom component forwards the three names as record kind 0x16, and the payload answers
 with a WAD report, kind 3. The payload also sends a report when the link comes up, so the ground always knows which
 file the game is running.
+A LOAD_WAD sent again (its answer lost on a lossy link) must not switch the game twice: `load_key` says when two
+requests ask for the same files and map.
 
 Pure Python with no ViZDoom, so the unit tests import it from the ground venv. Nothing here reads a WAD:
 names are checked as text and looked up with os.path, and the game is the only thing that ever opens one
@@ -23,7 +25,8 @@ import struct
 
 KIND_LOAD_WAD = 0x16
 KIND_WAD = 3
-REPORT, LOADED, FAILED = 0, 1, 2      # a report on connect, a switch made, a request refused
+# A report on connect, a switch made, a request refused, and a request for the game already flying (no switch)
+REPORT, LOADED, FAILED, ALREADY = 0, 1, 2, 3
 # Yamcs counts a string argument's two-byte length tag against its declared size, so LOAD_WAD's
 # `string size 40` carries 38 characters. The WadName telemetry array has room for 40.
 NAME_MAX = 38
@@ -190,6 +193,22 @@ def identity(path):
     except OSError:
         return None
     return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
+
+
+def load_key(ipath, ppath, map_name):
+    """What a LOAD_WAD asks for as files: each WAD's name and identity, and the map; None if a file is not there.
+
+    Two requests with the same key ask for the same game, so the second changes nothing. Names alone would not do:
+    an uplink of the same name renamed over the file is a new file, and a load of it must still switch. A pinned
+    link (`pin`) has the name and the identity of the file it pins.
+    """
+    files = []
+    for path in (ipath, ppath):
+        ident = identity(path) if path else None
+        if path and ident is None:
+            return None
+        files.append((os.path.basename(path), ident) if path else None)
+    return files[0], files[1], map_name.upper()
 
 
 def resolve(iwad, pwad, map_name, dirs=None):

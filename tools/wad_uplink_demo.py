@@ -19,9 +19,12 @@
    once RxFileTransferCompleted comes with no RxCrcMismatch (class 1 has no retransmission: not for WADs).
    COMMIT_WAD carries the size and CFDP checksum of what was sent, and the Doom component renames the file
    only if it has both (WadCommitRefused otherwise). --checksum FILE prints the two, for a commit by hand.
+   It is safe to send again: with the .part gone, a NAME that already has that size and checksum answers
+   WadUplinked as the first commit did.
 3. LOAD_WAD; the payload proves the game starts on it in a child process, then switches (WadLoaded) or keeps
    flying what it had (WadLoadFailed). The tool shows WAD_IWAD / WAD_PWAD / WAD_LOADS, EPISODE and
-   FRAMES_SENT, and saves the first whole frame from after the switch in out/.
+   FRAMES_SENT, and saves the first whole frame from after the switch in out/. LOAD_WAD is safe to send again
+   too: one for the files and map already flying answers WadLoaded and leaves WAD_LOADS where it was.
 
 What is loaded: with --iwad, the uplinked file is the PWAD over that IWAD; without, it is the IWAD. With no
 --wad, nothing is uplinked and LOAD_WAD names files already on board (--iwad, --pwad).
@@ -267,7 +270,7 @@ def flight_home():
 
 
 def uplink(a, link, bucket, part, remote, name, content):
-    """Send the bucket object `part` to `remote` and see it put in place on board. (exit code or 0, unconfirmed)."""
+    """Send the bucket object `part` to `remote` and see it put in place on board. The exit code, or 0."""
     service = link.client.get_file_transfer_client(a.instance).get_service(a.service or ("cfdp" if a.cfdp else
                                                                                         "FprimeFilePacketService"))
     updates = service.create_transfer_subscription()
@@ -300,7 +303,7 @@ def uplink(a, link, bucket, part, remote, name, content):
             say(f"event: {said}")
             if not said or "[WadLoadFailed]" not in said:
                 say("FAIL: a load during the uplink was not refused")
-                return 1, False
+                return 1
 
         stop = threading.Event()
         if a.latency:
@@ -333,7 +336,7 @@ def uplink(a, link, bucket, part, remote, name, content):
         if not transfer.is_complete():
             say(f"FAIL: transfer {transfer.state} at {transfer.transferred_size}/{len(content)} bytes, no progress for "
                 f"{limit:.0f} s")
-            return 1, False
+            return 1
     finally:
         # However this ends (a stall, a failed check, an exception, Ctrl-C), a transfer left running would hold
         # Yamcs's one upload slot and the next run would queue behind it
@@ -346,7 +349,7 @@ def uplink(a, link, bucket, part, remote, name, content):
                 say(f"could not cancel the transfer ({e}); it may still complete")
     if not transfer.is_success():
         say(f"FAIL: transfer {transfer.state} {transfer.error or ''}")
-        return 1, False
+        return 1
     sent = time.time() - t0
     if a.cfdp == 2:
         say(f"CFDP class 2 transfer finished (FIN) in {sent:.1f} s ({len(content) / sent / 1000:.1f} KB/s): "
@@ -366,11 +369,11 @@ def uplink(a, link, bucket, part, remote, name, content):
         if said and "[BadChecksum]" in said:
             say("FAIL: the file arrived damaged. F' file packets are not retransmitted, so one packet lost on the "
                 "command link fails the whole file; it stays a .part and cannot be loaded. Uplink it again")
-            return 1, False
+            return 1
         if not said or "[WadUplinked]" not in said:
             say("FAIL: the spacecraft did not confirm the file")
-            return 1, False
-        return 0, False
+            return 1
+        return 0
 
     # cfdpManager writes the file in place and has no fileAnnounce. cfdpGuard commits a class 2 file on board as the
     # receiver's FIN goes out, so its events come down with the FIN; COMMIT_WAD below is the fallback. Only this
@@ -380,7 +383,7 @@ def uplink(a, link, bucket, part, remote, name, content):
         said = mine and link.wait_event(mine[0], placed, not_renamed, timeout=GUARD_ANSWER_S)
         if said and "[WadUplinked]" in said:
             say(f"event: {said} (committed on board at the FIN)")
-            return 0, False
+            return 0
         say(f"{said or 'no commit of this upload seen'} within {GUARD_ANSWER_S:.0f} s of the FIN (events lost on the "
             "way down, a failed rename, or no cfdpGuard on this build): sending COMMIT_WAD")
     # Class 1 has no FIN, and F' v4.3.0 reports a class 1 file whose CRC failed as completed anyway.
@@ -390,12 +393,13 @@ def uplink(a, link, bucket, part, remote, name, content):
         say(f"event: {done}")
         if not done or "[RxFileTransferCompleted]" not in done or link.wait_event(t0, "[RxCrcMismatch]", timeout=1):
             say("FAIL: the class 1 file did not arrive whole (no retransmission in class 1); not committing it")
-            return 1, False
+            return 1
     # COMMIT_WAD carries what was sent; the Doom component renames the .part only if the file on board has the same
     # size and CFDP checksum (WadCommitRefused otherwise). That, not the events above, is what keeps a damaged or
     # unfinished file out of place.
     # A command is one unprotected frame (no COP-1 here): on a lossy link, ask again if there is no answer.
-    # A second COMMIT_WAD after a first that worked finds no .part and says WadUplinkFailed, harmlessly.
+    # Asking again is safe: a COMMIT_WAD after one that worked (or after cfdpGuard's commit) finds no .part but a
+    # NAME with the size and checksum sent, and answers WadUplinked as the first did.
     size, checksum = len(content), cfdp_checksum(content)
     said, commits, t_first = None, 0, time.time()
     for _ in range(a.tries):
@@ -409,33 +413,21 @@ def uplink(a, link, bucket, part, remote, name, content):
     say(f"event: {said}")
     if said and "[WadCommitRefused]" in said:
         say("FAIL: the file on board is not the file sent (its size or checksum differs); it stays a .part")
-        return 1, False
+        return 1
     if said is None:
         # Nothing came down: the command may never have arrived, and LOAD_WAD would then fly (or refuse) any older
         # file of this name already in place, not this upload
         say(f"FAIL: no answer to {commits} COMMIT_WAD; the file may still be {part}, and LOAD_WAD would use any older "
             f"{name} on board in its place. Commit it by hand (--checksum FILE) or run again with more --tries")
-        return 1, False
-    # A first WadUplinkFailed says no more than that the .part is not there to rename. With this upload's own
-    # UploadCommitted seen, and no failed rename of it at the FIN, cfdpGuard put it in place and its WadUplinked was
-    # lost; otherwise it may never have arrived where COMMIT_WAD looks, and LOAD_WAD would fly any older NAME.
-    with link.lock:
-        failed_at_fin = any(t < t_first and not_renamed in m for t, m in link.events)
-    guarded = a.cfdp == 2 and link.wait_event(t0, committed, timeout=0) is not None and not failed_at_fin
-    if (commits > 1 or guarded) and not_renamed in said:
-        # No .part to commit: cfdpGuard put a class 2 file in place at its FIN, or an earlier COMMIT_WAD did, and
-        # that WadUplinked was lost on the way down
-        if a.no_load:
-            say(f"FAIL: COMMIT_WAD not confirmed ({said} after {commits}); LOAD_WAD would tell whether the file is "
-                "in place")
-            return 1, False
-        say(f"{said} (after {commits} COMMIT_WAD: already in place, its WadUplinked lost on the way down?); LOAD_WAD "
-            "will say whether the file is there")
-        return 0, True
+        return 1
     if "[WadUplinked]" not in said:
-        say("FAIL: the spacecraft did not put the file in place")
-        return 1, False
-    return 0, False
+        # WadUplinkFailed: no .part, and no NAME with the size and checksum sent (a repeat of a commit that worked
+        # finds that and says WadUplinked), or a rename that failed. A flight build from before COMMIT_WAD was safe
+        # to repeat says this for a repeat too: see what is on board, and commit by hand (--checksum FILE).
+        say(f"FAIL: the spacecraft did not put the file in place (after {commits} COMMIT_WAD): neither {part} nor a "
+            f"{name} with the size and checksum sent is on board")
+        return 1
+    return 0
 
 
 def main():
@@ -529,7 +521,6 @@ def main():
     if a.latency:
         measure_latency(link, a.latency, "CONTROL round trip, link idle")
 
-    unconfirmed = False   # with CFDP: a retried COMMIT_WAD found the .part gone; LOAD_WAD tells whether it is in place
     if a.wad:
         content = Path(a.wad).read_bytes()          # ground tooling: the bytes go into the bucket, nothing more
         if a.truncate is not None:
@@ -551,7 +542,7 @@ def main():
                 "maxContentLength (ground/yamcs/etc/yamcs.yaml) and the bucket at 100 MiB / 1000 objects")
             return 2
         try:
-            rc, unconfirmed = uplink(a, link, bucket, part, remote, name, content)
+            rc = uplink(a, link, bucket, part, remote, name, content)
         finally:
             try:
                 bucket.delete_object(part)   # however it went: a bucket holds 1000 objects and 100 MiB. Yamcs read
@@ -574,6 +565,8 @@ def main():
         return ((link.value("WAD_LOADS") or 0) > loads0 and link.value("WAD_IWAD") == iwad
                 and link.value("WAD_PWAD") == (pwad or ""))
 
+    # LOAD_WAD is safe to send again: a repeat of the load being proven gets that load's answer, and one after it
+    # switched finds the game already flying it (WadLoaded again, WAD_LOADS unmoved)
     t_cmd = time.time()
     said = None
     for attempt in range(a.tries):
@@ -602,10 +595,6 @@ def main():
         f"FRAMES_SENT {frames0} -> {link.value('FRAMES_SENT')}")
     if failed:
         if a.expect_fail:
-            if unconfirmed and any(why in said for why in (wu.NOT_FINISHED, wu.NOT_FOUND)):
-                say("FAIL: refused because the file was never put in place (COMMIT_WAD did not run on board), so the "
-                    "uplinked file itself was not tested")
-                return 1
             say("OK: refused, as expected; the game carries on with what it had")
             return 0
         say("FAIL: LOAD_WAD was refused")
@@ -617,6 +606,11 @@ def main():
         say(f"FAIL: WadLoaded, but the WAD channels name {link.value('WAD_IWAD')!r} {link.value('WAD_PWAD')!r}, "
             f"not {iwad!r} {pwad!r}: that answer was not for this load")
         return 1
+    if loads0 is not None and not link.wait(lambda: link.value("WAD_LOADS") != loads0, TLM_STANDIN_S):
+        # Answered, and the count never moved: the game was already flying these files on this map
+        say(f"OK: already flying {iwad} {pwad!r} on {a.map}; LOAD_WAD changed nothing (WAD_LOADS stays {loads0}; "
+            "RESET_GAME restarts the level)")
+        return 0
     if not link.wait(lambda: any(s > seq0 for _, s, _ in link.frames), 10):
         say("FAIL: no whole frame from after the switch within 10 s")
         return 1
