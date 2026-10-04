@@ -77,7 +77,11 @@ class FakeStack:
         self.deleted.append(name)
 
     # -- file transfer
-    def get_service(self, _name):
+    def list_services(self):
+        return [types.SimpleNamespace(name="cfdp" if self.cfdp else "FprimeFilePacketService")]
+
+    def get_service(self, name):
+        self.service = name
         return self
 
     def create_transfer_subscription(self):
@@ -208,6 +212,17 @@ class TestTheDemo(unittest.TestCase):
         self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--as", "nineteen_chars0.wad", "--iwad",
                                        "freedoom2.wad", "--map", "MAP01", "--cfdp", "2"), 0)
         self.assertEqual(len(stack.commands[1][1]["part"]), 38)
+
+    def test_the_build_decides_the_transfer_when_not_told(self):
+        native, cfdp = FakeStack(), FakeStack(cfdp=True)
+        args = ("--wad", self.wad, "--iwad", "freedoom2.wad", "--map", "MAP01")
+        self.assertEqual(self.run_demo(native, *args), 0)
+        self.assertEqual(native.service, "FprimeFilePacketService")
+        self.assertNotIn("COMMIT_WAD", [c for c, _ in native.commands])
+        self.assertEqual(self.run_demo(cfdp, *args), 0)
+        self.assertEqual(cfdp.service, "cfdp")
+        self.assertTrue(cfdp.upload_kw["options"]["reliable"], "class 2 unless told otherwise")
+        self.assertIn("COMMIT_WAD", [c for c, _ in cfdp.commands])
 
     def test_a_lost_commit_answer_is_asked_again_and_the_load_settles_it(self):
         # The first COMMIT_WAD works but its WadUplinked is lost; the second finds no .part (WadUplinkFailed)

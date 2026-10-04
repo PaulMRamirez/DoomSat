@@ -12,9 +12,10 @@
    <remote-dir>/NAME.<nonce>.part on the spacecraft.
 2. FileUplink checks the checksum (FileReceived); the Doom component then renames it to NAME (WadUplinked).
    Only that event says the file is there whole: the service calls an upload complete once it has SENT it.
-   With --cfdp 1|2 (the CFDP spike build, docs/plans/cfdp-stage2-spike.md) the file goes up as CCSDS CFDP
-   through Yamcs's CfdpService to cfdpManager instead, and COMMIT_WAD does the rename: in class 2 once the
-   spacecraft's FIN says the file is whole, in class 1 once RxFileTransferCompleted comes with no RxCrcMismatch.
+   On the CFDP build (docs/plans/cfdp-stage2-spike.md: Yamcs runs a cfdp service, the flight software
+   cfdpManager) the file goes up as CCSDS CFDP class 2 instead (--cfdp 1 or 2 to choose), and COMMIT_WAD does
+   the rename: in class 2 once the spacecraft's FIN says the file is whole, in class 1 once
+   RxFileTransferCompleted comes with no RxCrcMismatch (class 1 has no retransmission: not for WADs).
 3. LOAD_WAD; the payload proves the game starts on it in a child process, then switches (WadLoaded) or keeps
    flying what it had (WadLoadFailed). The tool shows WAD_IWAD / WAD_PWAD / WAD_LOADS, EPISODE and
    FRAMES_SENT, and saves the first whole frame from after the switch in out/.
@@ -241,10 +242,12 @@ def main():
                    help="the uplink directory on the spacecraft, as an absolute path (default %(default)s)")
     p.add_argument("--yamcs", default="localhost:8090")
     p.add_argument("--instance", default="fprime-project")
-    p.add_argument("--service", help="Yamcs file transfer service (default: FprimeFilePacketService, or cfdp with --cfdp)")
+    p.add_argument("--service", help="Yamcs file transfer service (default: cfdp if Yamcs runs it, else "
+                                     "FprimeFilePacketService)")
     p.add_argument("--cfdp", type=int, choices=(1, 2),
-                   help="send the file with CCSDS CFDP class 1 or 2 (Stage 2: the flight software runs cfdpManager), "
-                        "then COMMIT_WAD it into place once the transfer is known whole")
+                   help="send the file with CCSDS CFDP class 1 or 2 (the CFDP build: the flight software runs "
+                        "cfdpManager), then COMMIT_WAD it into place once the transfer is known whole. Default: class 2 "
+                        "when Yamcs runs a cfdp service. Class 1 has no retransmission: for trying it, not for WADs")
     p.add_argument("--bucket", default="wadUplink")
     p.add_argument("--out", default=str(ROOT / "out"), help="where the frame from after the switch goes")
     a = p.parse_args()
@@ -263,16 +266,26 @@ def main():
                    or (loading[1] and wu.name_problem(loading[1], "PWAD")) or (not a.no_load and wu.map_problem(a.map)))
         if problem:
             p.error(problem)
-    # With --cfdp, COMMIT_WAD names the .part on board, in a command string of at most 38 characters (FPP size 40
-    # less Yamcs's 2-byte length): NAME + "." + 13-digit milliseconds + ".part"
-    if a.cfdp and name and len(name) + 19 > wu.NAME_MAX:
-        p.error(f"with --cfdp the uplinked file name may be at most {wu.NAME_MAX - 19} characters "
-                f"(COMMIT_WAD carries NAME.<ms>.part in {wu.NAME_MAX}); --as a shorter one")
+
+    def check_cfdp_name():
+        # With CFDP, COMMIT_WAD names the .part on board, in a command string of at most 38 characters (FPP size 40
+        # less Yamcs's 2-byte length): NAME + "." + 13-digit milliseconds + ".part"
+        if a.cfdp and name and len(name) + 19 > wu.NAME_MAX:
+            p.error(f"with CFDP the uplinked file name may be at most {wu.NAME_MAX - 19} characters "
+                    f"(COMMIT_WAD carries NAME.<ms>.part in {wu.NAME_MAX}); --as a shorter one")
+    check_cfdp_name()
 
     link = Link(a.yamcs.replace("http://", ""), a.instance)
     if not link.wait(lambda: "CMDS_RECEIVED" in link.values and "WAD_IWAD" in link.values, 15):
         say("no telemetry from the spacecraft within 15 s: is the flight side up (scripts/flight.sh status)?")
         return 2
+    if a.wad and a.cfdp is None and not a.service:
+        # The build decides: the CFDP build's Yamcs runs a cfdp service, the native one FprimeFilePacketService
+        services = [s.name for s in link.client.get_file_transfer_client(a.instance).list_services()]
+        if "cfdp" in services:
+            a.cfdp = 2
+            say("Yamcs runs CFDP (the CFDP build): the file goes up as CFDP class 2")
+            check_cfdp_name()
     say(f"on board now: {link.value('WAD_IWAD')!r} {link.value('WAD_PWAD')!r}, loads {link.value('WAD_LOADS')}, "
         f"episode {link.value('EPISODE')}, frames sent {link.value('FRAMES_SENT')}")
 
