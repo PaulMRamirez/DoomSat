@@ -15,7 +15,7 @@ and the parameter archive alike), which makes this subscription the only place t
 - resubscribes when the stream goes quiet or the connection drops, because yamcs-client never reconnects.
 
 It writes nothing to Yamcs, so it cannot collide with the pilot's /DoomGround parameters, and nothing on the
-pilot side reads what it writes (tests/test_guard.py).
+pilot side reads what it writes (tests/test_sds_guard.py).
 
     scripts/sds.sh start runs it.  By hand:  uv run ground/sds/doomsat_sds/capture.py   (or python -m doomsat_sds.capture)
 """
@@ -54,7 +54,9 @@ class Capture:
         self.lock = threading.Lock()
         self.assembler = FrameAssembler(self._save)
         self.minute: str | None = None
-        self.last_chunk_mono = time.monotonic()
+        self.first_minute = True               # the minute the service started in is only part of a minute
+        self.last_chunk_mono: float | None = None   # when a chunk last arrived (None: never, since start)
+        self.subscribed_mono = time.monotonic()      # when the current subscription began
         self.last_image: dict = {}
         self.totals: dict = {}
         self.started = utc_stamp(int(time.time() * 1000))
@@ -103,14 +105,18 @@ class Capture:
             self.totals[k] = self.totals.get(k, 0) + v
         line = dict(sorted(counts.items()), minute=self.minute, subscriptions=self.subscriptions)
         if partial:
-            line["partial_minute"] = True
+            line["partial_minute"] = True          # stopped part-way through it
+        if self.first_minute:
+            line["started_mid_minute"] = True      # started part-way through it
+            self.first_minute = False
         with open(self.root / "stats.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(line, sort_keys=True) + "\n")
 
     def _write_status(self, now_ms: int) -> None:
         with self.lock:
-            status = {"updated_utc": utc_stamp(now_ms), "started_utc": self.started, "subscriptions": self.subscriptions,
-                      "seconds_since_last_chunk": round(time.monotonic() - self.last_chunk_mono, 1),
+            since = None if self.last_chunk_mono is None else round(time.monotonic() - self.last_chunk_mono, 1)
+            status = {"updated_utc": utc_stamp(now_ms), "updated_ms": now_ms, "started_utc": self.started,
+                      "subscriptions": self.subscriptions, "seconds_since_last_chunk": since,
                       "current_minute": dict(self.assembler.counts), "totals": dict(self.totals),
                       "in_flight": len(self.assembler.partial), "last_image": self.last_image}
         write_atomic(self.root / "status.json", (json.dumps(status, sort_keys=True, indent=1) + "\n").encode())
@@ -154,14 +160,14 @@ def main() -> int:
             sub = processor.create_parameter_subscription([config.FRAME_CHUNK], on_data=cap.on_data,
                                                           send_from_cache=False)
             cap.subscriptions += 1
-            cap.last_chunk_mono = time.monotonic()
+            cap.subscribed_mono = time.monotonic()
             with cap.lock:
                 cap.assembler.subscribed(time.monotonic())
             print("capture: subscribed (%d)" % cap.subscriptions, flush=True)
             while not stop.is_set() and not sub.done():
                 stop.wait(1)
                 cap.tick()
-                if time.monotonic() - cap.last_chunk_mono > QUIET_S:
+                if time.monotonic() - max(cap.last_chunk_mono or 0.0, cap.subscribed_mono) > QUIET_S:
                     print("capture: no chunks for %d s, resubscribing" % QUIET_S, flush=True)
                     break
                 if time.time() - last_prune > 600:
@@ -170,7 +176,10 @@ def main() -> int:
         except Exception as e:
             print("capture: %s: %s" % (type(e).__name__, str(e)[:200]), flush=True)
             stop.wait(5)
-            cap.tick()
+            try:
+                cap.tick()      # keep the minutes and status.json going while Yamcs is away
+            except Exception as e2:
+                print("capture: tick failed: %s" % e2, flush=True)
         finally:
             for closer in (lambda: sub and sub.cancel(), lambda: client and client.close()):
                 try:

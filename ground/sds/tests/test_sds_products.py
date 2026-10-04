@@ -59,6 +59,9 @@ GOLDEN = {
     "l1_episode@1.1.0 l2_summary@1.1.0": "20be54b46ffa127fe4c5d7f8881cf288189c09bf9ec430d3bd74353f45222a13",
     "l1_episode@1.1.0 l2_linkstats@1.1.0": "d8bc1b3e8a2b0643fd931d59d927c2a3a961e67f09548df11b8ea8f34895a76d",
     "l1_episode@1.1.0 l2_path@2.1.0": "f3498956a1481c8f9361af4b285d8b3c5626ea5300793b048274df334e542e56",
+    # 1.2.0: the ground system's own commands counted apart
+    "l1_episode@1.1.0 l2_summary@1.2.0": "3b4cea14371e756738ff410a2baf391450e33c1b91e3ab06694ecf0f761b90fc",
+    "l1_episode@1.1.0 l2_linkstats@1.2.0": "3a369e98405513eb3163929b2e1c076a5b96d3fe589711e1486bc27a8593a60f",
 }
 
 
@@ -535,12 +538,31 @@ class TestLinkstats(FixtureCase):
         st = products.build_linkstats(doc)
         self.assertEqual(st["status_stream"], {"step_tics": 3, "expected": 6, "received": 5, "missing": 1,
                                                "completeness": 0.8333, "max_gap_tics": 6})
-        self.assertEqual(st["uplink"], {"commands_sent": 2, "commands_received_on_board": 2, "completeness": 1.0})
+        self.assertEqual(st["uplink"], {"commands_sent": 2, "commands_received_on_board": 2, "completeness": 1.0,
+                                        "other_commands": {}})
         self.assertEqual(st["downlink"]["frames_sent"], 50)
         self.assertEqual(st["downlink"]["frames_per_s"], 5.0)
         self.assertEqual(st["downlink"]["tm_frames_received"], 900)
         self.assertEqual(st["downlink"]["chunks_sent"], None)
         self.assertEqual(st["payload_link_up_fraction"], 0.75)
+
+    def test_the_ground_systems_own_commands_are_not_the_payloads(self):
+        # Seen live: Phase D's SendFile for an earlier episode's record landed in the window of the episode then
+        # being flown, and was counted among its commands and against CMDS_RECEIVED, which only the Doom component
+        # increments. L1 keeps it (it is a command in the window); L2 reports it apart.
+        ep = episodes.ClosedEpisode(1, 20_001, "PlayerDied", "died", 10_000)
+        link = {"CMDS_RECEIVED": [(10_000, 9_050, 5), (19_000, 18_050, 7)]}
+        cmds = [{"t": t, "id": "c%d" % t, "name": config.NAMESPACE + "INTENT", "args": {}} for t in (11_000, 12_000)]
+        cmds.append({"t": 13_000, "id": "s", "name": config.SENDFILE, "args": {"sourceFileName": "x", "destFileName": "y"}})
+        doc = products.build_l1(ep, (10_000, 20_000), {"TIC": [(10_000, 9_050, 1)]}, link, cmds, [], {}, [])
+        self.assertEqual(len(doc["commands"]), 3)
+        st = products.build_linkstats(doc)
+        self.assertEqual(st["uplink"]["commands_sent"], 2)
+        self.assertEqual(st["uplink"]["completeness"], 1.0)
+        self.assertEqual(st["uplink"]["other_commands"], {config.SENDFILE: 1})
+        summary = products.build_summary(doc)
+        self.assertEqual(summary["commands"], {"INTENT": 2})
+        self.assertEqual(summary["other_commands"], {config.SENDFILE: 1})
 
     def test_sha256_matches_the_recorded_checksum(self):
         key = golden_key("l1_episode", "l2_linkstats")

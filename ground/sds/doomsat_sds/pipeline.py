@@ -58,19 +58,62 @@ def watch(settings: Settings, archive: Archive, catalog: Catalog, lookback_s: in
     at_ms = now_ms() if at_ms is None else at_ms
     scan_start = at_ms - (lookback_s + WATCH_MARGIN_S) * 1000
     events = archive.events(scan_start, at_ms, types=[config.EVENT_PREFIX + n for n in config.EPISODE_EVENTS])
+    known = [(e["number"], e["closing_ms"]) for e in catalog.episodes()
+             if catalog.current(e["episode_id"], "l1_episode") is not None]
     out = []
     for ep in closed_episodes(events, scan_start_ms=scan_start):
         if ep.end_ms < at_ms - lookback_s * 1000 or ep.end_ms > at_ms - SETTLE_S * 1000:
             continue
         if catalog.current(ep.episode_id, "l1_episode") is not None:
             continue
-        if ep.inferred:
-            # Only an inference from a start event: confirm the episode before it really was in progress.
-            s = archive.parameters(["EPISODE"], ep.end_ms - 10_000, ep.end_ms)["EPISODE"]
-            if not any(v == ep.number for _, _, v in s):
-                continue
+        # The same episode closed by a slightly different event (say the closure rules changed): already cataloged.
+        if any(n == ep.number and abs(t - ep.end_ms) <= SAME_EPISODE_MS for n, t in known):
+            continue
+        if ep.inferred and not confirmed(archive, ep):
+            continue
         out.append(ep.as_conf())
     return out
+
+
+SAME_EPISODE_MS = 10_000
+FORWARD_ATTEMPTS = 3
+
+
+def forward_run_id(episode_id: str, state, attempts: int = FORWARD_ATTEMPTS) -> tuple[str | None, str]:
+    """The run id to trigger for an episode, or None, with the reason.
+
+    `state(run_id)` is the state of an existing sds_forward run, or None if there is none. A run that is queued,
+    running or done is left alone; a failed one (Yamcs down through all its task retries, say) is followed by
+    fwd__<id>__retry1, then __retry2, and after that the episode is given up on for a person to look at.
+    """
+    for k in range(attempts):
+        run_id = "fwd__" + episode_id + ("" if k == 0 else "__retry%d" % k)
+        st = state(run_id)
+        if st is None:
+            return run_id, "new" if k == 0 else "retry %d" % k
+        if st != "failed":
+            return None, "%s is %s" % (run_id, st)
+    return None, "gave up after %d failed runs" % attempts
+
+
+def confirmed(archive: Archive, ep: ClosedEpisode) -> bool:
+    """Is an inferred closure real? Checked against the archived EPISODE and TIC samples around it."""
+    if ep.closing == "PayloadConnected":
+        # A payload restart starts the game again: TIC falls back, or EPISODE changes. A socket drop and reconnect
+        # carries on with the same episode and a TIC that keeps rising: no closure.
+        s = archive.parameters(["EPISODE", "TIC"], ep.end_ms - 30_000, ep.end_ms + 30_000)
+        before = [(t, v) for t, _, v in s["TIC"] if t <= ep.end_ms]
+        after = [(t, v) for t, _, v in s["TIC"] if t > ep.end_ms]
+        if not before or before[-1][1] is None:
+            return False
+        if not after:
+            return True                          # nothing after it: that game is over
+        if after[0][1] < before[-1][1]:
+            return True
+        return any(t > ep.end_ms and v != ep.number for t, _, v in s["EPISODE"])
+    # Only an inference from a start event: confirm the episode before it really was in progress.
+    s = archive.parameters(["EPISODE"], ep.end_ms - 10_000, ep.end_ms)["EPISODE"]
+    return any(v == ep.number for _, _, v in s)
 
 
 # ------------------------------------------------------------------------------------------------ locate
@@ -94,11 +137,23 @@ def locate_episode(archive: Archive, conf: dict) -> dict:
 
 # ------------------------------------------------------------------------------------------------ level 1
 
-def make_l1(settings: Settings, archive: Archive, located: dict, context: dict) -> tuple[dict, bytes]:
-    """Read the archive for one located episode and build its L1 document (not written anywhere yet)."""
+def make_l1(settings: Settings, archive: Archive, located: dict, context: dict,
+            like: list | None = None) -> tuple[dict, bytes]:
+    """Read the archive for one located episode and build its L1 document (not written anywhere yet).
+
+    `like` is an earlier L1's `inputs`: when given (reprocessing), the archive is asked for exactly what that L1
+    asked for, under the same source name, so a renamed host or another Yamcs address does not make an episode
+    look unreproducible.
+    """
     ep = ClosedEpisode.from_conf(located)
     start, end = located["window"]
-    ground = link_parameters(archive.server_id())[0]
+    earlier = next((i for i in like or [] if i.get("kind") == "parameters"), None)
+    if earlier is not None:
+        ground = earlier["names"][-1]
+        source = earlier["source"]
+    else:
+        ground = link_parameters(archive.server_id())[0]
+        source = "yamcs:%s/%s" % (settings.yamcs, settings.instance)
     names = list(config.SCIENCE) + list(config.LINK) + [ground]
     series = archive.parameters(names, start, end + 1)
     science = {n: series[n] for n in config.SCIENCE}
@@ -107,7 +162,6 @@ def make_l1(settings: Settings, archive: Archive, located: dict, context: dict) 
     off = products.clock_offset(science)["tm_minus_ground_ms"]
     commands = archive.commands(start - off - 2000, end - off + 2000)
     events = archive.events(start, end + END_PAD_MS + 1, types=list(L1_EVENTS))
-    source = "yamcs:%s/%s" % (settings.yamcs, settings.instance)
     inputs = [
         {"source": source, "kind": "parameters", "names": names, "start": iso(start), "stop": iso(end + 1)},
         {"source": source, "kind": "command_history", "start": iso(start - off - 2000), "stop": iso(end - off + 2000)},
@@ -212,7 +266,8 @@ def reprocess(settings: Settings, archive: Archive, catalog: Catalog, episode_id
     located = {"number": row["number"], "end_ms": row["closing_ms"], "closing": row["closing_event"],
                "outcome": row["outcome"], "start_event_ms": row["start_event_ms"],
                "inferred": bool(row["inferred_close"]), "window": [row["start_ms"], row["end_ms"]]}
-    doc, data = make_l1(settings, archive, located, row["context"])
+    earlier = catalog.current(episode_id, "l1_episode")
+    doc, data = make_l1(settings, archive, located, row["context"], like=earlier["inputs"] if earlier else None)
     ver = products.version("l1_episode")
     pid = f"{episode_id}/l1_episode@{ver}"
     old = catalog.product(pid)
@@ -236,12 +291,15 @@ def reprocess(settings: Settings, archive: Archive, catalog: Catalog, episode_id
     for t in types:
         existing = catalog.product(f"{episode_id}/{t}@{products.version(t)}")
         if existing is not None:
-            if pid not in [i.get("product_id") for i in existing["inputs"]]:
+            sources = [(i.get("product_id"), i.get("sha256")) for i in existing["inputs"]]
+            if pid not in [p for p, _ in sources]:
                 report["stale"].append(t)            # made from another L1 version: bump t's version to rebuild
                 continue
-            if report["l1"].startswith("reproduced"):
-                report["up_to_date"].append(t)
+            if (pid, l1_ref["sha256"]) in sources:
+                report["up_to_date"].append(t)       # made from these very bytes
                 continue
+            # Same L1 version, other bytes: either the archive now reads differently (L1 not reproduced), or an
+            # earlier campaign built this L2 from an L1 that did not reproduce and the cataloged L1 is back.
         report["built"].append(l2(settings, catalog, l1_ref, t, run_id)["product_id"])
     return report
 
@@ -282,6 +340,7 @@ def quicklook(settings: Settings, catalog: Catalog, run_id: str | None = None, a
     stamp = dt.datetime.fromtimestamp(at_ms / 1000, tz=dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     status_path = settings.capture / "status.json"
     status = json.loads(status_path.read_text()) if status_path.exists() else None
+    status_age = (now_ms() - status["updated_ms"]) / 1000 if status and status.get("updated_ms") else None
     window = ql.last_minutes(settings.capture / "stats.jsonl", stamp[:13])
     realtime, links, frames_sent, problems = {}, {}, None, []
     try:
@@ -297,14 +356,15 @@ def quicklook(settings: Settings, catalog: Catalog, run_id: str | None = None, a
         for link in arch.client.list_links(settings.instance):
             links[link.name] = {"status": link.status, "in": link.in_count, "out": link.out_count}
         if window["minutes"]:
-            first = dt.datetime.strptime(window["minutes"][0], "%Y%m%dT%H%M").replace(tzinfo=dt.timezone.utc)
-            last = dt.datetime.strptime(window["minutes"][-1], "%Y%m%dT%H%M").replace(tzinfo=dt.timezone.utc)
-            w0, w1 = int(first.timestamp() * 1000), int(last.timestamp() * 1000) + 60_000
-            s = arch.parameters(["FRAMES_SENT"], w0 - 5_000, w1 + 5_000)["FRAMES_SENT"]
-            frames_sent = frames_sent_between(s, w0, w1)
+            # Over exactly the minutes the capture counts cover: a minute it missed must not count against it.
+            starts = [int(dt.datetime.strptime(m, "%Y%m%dT%H%M").replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
+                      for m in window["minutes"]]
+            s = arch.parameters(["FRAMES_SENT"], starts[0] - 5_000, starts[-1] + 65_000)["FRAMES_SENT"]
+            parts = [frames_sent_between(s, m0, m0 + 60_000) for m0 in starts]
+            frames_sent = sum(parts) if all(p is not None for p in parts) else None
     except Exception as e:
         problems.append("%s: %s" % (type(e).__name__, str(e)[:200]))
-    h = ql.health(stamp, status, window, realtime, links, frames_sent)
+    h = ql.health(stamp, status, window, realtime, links, frames_sent, status_age)
     h["problems"] = problems
     h["product"]["version"] = products.version("ql_health")
     sheet = ql.contact_sheet(ql.latest_frames(settings.capture), h)

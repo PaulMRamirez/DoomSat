@@ -7,7 +7,10 @@ There is no "episode over" message. The payload sends STATUS records; F´ turns 
 - EPISODE restarts at 1 when the payload restarts, so the number alone is not an identity.
 
 So an episode is *closed* by PlayerDied or LevelFinished, or else by the next EpisodeStarted (outcome
-"reset" when the number goes up by one, "interrupted" otherwise), and its *window* comes from the archived
+"reset" when the number goes up by one, "interrupted" otherwise), or by PayloadConnected, which F´ logs when the
+payload (re)connects (outcome "interrupted"; a restart that keeps the number 1 -> 1 logs no EpisodeStarted, and a
+mere socket drop reconnects too, so that closure is an inference the caller confirms from TIC and EPISODE). Its
+*window* comes from the archived
 EPISODE and TIC samples rather than from events: the contiguous run of EPISODE == n that ends at the closing
 event. Its id is the closing event's time and the number, which is unique, sortable and stable however often
 the archive is read.
@@ -38,7 +41,7 @@ class ClosedEpisode:
     closing: str                    # PlayerDied | LevelFinished | EpisodeStarted
     outcome: str                    # died | level_finished | reset | interrupted
     start_event_ms: int | None      # its EpisodeStarted, when that was archived
-    inferred: bool = False          # closed by a start whose predecessor these events never showed
+    inferred: bool = False          # an inference to confirm against samples (lost predecessor, or a reconnect)
 
     @property
     def episode_id(self) -> str:
@@ -82,6 +85,11 @@ def closed_episodes(events: list[dict], scan_start_ms: int | None = None) -> lis
     open_closed = False                # has it already had its PlayerDied / LevelFinished?
     for e in sorted(events, key=lambda e: (e["t"], e.get("seq") or 0)):
         name = e["type"].rsplit(".", 1)[-1]
+        if name == "PayloadConnected":
+            if open_n is not None and not open_closed:
+                out.append(ClosedEpisode(open_n, e["t"], "PayloadConnected", "interrupted", open_start, inferred=True))
+            open_n, open_start, open_closed = None, None, False     # whatever comes next belongs to a new start
+            continue
         n = _number(e)
         if n is None:
             continue

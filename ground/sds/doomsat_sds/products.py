@@ -26,8 +26,10 @@ ALGORITHMS = {
     # An L1 change reaches every L2, so their versions move with it; reprocess never rebuilds an L2 in place.
     "l1_episode": ("L1", "1.1.0", "json", "application/json"),
     "l2_path": ("L2", "2.1.0", "png", "image/png"),         # 2.0.0: Phase C, see build_path_png
-    "l2_summary": ("L2", "1.1.0", "json", "application/json"),
-    "l2_linkstats": ("L2", "1.1.0", "json", "application/json"),
+    # 1.2.0: commands counted are the payload's (the Doom component's); the ground system's own, such as a SendFile
+    # that asked for an earlier episode's record, are reported apart and kept out of uplink completeness.
+    "l2_summary": ("L2", "1.2.0", "json", "application/json"),
+    "l2_linkstats": ("L2", "1.2.0", "json", "application/json"),
     "l3_rollup": ("L3", "1.0.0", "json", "application/json"),
     "ql_health": ("QL", "1.0.0", "json", "application/json"),
     "ql_contact_sheet": ("QL", "1.0.0", "png", "image/png"),
@@ -157,6 +159,17 @@ def _last(seq, default=None):
     return seq[-1][1] if seq else default
 
 
+def payload_commands(l1: dict) -> list[dict]:
+    """The commands in the window addressed to the Doom component, the only ones CMDS_RECEIVED counts."""
+    return [c for c in l1["commands"] if c["name"].startswith(config.NAMESPACE)]
+
+
+def other_commands(l1: dict) -> dict:
+    """Commands in the window to anything else (the ground system's own, such as FileDownlink SendFile)."""
+    return dict(sorted(Counter(c["name"] for c in l1["commands"] if not c["name"].startswith(config.NAMESPACE))
+                       .items()))
+
+
 # --------------------------------------------------------------------------------------------- level 2
 
 def build_summary(l1: dict) -> dict:
@@ -165,7 +178,7 @@ def build_summary(l1: dict) -> dict:
     health = [v for _, v in column(l1, "HEALTH")]
     pts = path_points(l1)
     dist = sum(math.hypot(b[1] - a[1], b[2] - a[2]) for a, b in zip(pts, pts[1:]))
-    cmds = Counter(c["name"].rsplit("/", 1)[-1] for c in l1["commands"])
+    cmds = Counter(c["name"].rsplit("/", 1)[-1] for c in payload_commands(l1))
     return {
         "product": {"type": "l2_summary", "level": "L2", "version": version("l2_summary")},
         "episode_id": ep["id"], "number": ep["number"], "outcome": ep["outcome"],
@@ -179,6 +192,7 @@ def build_summary(l1: dict) -> dict:
         "distance_units": round(dist, 1),
         "path_points": len(pts),
         "commands": dict(sorted(cmds.items())),
+        "other_commands": other_commands(l1),
         "wad": l1["context"].get("wad"), "map": l1["context"].get("map"),
         "skill": l1["context"].get("skill"), "pilot_mode": l1["context"].get("pilot_mode"),
         "inputs": [l1["episode"]["id"] + "/l1_episode@" + l1["product"]["version"]],
@@ -209,7 +223,7 @@ def build_linkstats(l1: dict) -> dict:
     cmds_rx = column(l1, "CMDS_RECEIVED", "housekeeping")
     link = [v for _, v in column(l1, "PAYLOAD_LINK", "housekeeping")]
     tm_in = column(l1, GROUND_LINK, "housekeeping")
-    sent = len(l1["commands"])
+    sent = len(payload_commands(l1))
     rx = _delta(cmds_rx)
     return {
         "product": {"type": "l2_linkstats", "level": "L2", "version": version("l2_linkstats")},
@@ -223,7 +237,8 @@ def build_linkstats(l1: dict) -> dict:
                      "tm_frames_received": _delta(tm_in),
                      "tm_frames_per_s": round(_delta(tm_in) / dur, 2) if _delta(tm_in) is not None else None},
         "uplink": {"commands_sent": sent, "commands_received_on_board": rx,
-                   "completeness": round(rx / sent, 4) if sent and rx is not None else None},
+                   "completeness": round(rx / sent, 4) if sent and rx is not None else None,
+                   "other_commands": other_commands(l1)},
         "payload_link_up_fraction": round(sum(1 for v in link if v is True) / len(link), 4) if link else None,
         "sample_rate_hz": {n: round(c / dur, 2) for n, c in sorted(l1["counts"]["samples"].items())},
         "clock": l1["clock"],

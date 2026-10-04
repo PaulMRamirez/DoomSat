@@ -51,8 +51,11 @@ pilot) is only known if the processes that flew them are still running; otherwis
 Frames are another matter: they are never archived, so frames from a time the capture service was down are gone.
 
 In a cloud VM that pauses when idle, every background process stops: run `scripts/flight.sh status` and
-`scripts/sds.sh status`, and start whatever is down. Restarting the SDS can fail a task that was mid-flight
-(it cannot report back while the API server restarts); clear it in the UI or let the next run catch up.
+`scripts/sds.sh status`, and start whatever is down. `stop` (which `start` also runs first) stops the scheduler
+and triggerer before the API server, so tasks in flight can finish and report, and it signals only the process
+sessions it started itself (a pid file is trusted only while the process's start time still matches), never
+anything matched by name. A forward run that fails for good is retried twice by the watcher
+(`fwd__<id>__retry1`, `__retry2`); after that a `forward_failed` finding asks a person to look.
 
 Airflow's UI and API are on http://127.0.0.1:8080 with no login (local only). The CLI with the right
 environment is `scripts/sds.sh airflow ...`, e.g. `scripts/sds.sh airflow dags list-runs sds_forward`.
@@ -82,7 +85,9 @@ payload's status, and they have gaps: a flight's first `EpisodeStarted` fires be
 episode ended by `RESET_GAME` has no end event, and `EPISODE` restarts at 1 with the payload. So:
 
 - an episode is **closed** by `PlayerDied` / `LevelFinished`, or by the next `EpisodeStarted` (outcome `reset`,
-  or `interrupted` when the payload restarted);
+  or `interrupted` when the payload restarted), or by `PayloadConnected`, which F´ logs when a restarted payload
+  reconnects (outcome `interrupted`; a restart that keeps the number at 1 logs no `EpisodeStarted` at all). That
+  last one is checked against the samples first, because a mere socket drop also reconnects;
 - its **window** is the contiguous run of archived `EPISODE == n` samples ending at the closing event (a silence of
   over 30 s or `TIC` going backwards breaks a run);
 - its **id** is the closing time and the number: `20261004T004611Z-e0001`.
@@ -125,8 +130,11 @@ scripts/sds.sh catalog sql "SELECT outcome, COUNT(*) FROM episodes GROUP BY 1"
 Bump a version in `ALGORITHMS`, then `scripts/sds.sh airflow dags trigger sds_reprocess` (optionally
 `-c '{"episodes": [...], "types": ["l2_path"]}'`). Each episode's L1 is rebuilt from the archive with the
 cataloged window and context, and must reproduce its cataloged checksum; a mismatch is a finding and the rebuilt
-file is kept beside the original, never over it. The new L2 versions become current, the old ones stay.
-`l2_path` 2.0.0 is the first such campaign: it breaks the line at teleports and colours the path by time.
+file is kept beside the original, never over it. The new L2 versions become current, the old ones stay. An L2
+counts as up to date only if it was built from the current L1's exact bytes; one left at its version while L1
+moved to a new version is reported as stale and never rebuilt in place (bump its version too: an L1 change is a
+new processing baseline). Two campaigns have run so far: `l2_path` 2.0.0 (breaks the line at teleports, colours
+the path by time), and the 1.1.0 baseline after L1 stopped losing samples that share a time tag.
 
 ## Publishing (Phase E)
 
@@ -141,8 +149,11 @@ curl -s "http://localhost:8090/api/timeline/fprime-project/items?source=rdb&deta
 curl -s "http://localhost:8090/api/storage/buckets/doomsat-sds/objects?prefix=episodes/"
 ```
 
-L1 records are not copied: at about 3 KB per second of play they would fill the bucket's default 100 MB after a
-few hundred episodes.
+The bucket holds current products only: publishing an episode deletes its copies of superseded versions (they
+stay in the product store and the catalog). That is three objects per episode, so the default cap of 1000 objects
+is reached at about 330 episodes; give the bucket a larger `maxObjects` in Yamcs's configuration before that. L1
+records are not copied: at about 3 KB per second of play they would fill the default 100 MB after a few hundred
+episodes.
 
 Every product written also appends an OpenLineage `RunEvent` to `$DOOMSAT_HOME/sds/lineage/openlineage.jsonl`
 (inputs, output, checksum, Airflow run, code commit), so run history and lineage can be read without opening

@@ -17,6 +17,11 @@ from pathlib import Path
 
 from .config import Settings
 
+# The process umask, read once at import while the process is still single-threaded. Reading it means setting it,
+# and the capture service writes from two threads, so it must never be read again at run time.
+_UMASK = os.umask(0)
+os.umask(_UMASK)
+
 
 def canonical_json(obj) -> bytes:
     """The one way products are serialised, so equal content means equal bytes and an equal checksum."""
@@ -43,9 +48,7 @@ def write_atomic(path: str | Path, data: bytes) -> Path:
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
-        umask = os.umask(0)
-        os.umask(umask)
-        os.chmod(tmp, 0o666 & ~umask)      # mkstemp makes 0600; products are for reading
+        os.chmod(tmp, 0o666 & ~_UMASK)     # mkstemp makes 0600; products are for reading
         os.replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):

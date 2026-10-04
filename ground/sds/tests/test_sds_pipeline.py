@@ -546,3 +546,87 @@ class TestLineage(PipelineCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestConfirmedClosures(unittest.TestCase):
+    """An inferred closure is acted on only once the samples bear it out."""
+
+    def stub(self, tic, episode):
+        return StubArchive([], {"TIC": [(t, None, v) for t, v in tic], "EPISODE": [(t, None, v) for t, v in episode]})
+
+    def test_a_payload_restart_is_confirmed_by_tic_falling_back(self):
+        ep = episodes.ClosedEpisode(3, 100_000, "PayloadConnected", "interrupted", None, inferred=True)
+        restart = self.stub([(90_000, 5_000), (99_000, 5_030), (101_000, 4), (102_000, 7)],
+                            [(90_000, 3), (99_000, 3), (101_000, 1), (102_000, 1)])
+        self.assertTrue(pipeline.confirmed(restart, ep))
+
+    def test_a_socket_drop_that_carries_on_is_not_a_closure(self):
+        ep = episodes.ClosedEpisode(3, 100_000, "PayloadConnected", "interrupted", None, inferred=True)
+        drop = self.stub([(90_000, 5_000), (99_000, 5_030), (101_000, 5_090)],
+                         [(90_000, 3), (99_000, 3), (101_000, 3)])
+        self.assertFalse(pipeline.confirmed(drop, ep))
+
+    def test_a_restart_with_nothing_after_it_ends_the_game(self):
+        ep = episodes.ClosedEpisode(3, 100_000, "PayloadConnected", "interrupted", None, inferred=True)
+        self.assertTrue(pipeline.confirmed(self.stub([(99_000, 5_030)], [(99_000, 3)]), ep))
+
+    def test_an_inferred_reset_needs_the_episode_in_progress(self):
+        ep = episodes.ClosedEpisode(4, 100_000, "EpisodeStarted", "reset", None, inferred=True)
+        self.assertTrue(pipeline.confirmed(self.stub([], [(95_000, 4)]), ep))
+        self.assertFalse(pipeline.confirmed(self.stub([], [(95_000, 2)]), ep))
+
+
+class TestReprocessRepairs(PipelineCase):
+    def test_l2s_built_from_an_l1_that_did_not_reproduce_are_rebuilt_once_it_does(self):
+        # Review finding: an L2 rebuilt from a rebuilt L1 (the archive misread once) kept the L1's product id, so
+        # once the archive read correctly again the L2 counted as up to date and never matched its L1 again.
+        refs = self.forward()
+        health = self.archive.parameters(["HEALTH"], EP2_WINDOW[0], EP2_WINDOW[1] + 1)["HEALTH"]
+        misread = PerturbedArchive(self.archive, "HEALTH", health[-1][0], health[-1][2] + 7)
+        bad = pipeline.reprocess(self.settings, misread, self.catalog, EP2_ID)
+        self.assertTrue(bad["l1"].startswith("NOT"), bad["l1"])
+        good = pipeline.reprocess(self.settings, self.archive, self.catalog, EP2_ID)
+        self.assertTrue(good["l1"].startswith("reproduced"), good["l1"])
+        # Only the summary reads HEALTH: the path and link statistics rebuilt from the misread L1 came out
+        # byte-identical, were registered as unchanged and kept their original input, so only the summary is repaired.
+        self.assertEqual(good["built"], ["%s/l2_summary@%s" % (EP2_ID, products.version("l2_summary"))])
+        l1_sha = refs[EP2_ID]["l1"]["sha256"]
+        for t in products.L2_TYPES:
+            row = self.catalog.current(EP2_ID, t)
+            self.assertEqual([i["sha256"] for i in row["inputs"]], [l1_sha], t)
+            self.assertEqual(row["sha256"], refs[EP2_ID]["l2"][t]["sha256"], t)   # the forward bytes, exactly
+        again = pipeline.reprocess(self.settings, self.archive, self.catalog, EP2_ID)
+        self.assertEqual((again["built"], again["up_to_date"]), ([], list(products.L2_TYPES)))
+
+    def test_reprocessing_asks_the_archive_what_the_forward_run_asked(self):
+        # Review finding: a renamed host (Yamcs serverId) or another Yamcs address made every episode look
+        # unreproducible, because the rebuild named the archive differently from the forward run.
+        self.forward()
+        renamed = PerturbedArchive(self.archive, "nothing", 0, None)
+        renamed.server_id = lambda: "another-host"
+        self.settings.yamcs = "127.0.0.1:8090"
+        report = pipeline.reprocess(self.settings, renamed, self.catalog, EP2_ID)
+        self.assertTrue(report["l1"].startswith("reproduced"), report["l1"])
+
+
+class TestForwardRunIds(unittest.TestCase):
+    """A failed forward run used to block its episode for good: the watcher kept triggering the same run id, which
+    Airflow skips because it exists, whatever its state."""
+
+    def test_new_running_done_failed_and_given_up(self):
+        runs = {}
+        state = runs.get
+        self.assertEqual(pipeline.forward_run_id("E", state), ("fwd__E", "new"))
+        for st in ("queued", "running", "success"):
+            runs["fwd__E"] = st
+            self.assertEqual(pipeline.forward_run_id("E", state)[0], None, st)
+        runs["fwd__E"] = "failed"
+        self.assertEqual(pipeline.forward_run_id("E", state), ("fwd__E__retry1", "retry 1"))
+        runs["fwd__E__retry1"] = "running"
+        self.assertIsNone(pipeline.forward_run_id("E", state)[0])
+        runs["fwd__E__retry1"] = "failed"
+        self.assertEqual(pipeline.forward_run_id("E", state)[0], "fwd__E__retry2")
+        runs["fwd__E__retry2"] = "failed"
+        run_id, why = pipeline.forward_run_id("E", state)
+        self.assertIsNone(run_id)
+        self.assertTrue(why.startswith("gave up"), why)

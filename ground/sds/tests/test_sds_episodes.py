@@ -361,3 +361,34 @@ class RecordedFlightTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PayloadRestartTest(unittest.TestCase):
+    """A payload restart (scripts/flight.sh payload) ends the episode in progress without a death or an exit, and
+    when the new payload's first episode has the number the old one had (1 -> 1), F' logs no EpisodeStarted at all.
+    Its PayloadConnected is then the only trace: without it the old episode was never cataloged, and the new
+    episode's death was dropped as a repeat of the old one's."""
+
+    def connected(self, t):
+        return {"t": t, "type": config.EVENT_PREFIX + "PayloadConnected", "extra": {}, "seq": None,
+                "source": config.EVENT_SOURCE}
+
+    def test_a_restart_during_episode_one_closes_it_and_the_next_death_counts(self):
+        out = closed_episodes([ev(1_000, "EpisodeStarted", 1), self.connected(300_000),
+                               ev(360_000, "PlayerDied", 1, tic=2_000)])
+        self.assertEqual([(e.number, e.closing, e.outcome, e.inferred) for e in out],
+                         [(1, "PayloadConnected", "interrupted", True), (1, "PlayerDied", "died", False)])
+        self.assertEqual(out[0].start_event_ms, 1_000)
+        self.assertIsNone(out[1].start_event_ms)       # the old start does not belong to the new episode
+        self.assertNotEqual(out[0].episode_id, out[1].episode_id)
+
+    def test_a_restart_in_the_pause_after_a_death(self):
+        out = closed_episodes([ev(1_000, "EpisodeStarted", 1), ev(60_000, "PlayerDied", 1, tic=900),
+                               self.connected(61_000), ev(90_000, "PlayerDied", 1, tic=800)])
+        self.assertEqual([(e.number, e.end_ms) for e in out], [(1, 60_000), (1, 90_000)])
+
+    def test_a_reconnect_with_nothing_open_closes_nothing(self):
+        self.assertEqual(closed_episodes([self.connected(5_000), ev(9_000, "EpisodeStarted", 1)]), [])
+
+    def test_the_watch_asks_for_payload_connected(self):
+        self.assertIn("PayloadConnected", config.EPISODE_EVENTS)

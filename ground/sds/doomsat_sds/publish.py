@@ -11,8 +11,11 @@ The REST API is used directly: yamcs-client 2.1.0 cannot create Timeline items o
 a PUT that only updates, with field numbers the server reads differently).
 
 Bucket limits on 5.12.8: 1000 objects and 100 MB by default; a deleted bucket turns into an undeletable ghost, so
-the bucket is created once and only objects are replaced. L1 records are not copied (about 3 KB per second of
-play, they would fill 100 MB after a few hundred episodes); displays need the L2 and L3 products.
+the bucket is created once and only objects are replaced. The bucket holds the current products only: publishing
+an episode deletes its copies of versions that are no longer current (they stay in the product store and the
+catalog), so it holds three objects per episode, about 330 episodes before the default cap; past that, give the
+bucket a larger maxObjects in Yamcs's configuration. L1 records are not copied (about 3 KB per second of play,
+they would fill 100 MB after a few hundred episodes); displays need the L2 and L3 products.
 """
 from __future__ import annotations
 
@@ -97,6 +100,16 @@ class Yamcs:
                            files={name: (name.rsplit("/", 1)[-1], data, content_type)}, timeout=30)
         r.raise_for_status()
 
+    def names(self, prefix: str) -> list[str]:
+        r = self.http.get("%s/storage/buckets/%s/objects" % (self.base, BUCKET), params={"prefix": prefix}, timeout=10)
+        r.raise_for_status()
+        return [o["name"] for o in r.json().get("objects", [])]
+
+    def delete(self, name: str) -> None:
+        r = self.http.delete("%s/storage/buckets/%s/objects/%s" % (self.base, BUCKET, name), timeout=10)
+        if r.status_code != 404:
+            r.raise_for_status()
+
     def ensure_band(self) -> None:
         r = self.http.get("%s/timeline/%s/bands" % (self.base, self.instance), timeout=10)
         r.raise_for_status()
@@ -140,8 +153,12 @@ def publish_episode(settings: Settings, catalog: Catalog, episode_id: str, yamcs
     summary = json.loads(Path(current["l2_summary"]["path"]).read_text()) if "l2_summary" in current else None
     yamcs.ensure_band()
     saved = yamcs.save_item(timeline_item(settings, episode, current, summary))
+    keep = {object_name(r) for r in current.values()}
+    removed = [n for n in yamcs.names("episodes/%s/" % episode_id) if n not in keep]
+    for n in removed:
+        yamcs.delete(n)                         # superseded versions: the bucket holds what is current
     return {"episode_id": episode_id, "item_id": saved.get("id"), "item_name": saved.get("name"),
-            "objects": [object_name(r) for r in current.values()]}
+            "objects": sorted(keep), "removed": removed}
 
 
 def publish_file(settings: Settings, name: str, path: str | Path, content_type: str, yamcs: Yamcs | None = None) -> str:

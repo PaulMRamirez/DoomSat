@@ -24,9 +24,11 @@ FRAME_CHUNK = NAMESPACE + "FRAME_CHUNK"
 # event_type of "<component path>.<event name>" (fprime_yamcs/events/processor.py).
 EVENT_SOURCE = "FPrimeEventProcessor"
 EVENT_PREFIX = "DoomSat.doom."
-EPISODE_EVENTS = ("EpisodeStarted", "PlayerDied", "LevelFinished")
+# PayloadConnected marks a payload (re)start: an episode in progress then ended without a death or an exit, and a
+# restart that keeps the same episode number (1 -> 1) produces no EpisodeStarted at all.
+EPISODE_EVENTS = ("EpisodeStarted", "PlayerDied", "LevelFinished", "PayloadConnected")
 
-# Commands the pipelines may send. Only Phase D sends anything, and only this.
+# The only command the pipelines may ever send, from a module named for records; none is sent by default.
 SENDFILE = "/DoomSat_DoomSat/FileHandling/fileDownlink/SendFile"
 
 

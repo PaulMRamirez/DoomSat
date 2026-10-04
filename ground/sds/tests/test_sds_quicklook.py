@@ -22,6 +22,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -139,15 +140,16 @@ class LastMinutes(TempHome):
         self.assertEqual(w["frames_complete"], 4 + 8 + 16 + 32 + 64)
         self.assertEqual(ql.last_minutes(self.stats, "20261004T0101", minutes=2)["frames_complete"], 32 + 64)
 
-    def test_a_shutdown_row_for_an_unfinished_minute_is_left_out(self):
-        # The service stopped at 00:59:20 (partial row) and came back at 00:59:40 (a full row for the rest of 00:59).
+    def test_a_minute_the_service_was_down_for_part_of_is_left_out(self):
+        # The service stopped at 00:59:20 (a partial row) and came back at 00:59:40. Neither row covers the whole
+        # minute, so 00:59 is not counted at all: counting it would compare 40 s of frames with 60 s sent on board.
         self.write_stats([stats_row("20261004T0058", partial=True, frames_complete=100),
                           stats_row("20261004T0059", partial=True, frames_complete=7),
                           stats_row("20261004T0059", frames_complete=3),
                           stats_row("20261004T0100", frames_complete=5)])
         w = ql.last_minutes(self.stats, "20261004T0101")
-        self.assertEqual(w["frames_complete"], 8)
-        self.assertEqual(w["minutes"], ["20261004T0059", "20261004T0100"])
+        self.assertEqual(w["frames_complete"], 5)
+        self.assertEqual(w["minutes"], ["20261004T0100"])
 
     def test_torn_and_garbled_lines_are_skipped(self):
         self.write_stats(["", "not json at all", stats_row("20261004T0059", frames_complete=4, chunks=40),
@@ -210,6 +212,7 @@ class WhatTheCaptureServiceWritesIsWhatTheQuicklookReads(TempHome):
     def setUp(self):
         super().setUp()
         self.cap = capture.Capture(self.settings)
+        self.cap.first_minute = False          # as if it had been running before 01:00
         a = self.cap.assembler
         self.cap.minute = "20261004T0100"
         a.subscribed(100.0)
@@ -228,6 +231,7 @@ class WhatTheCaptureServiceWritesIsWhatTheQuicklookReads(TempHome):
         # 01:01: one more frame, then the service stops part-way through the minute.
         self.cap.minute = "20261004T0101"
         a.add(chunk(10, 0, 1, b"\xff\xd8 ten \xff\xd9"), EXAMPLE_MS + 30000, 111.0)
+        self.cap.last_chunk_mono = time.monotonic()      # what on_data records with each chunk
         self.cap.shutdown()
 
     def test_every_count_the_quicklook_sums_is_one_the_service_writes(self):
@@ -247,6 +251,22 @@ class WhatTheCaptureServiceWritesIsWhatTheQuicklookReads(TempHome):
         self.assertEqual(found[0].parent, self.settings.capture / "frames" / "20261004" / "01")
         self.assertEqual(found[0].read_bytes(), b"\xff\xd8 frame six \xff\xd9")
         self.assertTrue(list((self.settings.capture / "maps").rglob("*.png")), "the map went to maps/")
+
+    def test_a_service_that_has_received_nothing_says_so(self):
+        fresh = capture.Capture(config.Settings(home=self.tmp / "fresh", doomsat_home=self.tmp))
+        fresh._write_status(EXAMPLE_MS)
+        status = json.loads((fresh.root / "status.json").read_text())
+        self.assertIsNone(status["seconds_since_last_chunk"])    # not 0: nothing has ever arrived
+        self.assertEqual(health(capture_status=status)["verdicts"]["capture"], "NO-GO")
+
+    def test_the_minute_the_service_started_in_is_not_a_whole_minute(self):
+        fresh = capture.Capture(config.Settings(home=self.tmp / "fresh", doomsat_home=self.tmp))
+        fresh.minute = "20261004T0105"
+        fresh._close_minute()
+        fresh.minute = "20261004T0106"
+        fresh._close_minute()
+        w = ql.last_minutes(fresh.root / "stats.jsonl", "20261004T0107")
+        self.assertEqual(w["minutes"], ["20261004T0106"])
 
     def test_the_status_file_feeds_the_capture_verdict(self):
         status = json.loads((self.settings.capture / "status.json").read_text())
@@ -289,7 +309,15 @@ class Health(unittest.TestCase):
             self.assertEqual(h["verdicts"]["capture"], verdict, status)
             self.assertEqual(h["go"], verdict == "GO")
         h = health(capture_status=None)                     # the service never wrote status.json
-        self.assertEqual(h["capture"], {"seconds_since_last_chunk": None, "subscriptions": None, "in_flight": None})
+        self.assertEqual(h["capture"], {"seconds_since_last_chunk": None, "subscriptions": None, "in_flight": None,
+                                        "status_age_s": None})
+
+    def test_a_status_file_left_behind_by_a_dead_service_is_no_go(self):
+        status = {"seconds_since_last_chunk": 0.4}
+        self.assertEqual(health(capture_status=status, status_age_s=10.0)["verdicts"]["capture"], "GO")
+        h = health(capture_status=status, status_age_s=ql.STATUS_STALE_S + 1)
+        self.assertEqual(h["verdicts"]["capture"], "NO-GO")
+        self.assertEqual(h["capture"]["status_age_s"], ql.STATUS_STALE_S + 1)
 
     def test_downlink_and_uplink_are_the_link_status(self):
         links = good_inputs()["links"]

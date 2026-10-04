@@ -171,7 +171,8 @@ and checksum. Processing times go in the catalog, not the file.
   - `l2_linkstats` (JSON): status-stream completeness from `TIC` gaps, frames and chunks sent, commands sent
     versus `CMDS_RECEIVED` (uplink completeness), `PAYLOAD_LINK` uptime, TM latency.
 - **L3 `l3_rollup` (JSON):** totals and distributions across the current L2 summaries, grouped by WAD/map.
-- **QL `ql_quicklook` (PNG + JSON):** contact sheet of the latest captured frames with link and payload health.
+- **QL `ql_health` (JSON) and `ql_contact_sheet` (PNG):** link and payload health, and a contact sheet of the
+  latest captured frames under a health banner.
 
 **Catalog** (`catalog.sqlite`): `episodes` (id, number, window, outcome, closing event, WAD, map, skill,
 pilot mode, repo commit, level set dev/test from `research/levels.yaml` read-only, context source) and
@@ -207,8 +208,10 @@ resubscribes when the stream goes quiet, because yamcs-client does not reconnect
 **Phase D, the file seam** (the only edits to existing code):
 - A new `payload/episode_record.py` keeps a small per-episode accumulator: status count, first and last tic,
   decimated path, final values, and context (WAD, map, skill, seed). It writes
-  `$DOOMSAT_HOME/run/rec/e<NNNN>.json` atomically.
-- Hooks in `Payload.run()` only. The record is written before the final STATUS of an ending episode, so the
+  `$DOOMSAT_HOME/run/rec/<episode>-<last tic>.json` atomically. The name carries the last tic because the episode
+  number restarts with the payload; the ground knows both, and the path stays within 39 characters.
+- One line in `__init__` builds the recorder; the rest are hooks in `Payload.run()`. The record is written before
+  the final STATUS of an ending episode, so the
   file exists before the ground sees the event; an episode change seen by the tracker closes it as `reset`.
 - `new_episode` is not touched. The recorder is created with `getattr(args, "records", "off")`, so the bench
   (which builds the payload from its own Namespace and never calls `run()`) is unaffected.
@@ -303,14 +306,33 @@ Baseline → plan → Airflow stack → product package and tests → Phase A (f
     second publish overwrites rather than duplicates.
   - Products are copied to bucket `doomsat-sds`, served with their content types.
   - OpenLineage RunEvents are written to `lineage/openlineage.jsonl`.
-- Phase D, verified:
-  - With `RECORDS=on`, the payload wrote `run/rec/1-4247.json` when the episode died. `sds_record` sent
-    `SendFile`, the file arrived in `fprimeFilesIn` and in the mirror `run/downlink`, which only works since
-    the yaml fix (`downlinkMirror=/root/doom/run/downlink` in yamcs.log). The deferrable FileSensor fired, the
-    record was ingested as `l0_record` and compared.
-  - 15 of 16 checks agree exactly, including last tic, kills, cells, final health, final position, and 89 path
-    positions at 0.0 units. The one disagreement is a finding: the record's first tic is 4, the archive's 712.
-    Of the statuses sent while the archive was listening, 95.8% arrived.
-  - On the way, the record watcher first asked for records of episodes flown before records were on. Each got
-    a `FileOpenError` (found from the events, since `SendFile` itself answered OK) and a `record_unavailable`
-    finding. Requests are now limited to episodes closed after record requests were first switched on.
+- Tests: 337 unit tests over the product package, written by one agent per area and attacked by another, which
+  mutated the code in memory to check each test fails when its behaviour breaks. They found eight real bugs:
+  - L1 lost a sample whenever two statuses shared an F´ time tag. Fixed with lossless rows, so `l1_episode` went
+    to 1.1.0 and every L2 moved with it.
+  - An L1 version bump made reprocessing overwrite L2s in place.
+  - A late chunk completed a frame.
+  - The context parser let a flag swallow the next option.
+  - The quicklook count went negative across a restart.
+  - A `LIKE` wildcard.
+  - An unencoded lineage URI.
+  - The OpenLineage schema anchor: checked against openlineage-python 1.53.0, it is `#/$defs/RunEvent`.
+- Second reprocessing campaign, verified by running, for the 1.1.0 baseline: 7 episodes, 6 L1s built at the new
+  version, 1 reproduced, 18 L2s built, no false alarms. Both campaigns now sit side by side in the catalog
+  (`l2_path` 1.0.0, 2.0.0, 2.1.0). Episode 2's live `l2_summary@1.1.0` checksum equals the one the unit test
+  computes from the recorded fixture.
+- Review: six reviewers over the whole branch, every finding then attacked by an independent skeptic. 34 were
+  confirmed and 5 refuted. The fixes outside Phase D are below; Phase D's are in its own last commit.
+  - `sds.sh` stopped by name and trusted stale pid files. It now stops only the sessions it started, checked by
+    start time, scheduler first and API server last.
+  - The log servers listened on all interfaces; they are now off.
+  - `setup` could print "done" after a failed install.
+  - A failed forward run blocked its episode for good; it is now retried twice, then reported.
+  - Reprocessing judged an L2 up to date by its input's id alone, and named the archive by today's host. It now
+    needs the exact input bytes and asks for what the forward run asked for.
+  - A payload restart during episode 1 lost that episode. `PayloadConnected` now closes it, confirmed from TIC.
+  - The SDS's own SendFile commands counted as the episode's in L2. `l2_summary` and `l2_linkstats` are 1.2.0.
+  - The capture service's "seconds since last chunk" reset on every resubscription. Its first minute counted as
+    whole. A dead service stayed "capture GO". Two threads raced on the umask.
+  - The bucket kept every version ever published; it now holds the current ones, three objects per episode.
+  - A missing pilot was recorded as "none" instead of unknown.

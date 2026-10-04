@@ -268,22 +268,24 @@ class TestCapture(unittest.TestCase):
         self.assertTrue(ctx["sources"]["pilot"].startswith("unknown"), ctx["sources"]["pilot"])
         self.assertEqual(ctx["wad"], "freedoom1.wad")       # the payload's values do not depend on the pilot
 
-    def test_no_pilot_means_none(self):
+    def test_no_pilot_running_is_unknown_not_none(self):
+        # The context is captured a minute or so after the episode; a pilot run with --duration may have exited by
+        # then. Its absence is not evidence that nobody flew, so it must not be recorded as "none".
         ctx = self.capture([proc(101, PAYLOAD_ARGV, BEFORE)])
-        self.assertEqual(ctx["pilot_mode"], "none")
-        self.assertTrue(ctx["sources"]["pilot"].startswith("no pilot"))
+        self.assertIsNone(ctx["pilot_mode"])
+        self.assertTrue(ctx["sources"]["pilot"].startswith("unknown"), ctx["sources"]["pilot"])
 
     def test_a_pilot_wrapper_does_not_stand_in_for_the_pilot(self):
         wrapper = proc(201, ["bash", "-c", "exec python /home/user/DoomSat/ground/pilot.py"], BEFORE - 5)
         ctx = self.capture([wrapper, proc(202, PILOT_ARGV, AFTER)])
         self.assertIsNone(ctx["pilot_mode"])
         ctx = self.capture([wrapper])
-        self.assertEqual(ctx["pilot_mode"], "none")
+        self.assertIsNone(ctx["pilot_mode"])
 
     def test_nothing_running(self):
         ctx = self.capture([])
         self.assertIsNone(ctx["wad"])
-        self.assertEqual(ctx["pilot_mode"], "none")
+        self.assertIsNone(ctx["pilot_mode"])
         self.assertEqual(ctx["level_set"], "unknown")
         self.assertEqual(ctx["repo_commit"], "feedc0ffee12")
 

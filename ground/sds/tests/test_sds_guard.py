@@ -554,30 +554,18 @@ class SdsProcessesSurviveTheFlightSideKillers(unittest.TestCase):
                      "/root/doom/payload-venv/lib/python3.11/site-packages/vizdoom/vizdoom -iwad x"):
             self.assertTrue(killer_hits(line, orphans, pkill), line)
 
-    def test_the_sds_stop_kills_only_its_own_venv(self):
-        """sds.sh stop ends with pkill -KILL -f "$VENV/bin/": it must not match a single flight process."""
+    def test_the_sds_stop_matches_no_process_by_name(self):
+        """sds.sh stop signals only the sessions it started (a pid file checked against the start time recorded
+        beside it), never a pattern, so it cannot hit a flight process, a test run from the SDS venv, or a pid the
+        kernel handed to something else after a reboot. (It once ended with pkill -KILL -f "$VENV/bin/".)"""
         sds_text = read("scripts/sds.sh")
-        own = pkill_patterns(sds_text)
-        self.assertTrue(own)
-        flight_text = read("scripts/wsl_run_flight.sh")
-        for home in HOMES:
-            env = sds_env(home)
-            fenv = dict(env, PAYLOAD_PY=home + "/payload-venv/bin/python", REPO="/home/pilot/DoomSat",
-                        PROJ=home + "/DoomSat", RUN=home + "/run", DEPLOY="build-artifacts/Linux/DoomSat")
-            flight = [shell_expand(c, fenv) for c in re.findall(r'^\s*detach\s+"(.*)"\s*$', flight_text, re.M)]
-            self.assertEqual(len(flight), 2, "start_payload and start_yamcs")
-            flight += [home + "/payload-venv/bin/python /home/pilot/DoomSat/payload/doom_payload.py --fps 10",
-                       home + "/DoomSat/fprime-venv/bin/python3.11 " + home + "/DoomSat/fprime-venv/bin/fprime-yamcs",
-                       home + "/DoomSat/fprime-venv/bin/python3.11 -u -m fprime_yamcs.comm",
-                       home + "/DoomSat/build-artifacts/Linux/DoomSat/bin/DoomSat -p 50000 -a 127.0.0.1",
-                       home + "/payload-venv/lib/python3.11/site-packages/vizdoom/vizdoom -iwad "
-                       + home + "/wads/doom1.wad",
-                       "/home/pilot/DoomSat/ground/.venv/bin/python ground/pilot.py --duration 120"]
-            for pattern in own:
-                expanded = shell_expand(pattern, env)
-                self.assertTrue(expanded.startswith(env["SDS_HOME"] + "/"), expanded)
-                for line in flight:
-                    self.assertIsNone(re.search(expanded, line), "%s would kill %s" % (expanded, line))
+        self.assertEqual(pkill_patterns(sds_text), [])
+        self.assertNotRegex(sds_text, r"\bp(kill|grep)\b[^\n]*\s-f\b")
+        stop_one = re.search(r"stop_one\(\) \{.*?\n\}", sds_text, re.S).group(0)
+        self.assertIn('pid="$(sds_pid "$1")"', stop_one)
+        sds_pid = re.search(r"sds_pid\(\) \{.*?\n\}", sds_text, re.S).group(0)
+        self.assertIn("lstart", sds_pid)
+
 
 
 # ================================================================================================ 6. DAG imports

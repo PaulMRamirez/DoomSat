@@ -14,12 +14,15 @@
 HERE="$(cd "$(dirname "$0")" && pwd)"
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
+    PASS=()
+    [ -n "${DOOMSAT_HOME:-}" ] && PASS+=("DOOMSAT_HOME=$DOOMSAT_HOME")   # a WSL path, if set by hand
     . "$HERE/common.sh"
+    for v in SDS_PORT DOOMSAT_YAMCS; do [ -n "${!v:-}" ] && PASS+=("$v=${!v}"); done
     WSL=(-d "${DOOMSAT_WSL_DISTRO:-Ubuntu}")
     [ -n "${DOOMSAT_WSL_USER:-}" ] && WSL+=(-u "$DOOMSAT_WSL_USER")
     REPO_WIN="$(cd "$HERE/.." && pwd -W)"
     exec env MSYS_NO_PATHCONV=1 wsl "${WSL[@]}" --exec \
-      bash -c 'cd "$(wslpath "$0")" && exec bash scripts/sds.sh "$@"' "$REPO_WIN" "$@" ;;
+      env "${PASS[@]}" bash -c 'cd "$(wslpath "$0")" && exec bash scripts/sds.sh "$@"' "$REPO_WIN" "$@" ;;
 esac
 . "$HERE/common.sh"
 
@@ -51,8 +54,6 @@ sds_env() {
   export AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS=True
   # Tasks report back here; Airflow assumes :8080 whatever [api] port says.
   export AIRFLOW__CORE__EXECUTION_API_SERVER_URL="http://127.0.0.1:$SDS_PORT/execution/"
-  # The FileSensor's connection (Airflow 3 no longer creates fs_default).
-  export AIRFLOW_CONN_FS_DEFAULT='{"conn_type": "fs", "extra": {"path": "/"}}'
   export PYTHONPATH="$DOOMSAT_REPO/ground/sds${PYTHONPATH:+:$PYTHONPATH}"
   export DOOMSAT_SDS_HOME="$SDS_HOME"
   export DOOMSAT_YAMCS="${DOOMSAT_YAMCS:-localhost:8090}"
@@ -71,43 +72,70 @@ setup() {
   CONSTRAINTS="https://raw.githubusercontent.com/apache/airflow/constraints-$AIRFLOW_VERSION/constraints-$PYV.txt"
   mkdir -p "$SDS_HOME"
   say "Airflow $AIRFLOW_VERSION (Python $PYV) in $VENV"
-  [ -x "$VENV/bin/python" ] || uv venv -q --python "$PY" "$VENV"
+  [ -x "$VENV/bin/python" ] || uv venv -q --python "$PY" "$VENV" || { echo "uv venv failed"; exit 1; }
   # Airflow and its providers come from the constraints file; yamcs-client and Pillow are not in it and are pinned here.
   uv pip install -q --python "$VENV/bin/python" --constraint "$CONSTRAINTS" \
-    "apache-airflow==$AIRFLOW_VERSION" "yamcs-client==$YAMCS_CLIENT_VERSION" "pillow==$PILLOW_VERSION" requests
+    "apache-airflow==$AIRFLOW_VERSION" "yamcs-client==$YAMCS_CLIENT_VERSION" "pillow==$PILLOW_VERSION" requests \
+    || { echo "install failed (is $CONSTRAINTS reachable?)"; exit 1; }
   sds_env
   mkdir -p "$AIRFLOW_HOME" "$SDS_HOME/logs" "$SDS_HOME/run"
   say "Airflow database ($AIRFLOW_HOME/airflow.db)"
   "$VENV/bin/airflow" db migrate > "$SDS_HOME/logs/migrate.log" 2>&1 || { tail -20 "$SDS_HOME/logs/migrate.log"; exit 1; }
-  "$VENV/bin/python" -c 'import airflow, doomsat_sds, yamcs.client, PIL; print("airflow", airflow.__version__, "| doomsat_sds", doomsat_sds.__version__)'
+  "$VENV/bin/python" -c 'import airflow, doomsat_sds, yamcs.client, PIL; print("airflow", airflow.__version__, "| doomsat_sds", doomsat_sds.__version__)' \
+    || { echo "the venv is incomplete: run scripts/sds.sh setup again"; exit 1; }
   say "done. Next: scripts/sds.sh start (next to scripts/flight.sh start)"
 }
 
-# Detached, so it outlives this shell (the same reason as wsl_run_flight.sh). The pid file holds the pid of the
-# process itself, which is also its process group, so stop can take down a component and its children together.
+# Detached, so it outlives this shell (the same reason as wsl_run_flight.sh). With setsid the component is the
+# leader of its own session, and everything it starts stays in that session, including Airflow's task processes,
+# which move to process groups of their own. The pid file holds the leader's pid, and a second file its start time,
+# so a pid left over from a paused or rebooted machine is never mistaken for an SDS process.
 detach() {  # name command
   local pidfile="$SDS_HOME/run/$1.pid"
+  rm -f "$pidfile" "$SDS_HOME/run/$1.started"
   if command -v setsid >/dev/null; then
     setsid -f bash -c "echo \$\$ > '$pidfile'; exec $2" < /dev/null > /dev/null 2>&1
   else
     nohup bash -c "echo \$\$ > '$pidfile'; exec $2" < /dev/null > /dev/null 2>&1 &
   fi
+  for _ in $(seq 50); do [ -s "$pidfile" ] && break; sleep 0.1; done
+  [ -s "$pidfile" ] && ps -o lstart= -p "$(cat "$pidfile")" > "$SDS_HOME/run/$1.started" 2>/dev/null
 }
 
-alive() { [ -f "$SDS_HOME/run/$1.pid" ] && kill -0 "$(cat "$SDS_HOME/run/$1.pid")" 2>/dev/null; }
+# The component's pid, only if that process is still the one this script started.
+sds_pid() {  # name
+  local pid started
+  pid="$(cat "$SDS_HOME/run/$1.pid" 2>/dev/null)" || return 1
+  started="$(cat "$SDS_HOME/run/$1.started" 2>/dev/null)" || return 1
+  [ -n "$pid" ] && [ -n "$started" ] && [ "$(ps -o lstart= -p "$pid" 2>/dev/null)" = "$started" ] && echo "$pid"
+}
 
-stop() {
-  for name in capture $COMPONENTS; do
-    [ -f "$SDS_HOME/run/$name.pid" ] || continue
-    pid="$(cat "$SDS_HOME/run/$name.pid")"
-    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
-  done
-  for _ in $(seq 20); do
-    pgrep -f "$VENV/bin/" >/dev/null || break
+alive() { sds_pid "$1" >/dev/null; }
+
+# Is this pid the leader of its own session (setsid), so the whole session can be signalled?
+leader() { [ "$(ps -o sid= -p "$1" 2>/dev/null | tr -d ' ')" = "$1" ]; }
+
+stop_one() {  # name seconds
+  local pid session=
+  pid="$(sds_pid "$1")" || { rm -f "$SDS_HOME/run/$1.pid" "$SDS_HOME/run/$1.started"; return 0; }
+  leader "$pid" && session=1       # decided once: the session outlives its leader, and so may its tasks
+  if [ -n "$session" ]; then pkill -TERM -s "$pid" 2>/dev/null; else kill -TERM "$pid" 2>/dev/null; fi
+  for _ in $(seq $(( $2 * 2 ))); do
+    if [ -n "$session" ]; then pgrep -s "$pid" >/dev/null || break; else kill -0 "$pid" 2>/dev/null || break; fi
     sleep 0.5
   done
-  pkill -KILL -f "$VENV/bin/" 2>/dev/null   # whatever a paused VM or a crash left behind; only the SDS venv's
-  rm -f "$SDS_HOME"/run/*.pid
+  if [ -n "$session" ]; then pkill -KILL -s "$pid" 2>/dev/null; else kill -KILL "$pid" 2>/dev/null; fi
+  rm -f "$SDS_HOME/run/$1.pid" "$SDS_HOME/run/$1.started"
+}
+
+# The scheduler and triggerer first, while the API server is still up, so running tasks can finish and report;
+# the API server last. Only processes this script started are signalled: nothing is matched by name.
+stop() {
+  stop_one scheduler 90
+  stop_one triggerer 30
+  stop_one dag-processor 15
+  stop_one capture 15
+  stop_one api-server 15
 }
 
 start() {
@@ -116,7 +144,9 @@ start() {
   mkdir -p "$SDS_HOME/logs" "$SDS_HOME/run"
   "$VENV/bin/airflow" db migrate > "$SDS_HOME/logs/migrate.log" 2>&1 || { tail -20 "$SDS_HOME/logs/migrate.log"; exit 1; }
   for c in $COMPONENTS; do
-    detach "$c" "'$VENV/bin/airflow' $c > '$SDS_HOME/logs/$c.log' 2>&1"
+    # --skip-serve-logs: the log servers would listen on every interface; one machine shares the log files anyway
+    case "$c" in scheduler|triggerer) extra=--skip-serve-logs ;; *) extra= ;; esac
+    detach "$c" "'$VENV/bin/airflow' $c $extra > '$SDS_HOME/logs/$c.log' 2>&1"
   done
   detach capture "'$VENV/bin/python' -u -m doomsat_sds.capture > '$SDS_HOME/logs/capture.log' 2>&1"
   for _ in $(seq 60); do
@@ -130,7 +160,7 @@ start() {
 status() {
   installed; sds_env
   for name in $COMPONENTS capture; do
-    if alive "$name"; then printf '[ ok ] %-14s pid %s\n' "$name" "$(cat "$SDS_HOME/run/$name.pid")"
+    if alive "$name"; then printf '[ ok ] %-14s pid %s\n' "$name" "$(sds_pid "$name")"
     else printf '[ -- ] %-14s not running\n' "$name"; fi
   done
   health="$(curl -sf "http://127.0.0.1:$SDS_PORT/api/v2/monitor/health" 2>/dev/null)"

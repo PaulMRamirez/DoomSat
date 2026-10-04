@@ -3,8 +3,8 @@
 For each episode: rebuild L1 from the archive with the cataloged window and context, check that it reproduces
 the cataloged checksum (a mismatch is recorded as a finding, never written over the original), then build
 every L2 product that has no file at its current algorithm version. The new versions become current; the old
-ones stay in the catalog and on disk. An episode that got new products is republished (Phase E), so its Timeline
-item links to the new current versions.
+ones stay in the catalog and on disk. Every episode is then republished (Phase E), so its Timeline item links to
+the current versions. An L2 left at its version while L1 moved on is reported as stale, never rebuilt in place.
 
 Trigger it by hand after bumping a version in doomsat_sds.products.ALGORITHMS:
     scripts/sds.sh airflow dags trigger sds_reprocess
@@ -60,9 +60,9 @@ def sds_reprocess():
         with catalog:
             report = pipeline.reprocess(settings, archive, catalog, episode_id, types=context["params"]["types"],
                                         run_id=context["run_id"])
-            if report["built"]:
-                from doomsat_sds import publish
-                report["published"] = publish.publish_episode(settings, catalog, episode_id)["item_id"]
+            # Always: publishing is idempotent, and a retry after a failed publish built nothing this time.
+            from doomsat_sds import publish
+            report["published"] = publish.publish_episode(settings, catalog, episode_id)["item_id"]
         print(report)
         return report
 
@@ -73,7 +73,8 @@ def sds_reprocess():
                "l1_reproduced": sum(1 for r in reports if r["l1"].startswith("reproduced")),
                "l1_not_reproduced": [r["episode_id"] for r in reports if r["l1"].startswith("NOT")],
                "built": sum(len(r["built"]) for r in reports),
-               "already_current": sum(len(r["up_to_date"]) for r in reports)}
+               "already_current": sum(len(r["up_to_date"]) for r in reports),
+               "stale": sorted({t for r in reports for t in r.get("stale", [])})}
         print(out)
         return out
 

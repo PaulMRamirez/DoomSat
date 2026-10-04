@@ -5,8 +5,9 @@ payload's arguments, in payload.log ("episode N started on MAP (level L)") and i
 is captured once, when the forward run processes the episode, and kept in the catalog; reprocessing reuses it.
 
 Each value says where it came from. A process that started after the episode began did not fly it, and then
-the value is "unknown" rather than a guess. The Phase D record file carries the payload's own account of WAD,
-map and skill, which is a cross-check on this.
+the value is "unknown" rather than a guess, and so is a pilot that is not running when the context is captured
+(it may have exited after flying the episode). A downlinked payload record, where there is one, carries the
+payload's own account of WAD, map and skill as a cross-check.
 """
 from __future__ import annotations
 
@@ -155,8 +156,9 @@ def capture(settings: Settings, number: int, start_ms: int, procs: list[dict] | 
         ctx["pilot_mode"] = None
         ctx["sources"]["pilot"] = "unknown: the running pilot started after the episode began"
     else:
-        ctx["pilot_mode"] = "none"
-        ctx["sources"]["pilot"] = "no pilot process (dashboard driving, or nobody)"
+        ctx["pilot_mode"] = None
+        ctx["sources"]["pilot"] = ("unknown: no pilot process when the context was captured (it may have exited "
+                                   "after flying the episode, or a person drove from the dashboard)")
 
     for key in ("skill", "seed"):
         if ctx.get(key) is not None:
