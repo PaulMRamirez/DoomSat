@@ -2,12 +2,14 @@
 
 Two branches (the native FileUplink build and the CFDP spike) share one F´ project in $DOOMSAT_HOME, so each
 sync must bring the topology header that fits its own topology, and the launchers must not depend on what the
-other branch left in bin/. No network, no F´ install: everything here reads files in the repo.
+other branch left in bin/. No network, no F´ install: everything here reads files in the repo (or the git
+index), and the only code it runs is the health check's own reply printers.
 """
 import os
 import re
 import shutil
 import subprocess
+import sys
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -93,6 +95,42 @@ class TestTheLaunchers(unittest.TestCase):
             with open(os.path.join(ROOT, path), encoding="utf-8") as f:
                 if f.readline().startswith("#!"):
                     self.assertEqual(mode, "100755", f"{path} starts with a shebang but is not executable in git")
+
+
+class TestTheHealthCheck(unittest.TestCase):
+    """scripts/wsl_check.sh (flight.sh check) asks Yamcs for Doom channels by name. One the component no longer
+    has comes back as an error, and used to print as None, which reads like a channel that has not updated yet."""
+
+    PARAMETER = "DoomSat_DoomSat/DoomSat/doom/"
+
+    def setUp(self):
+        self.check = _read("scripts", "wsl_check.sh")
+        # The loops that query one channel per name, each with the Python that prints the reply
+        self.loops = re.findall(r'^for c in ([^;]+); do\n(.*?)^done$', self.check, re.M | re.S)
+        self.loops = [(names.split(), body) for names, body in self.loops if self.PARAMETER + "$c" in body]
+
+    def test_every_channel_it_polls_is_telemetry(self):
+        channels = set(re.findall(r"^\s*telemetry\s+(\w+)\s*:", _read("flight", "Components", "Doom", "Doom.fpp"),
+                                  re.M))
+        polled = {name for names, _ in self.loops for name in names}
+        polled |= set(re.findall(re.escape(self.PARAMETER) + r"(\w+)", self.check))   # named in the URL itself
+        self.assertIn("FRAME_CHUNK", polled)
+        self.assertIn("FRAMES_SENT", polled)
+        self.assertEqual(polled - channels, set(), "not telemetry in Doom.fpp: Yamcs has no such parameter")
+
+    def test_a_channel_yamcs_does_not_know_prints_as_missing(self):
+        error = '{"code": 404, "type": "NotFoundException", "msg": "No parameter named NOPE"}'
+        self.assertGreaterEqual(len(self.loops), 2)
+        for names, body in self.loops:
+            code = re.search(r'python3 -c "(.*?)" 2>/dev/null', body, re.S)
+            self.assertIsNotNone(code, body)
+            # As bash hands it over: the loop variable filled in, the double-quote escapes undone
+            code = re.sub(r'\\([\\$"`])', r"\1", code.group(1).replace("$c", "NOPE"))
+            with self.subTest(names[0]):
+                out = subprocess.run([sys.executable, "-c", code], input=error, capture_output=True, text=True,
+                                     timeout=30)
+                self.assertEqual(out.returncode, 0, out.stderr)
+                self.assertEqual(out.stdout.strip(), "NOPE MISSING: No parameter named NOPE")
 
 
 if __name__ == "__main__":
