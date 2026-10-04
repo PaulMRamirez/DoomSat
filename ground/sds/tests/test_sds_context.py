@@ -225,12 +225,29 @@ class TestFlownWad(unittest.TestCase):
     def flown(self, samples, window=W, end=END):
         return context.flown_wad(WadArchive(samples), list(window), end)
 
-    def test_the_last_sample_before_the_episode_wins(self):
-        samples = [(START_MS - 3_000, "doom1.wad", "", 0), (START_MS - 900, "freedoom1.wad", "", 1),
-                   (START_MS + 100, "freedoom2.wad", "", 2)]
+    def test_a_stale_sample_before_the_window_loses_to_one_inside_it(self):
+        # The WAD cannot change inside a window, so a sample in it is right; one before it may be F''s repeat of the
+        # WAD a switch or a payload restart has just replaced.
+        samples = [(START_MS - 1_900, "freedoom1.wad", "", 0), (START_MS - 900, "freedoom1.wad", "", 0),
+                   (START_MS + 100, "freedoom2.wad", "basic.wad", 1),
+                   (START_MS + 1_100, "freedoom2.wad", "basic.wad", 1)]
         f = self.flown(samples)
-        self.assertEqual((f["wad"], f["pwad"], f["wad_loads"], f["t_ms"]), ("freedoom1.wad", None, 1, START_MS - 900))
-        self.assertIn("at or before", f["how"])
+        self.assertEqual((f["wad"], f["pwad"], f["wad_loads"], f["t_ms"]),
+                         ("freedoom2.wad", "basic.wad", 1, START_MS + 100))
+        self.assertIn("during the episode", f["how"])
+        with self.subTest("a sample at the window's first status is inside it"):
+            f = self.flown([(START_MS - 900, "freedoom1.wad", "", 0), (START_MS, "freedoom2.wad", "", 1)])
+            self.assertEqual((f["wad"], f["t_ms"]), ("freedoom2.wad", START_MS))
+
+    def test_the_lost_write_of_a_switch_does_not_give_the_old_wad(self):
+        # A switch at T: F' writes the new WAD once (handleWad), and that sample is lost, as whole TM samples are on
+        # this stack. F''s 1 Hz repeats say the old WAD up to T and the new one after it; the switched episode's
+        # first status is about 90 ms after T.
+        T = START_MS
+        old = [(t, "freedoom1.wad", "", 0) for t in (T - 2_070, T - 1_070, T - 70)]
+        new = [(t, "freedoom2.wad", "", 1) for t in (T + 930, T + 1_930)]
+        f = self.flown(old + new, window=(T + 90, T + 60_000), end=T + 62_000)
+        self.assertEqual((f["wad"], f["pwad"], f["wad_loads"], f["t_ms"]), ("freedoom2.wad", None, 1, T + 930))
 
     def test_the_wad_a_switch_wrote_after_the_window_is_not_the_old_episodes(self):
         # 1 Hz samples of the old WAD through the episode, then the switch: its sample lands after the window's
@@ -244,9 +261,11 @@ class TestFlownWad(unittest.TestCase):
             later = [(t, "freedoom2.wad", "basic.wad", 1) for t in range(self.W[1] + 1_800, nxt[1], 1_000)]
             f = self.flown(old + new + later, window=nxt, end=nxt[1] + 2_000)
             self.assertEqual((f["wad"], f["pwad"], f["wad_loads"], f["t_ms"]),
-                             ("freedoom2.wad", "basic.wad", 1, self.W[1] + 1_800))     # F''s repeat of it
+                             ("freedoom2.wad", "basic.wad", 1, self.W[1] + 2_800))     # F''s first repeat in it
+            # with no sample in the window, the last one before it: the switch's own
             f = self.flown(old + new, window=nxt, end=nxt[1] + 2_000)
             self.assertEqual((f["wad"], f["t_ms"]), ("freedoom2.wad", self.W[1] + 800))
+            self.assertIn("before the episode", f["how"])
 
     def test_without_one_before_the_first_one_in_the_window(self):
         # A flight's first episode: the archive starts after the payload's report on connect, and F' repeats it.
@@ -284,7 +303,10 @@ class TestFlownWad(unittest.TestCase):
 
     def test_a_yamcs_that_is_down_or_failing_is_raised_not_guessed(self):
         # The context is cataloged for good: a flicker must fail the task (it is retried), not record argv as fact.
-        for fail in (ConnectionError("refused"), TimeoutError("read timed out"), YamcsError("500 Server Error: x")):
+        # Only 404 and 400 say the names are unknown; a refused login or a busy server says nothing about them.
+        for fail in (ConnectionError("refused"), TimeoutError("read timed out"), YamcsError("500 Server Error: x"),
+                     YamcsError("401 Client Error: Unauthorized"), YamcsError("403 Client Error: Forbidden"),
+                     YamcsError("429 Client Error: Too Many Requests")):
             with self.subTest(fail=fail):
                 with self.assertRaises(type(fail)):
                     context.flown_wad(WadArchive(fail=fail), list(self.W), self.END)
@@ -435,8 +457,8 @@ class TestCapture(CaptureCase):
 
 class TestCaptureOnMain(CaptureCase):
     """capture() with flown_wad()'s answer, as the forward run calls it on main."""
-    TLM = {"wad": "freedoom2.wad", "pwad": None, "wad_loads": 1, "t_ms": START_MS - 400,
-           "how": "the last sample at or before the episode's first status"}
+    TLM = {"wad": "freedoom2.wad", "pwad": None, "wad_loads": 1, "t_ms": START_MS + 400,
+           "how": "the first sample during the episode"}
     PRE_MAIN = {"missing": "the archive has no WAD_IWAD sample from 5 s before the episode to its end, as on a "
                            "flight build from before main"}
 

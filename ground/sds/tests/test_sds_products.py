@@ -67,6 +67,8 @@ GOLDEN = {
     "l1_episode@1.1.0 l2_summary@1.3.0": "93e5ce4e061280e8fe04e2dde4baf5916f096ce20e9108f41cb9ea072b509a4a",
     "l1_episode@1.1.0 l2_summary@1.3.0 l3_rollup@1.1.0":
         "c61be5d9fa2d556c227b81e67c34ff8c36e3f02f59994b1cb11d15f057be89d7",
+    # l2_path 2.2.0 gave wad_switch its own end colour; this died episode differs from 2.1.0 only in the version shown
+    "l1_episode@1.1.0 l2_path@2.2.0": "5cf3affc40faa34d6c9cdcb5110ad339e020d088433d858da1a05020b90bc936",
 }
 
 

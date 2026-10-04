@@ -135,9 +135,11 @@ value carries its source in `context.sources`.
 - **WAD.** On main the payload can switch WAD in flight, so its `--wad` argument can be wrong. The forward run reads
   `WAD_IWAD`, `WAD_PWAD` and `WAD_LOADS` (the base and patch WAD file names, and how many switches this payload
   process has made) in an archive read of their own, separate from the L1 read, and takes the value in effect
-  when the episode began: the last sample at or before its first status (up to 5 s back), otherwise the first
-  sample during it, never one after its last status or its closing event (a switch writes the new WAD before the
-  next episode's `EpisodeStarted`). The context gets `wad`, `pwad`, `wad_loads` and `wad_launch` (the payload's
+  when the episode began: the first sample from its first status to its last, otherwise the last sample before its
+  first status (up to 5 s back), never one after its last status or its closing event (a switch writes the new WAD
+  before the next episode's `EpisodeStarted`). The WAD cannot change during an episode, but F´ writes a new WAD
+  once and repeats the last one every second, so if that one write is lost the sample just before the episode is
+  the old WAD. The context gets `wad`, `pwad`, `wad_loads` and `wad_launch` (the payload's
   `--wad`). A flight build from before main has no such channels and cannot switch WAD; there the WAD is the
   payload's `--wad` and `--pwad` and the source says why. A Yamcs that is down fails the task (it is retried)
   rather than recording a guess. WADs are known by name only.
@@ -146,8 +148,8 @@ value carries its source in `context.sources`.
 - **dev, test or other.** An episode flown on a switched WAD (`wad_loads > 0`) or a patch WAD is `other`, never dev
   or test: flights on an uplinked WAD are demonstrations, and a file name cannot tell an uplinked WAD from an
   installed one. Otherwise `research/levels.yaml` decides, by WAD file name and map, as before.
-- **Processes.** A `LOAD_WAD` check runs the payload script again with `--probe` (and a forked watchdog with the
-  same arguments) for up to 20 s; those are never taken for the flight payload.
+- **Processes.** A `LOAD_WAD` check runs the payload script again with `--probe` for up to 15 s, and a forked
+  watchdog with the same arguments for up to 20 s; those are never taken for the flight payload.
 
 `pwad`, `wad_loads` and `wad_launch` live in the catalog's `context_json`; its `wad` column holds the WAD flown.
 `l2_summary` 1.3.0 carries `pwad` and `wad_loads`, and `l3_rollup` 1.1.0 keys a level by its patch WAD too

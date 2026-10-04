@@ -418,12 +418,13 @@ class WadSwitchTest(unittest.TestCase):
 
     def test_a_shared_time_tag_counts_in_either_order(self):
         # F' time tags are coarse: WadLoaded and the EpisodeStarted after it can carry the same one, and the
-        # archive's sequence numbers then decide the order. The new episode, reset later, is not a switch.
+        # archive's sequence numbers then decide the order. The WadLoaded belongs to the switch that started episode 5,
+        # so episode 5, reset 4 s later (inside WAD_SWITCH_MS of it), is not a switch.
         t = T0 + 30_000
         for seqs in ((1, 2), (2, 1)):
             with self.subTest(seqs=seqs):
                 events = [ev(T0, "EpisodeStarted", 4, seq=0), self.loaded(t, seq=seqs[0]),
-                          ev(t, "EpisodeStarted", 5, seq=seqs[1]), ev(t + 50_000, "EpisodeStarted", 6, seq=3)]
+                          ev(t, "EpisodeStarted", 5, seq=seqs[1]), ev(t + 4_000, "EpisodeStarted", 6, seq=3)]
                 self.assertEqual([(e.number, e.outcome) for e in closed_episodes(events)],
                                  [(4, "wad_switch"), (5, "reset")])
 

@@ -30,8 +30,10 @@ from .config import Settings
 LOG_START = re.compile(r"^\[payload\] episode (\d+) started on (\S+) \(level (\d+)\)")
 PAYLOAD_DEFAULTS = {"--wad": "doom1.wad", "--map": "E1M1", "--skill": "2", "--seed": "7",   # doom_payload.py argparse
                     "--geometry": "off", "--oracle": "off", "--records": "off"}
-WAD_LOOKBACK_MS = 5_000     # the WAD channels repeat about once a second; look this far back for the one in effect
-REFUSED = re.compile(r"^4\d\d Client Error")      # how yamcs-client words a 4xx answer (yamcs/client/core/context.py)
+WAD_LOOKBACK_MS = 5_000     # the WAD channels repeat about once a second; this far back, when the window has none
+# How yamcs-client words the two answers a mission database without the WAD channels gives (NotFound, and
+# YamcsError for a 400; yamcs/client/core/context.py). Any other 4xx (401, 403, 429...) is a failure, raised.
+REFUSED = re.compile(r"^(400|404) Client Error")
 
 
 def _boot_time() -> float | None:
@@ -65,7 +67,7 @@ def _find(procs: list[dict], script: str) -> dict | None:
     """The interpreter running `script` (not a `bash -c` wrapper that merely mentions it); oldest wins.
 
     A LOAD_WAD check runs the payload script again with --probe for up to 15 s, beside a forked watchdog with the
-    same arguments: neither is the flight payload, whatever its start time."""
+    same arguments for up to 20 s: neither is the flight payload, whatever its start time."""
     hits = [p for p in procs if not p["argv"][0].endswith("bash") and "--probe" not in p["argv"]
             and any(a == script or a.endswith("/" + script) for a in p["argv"][1:])]
     return min(hits, key=lambda p: p["start_s"] or 0) if hits else None
@@ -147,14 +149,19 @@ def wad_name(v) -> str | None:
 
 
 def _in_effect(series: list, start_ms: int, last_ms: int) -> tuple[tuple | None, str | None]:
-    """The sample in effect at start_ms and how it was chosen: the last one at or before it (no older than
-    WAD_LOOKBACK_MS), else the first one after it up to last_ms. Never a later one: a switch writes the new WAD's
-    sample before the next episode's EpisodeStarted, so it lies between this episode's window and its closure."""
-    before = [s for s in series if start_ms - WAD_LOOKBACK_MS <= s[0] <= start_ms]
-    if before:
-        return before[-1], "the last sample at or before the episode's first status"
-    inside = [s for s in series if start_ms < s[0] <= last_ms]
-    return (inside[0], "the first sample during the episode") if inside else (None, None)
+    """The sample in effect at start_ms and how it was chosen: the first one in [start_ms, last_ms], else the last
+    one before start_ms (no older than WAD_LOOKBACK_MS).
+
+    The WAD cannot change inside an episode's window: a LOAD_WAD or a payload restart starts a new episode, and the
+    payload reports its WAD before that episode's first status. F' writes that report once and otherwise repeats
+    the last one once a second, so if the one write is lost, the last sample before the window is a repeat of the
+    old WAD while every sample inside it is the new one. Never a later one: a switch writes the new WAD's sample
+    before the next episode's EpisodeStarted, so it lies between this episode's window and its closure."""
+    inside = [s for s in series if start_ms <= s[0] <= last_ms]
+    if inside:
+        return inside[0], "the first sample during the episode"
+    before = [s for s in series if start_ms - WAD_LOOKBACK_MS <= s[0] < start_ms]
+    return (before[-1], "the last sample before the episode's first status") if before else (None, None)
 
 
 def _count(v) -> int | None:

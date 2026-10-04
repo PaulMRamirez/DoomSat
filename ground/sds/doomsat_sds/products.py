@@ -25,7 +25,8 @@ ALGORITHMS = {
     # 1.1.0 / 2.1.0 / 1.1.0 / 1.1.0: a new processing baseline, after L1 stopped losing same-time samples (_table).
     # An L1 change reaches every L2, so their versions move with it; reprocess never rebuilds an L2 in place.
     "l1_episode": ("L1", "1.1.0", "json", "application/json"),
-    "l2_path": ("L2", "2.1.0", "png", "image/png"),         # 2.0.0: Phase C, see build_path_png
+    "l2_path": ("L2", "2.2.0", "png", "image/png"),         # 2.0.0: Phase C, see build_path_png
+    # l2_path 2.2.0: the end of a wad_switch episode has a colour of its own (END_COLOURS).
     # 1.2.0: commands counted are the payload's (the Doom component's); the ground system's own, such as a SendFile
     # that asked for an earlier episode's record, are reported apart and kept out of uplink completeness.
     # l2_summary 1.3.0: also the patch WAD and the count of in-flight WAD switches from the context (main's LOAD_WAD).
@@ -253,8 +254,7 @@ def build_linkstats(l1: dict) -> dict:
     }
 
 
-# "wad_switch" came with the outcome itself: no L1 written before it carries one (reprocessing keeps the cataloged
-# outcome), so no existing l2_path changes and l2_path keeps its version.
+# l2_path 2.1.0 had no "wad_switch" here and drew that end in the fallback white; 2.2.0 added it.
 END_COLOURS = {"died": "#e04040", "level_finished": "#40c0e0", "reset": "#a0a0a0", "wad_switch": "#b080e0",
                "interrupted": "#a0a0a0"}
 
@@ -301,7 +301,8 @@ def build_path_png(l1: dict, width: int = 600, height: int = 640) -> bytes:
     v2.0.0 (Phase C): the line breaks at jumps longer than JUMP_UNITS (teleporters; v1 drew a straight line across
     the map for each), the path is coloured by elapsed time from blue through yellow to red so that revisits are
     visible, and each kill is marked with a white cross. Start is the green disc, the end is coloured by outcome.
-    v1.0.0 joined every sample in one colour; its images stay in the catalog beside the v2 ones.
+    v1.0.0 joined every sample in one colour; its images stay in the catalog beside the v2 ones. v2.2.0 gives the end
+    of an episode a WAD switch cut short a colour of its own (2.1.0 drew it white).
 
     There is no level geometry behind it: nothing here opens a WAD (charter 2.4), and this image never goes back
     to the pilot (charter 2.2; tests/test_sds_guard.py).

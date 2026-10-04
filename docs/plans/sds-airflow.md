@@ -402,10 +402,12 @@ Baseline → plan → Airflow stack → product package and tests → Phase A (f
     `freedoom1.wad E1M1` under the default `doom1.wad` launch would even have been labelled the test set. The WAD
     now comes from telemetry. `WAD_IWAD`, `WAD_PWAD` and `WAD_LOADS` (`config.CONTEXT_TLM`) are read on their own,
     separate from the L1 read, so L1's inputs do not change and a mission database without them only costs the
-    context its WAD source. The value used is the one in effect at the window's start: the last sample at or before
-    it (5 s back at most), otherwise the first one inside the window. Never a later one, because the new WAD's
-    sample is written before the next episode's `EpisodeStarted` and so lies between the old episode's window and
-    its closure. Checked live: the channels arrive about once a second, and `archive.value()` returns the 40-byte
+    context its WAD source. The value used is the one in effect at the window's start: the first sample inside the
+    window, otherwise the last one before it (5 s back at most). Never a later one, because the new WAD's sample is
+    written before the next episode's `EpisodeStarted` and so lies between the old episode's window and its closure.
+    (The first version preferred the last sample before the window. The review found that one lost sample, F´'s
+    single write of a new WAD, then gave the switched episode the old WAD from F´'s 1 Hz repeat; inside a window
+    the WAD cannot change, so a sample there is always right.) Checked live: the channels arrive about once a second, and `archive.value()` returns the 40-byte
     names as hex, which `context.wad_name` decodes. The argv fallback, now with `--pwad`, applies only when there
     are no samples (a flight build from before main, which cannot switch WAD) or the archive refuses the names
     (Yamcs answers 4xx). It says so in `sources`. A connection failure, a timeout or a 5xx is raised, so the task is
@@ -423,8 +425,10 @@ Baseline → plan → Airflow stack → product package and tests → Phase A (f
     `WadLoadFailed` would change every L1's bytes and need an `l1_episode` bump and a full reprocessing campaign.
     The outcome and the context already carry the switch.
   - `l2_summary` 1.3.0 carries `pwad` and `wad_loads`, and `l3_rollup` 1.1.0 keys a level by its patch WAD too. Both
-    goldens are recorded beside the old ones. `l2_path` keeps 2.1.0: the end-marker colour for `wad_switch` is new,
-    but no L1 written before it has that outcome.
+    goldens are recorded beside the old ones. `l2_path` is 2.2.0: `wad_switch` has an end-marker colour of its own,
+    which 2.1.0 drew in its fallback white. No L1 written before it has that outcome, but the same L1 draws
+    differently, which is a version bump. (The first version kept 2.1.0 on that ground; the review held it to the
+    rule.)
   - Comparability: main's `f3d2c655` (one space packet per TC frame) stopped F´ dropping commands that Yamcs had
     packed together. `l2_linkstats` uplink completeness from flights before and after it is not comparable.
     `context.repo_commit` identifies the stack an episode was flown on (`git merge-base --is-ancestor f3d2c655
