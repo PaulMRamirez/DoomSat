@@ -214,7 +214,7 @@ Only episodes whose payload ran with `--records on` are asked for (the episode's
 payload's arguments), so turning either switch on in either order is safe. The command is never resent
 automatically: a failed `rec__` run is re-requested by hand (clear it in the UI).
 
-There is no file on disk to wait for, so `wait_for_downlinked_file` is a sensor (every 5 s, reschedule mode, two
+There is no file on disk to wait for, so `wait_for_downlinked_file` is a sensor (every 5 s, poke mode, two
 minutes at most) that reads three things and writes nothing: `SendFile`'s answer (Yamcs's acknowledgements, then the
 F´ dispatcher's `OpCodeCompleted` or `OpCodeError`), cfdpManager's events, and
 `GET /api/filetransfer/fprime-project/cfdp/transfers?direction=DOWNLOAD&start=<command time - 5 s>`, from which it

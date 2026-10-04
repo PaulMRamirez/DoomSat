@@ -103,13 +103,16 @@ def sds_record():
         print(out)
         return out
 
-    # Read only, and every poke a fresh task process (reschedule): SendFile's answer, cfdpManager's events and
-    # Yamcs's CFDP transfer list. A read that fails is logged and the sensor pokes again (silent_fail). Each read
-    # gives up after record.POKE_READ_S without a byte, so three stalled reads still end well inside
-    # execution_timeout, which Airflow raises past silent_fail and which would fail the wait. The verdicts that
-    # settle it are raised as AirflowFailException, which is never retried.
-    @task.sensor(poke_interval=5, timeout=120, mode="reschedule", silent_fail=True,
-                 execution_timeout=timedelta(minutes=2))
+    # Read only: SendFile's answer, cfdpManager's events and Yamcs's CFDP transfer list. A read that fails is logged
+    # and the sensor pokes again (silent_fail). Poke mode, not reschedule: live, Airflow 3.3.2's scheduler requeued a
+    # 5 s reschedule before it had handled the executor's report of the poke, then failed the task ("finished with
+    # state success, but the task instance's state attribute is queued") while the transfer was completing. A record
+    # takes a few seconds and one record run is active at a time, so the worker slot it holds costs nothing. Each read
+    # gives up after record.POKE_READ_S without a byte, so the sensor's own 120 s timeout plus a last slow poke ends
+    # inside execution_timeout, which Airflow raises past silent_fail. The verdicts that settle it are raised as
+    # AirflowFailException, which is never retried.
+    @task.sensor(poke_interval=5, timeout=120, mode="poke", silent_fail=True,
+                 execution_timeout=timedelta(minutes=4))
     def wait_for_downlinked_file(p: dict, command: dict):
         from airflow.sdk import PokeReturnValue
         from airflow.sdk.exceptions import AirflowFailException

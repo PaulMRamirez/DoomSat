@@ -548,8 +548,8 @@ class TestAfterTheWait(unittest.TestCase):
         [deco] = f.decorator_list
         self.assertEqual(ast.unparse(deco.func), "task.sensor")
         self.assertEqual({k.arg: ast.unparse(k.value) for k in deco.keywords},
-                         {"poke_interval": "5", "timeout": "120", "mode": "'reschedule'", "silent_fail": "True",
-                          "execution_timeout": "timedelta(minutes=2)"})
+                         {"poke_interval": "5", "timeout": "120", "mode": "'poke'", "silent_fail": "True",
+                          "execution_timeout": "timedelta(minutes=4)"})
         # Airflow raises an execution_timeout past silent_fail: a poke's three reads, each giving up after
         # POKE_READ_S without a byte (connect 10 s for the archive's two, 5 s for the list), must end well before it.
         [arch] = [c for c in calls_in(f) if ast.unparse(c.func) == "YamcsArchive"]

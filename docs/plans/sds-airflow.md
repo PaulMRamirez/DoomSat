@@ -456,7 +456,7 @@ Baseline → plan → Airflow stack → product package and tests → Phase A (f
     calls got past it.)
   - Deviation: the brief's FileSensor is gone (and with it the `fs_default` connection in `scripts/sds.sh`). There
     is no file to watch: `cfdpDown` is a RocksDB bucket inside Yamcs. `wait_for_downlinked_file` is a `@task.sensor`
-    (poke 5 s, reschedule, 120 s, which covers Yamcs's 30 s FIN-ACK limit and inactivity timer). Each poke reads
+    (poke 5 s, poke mode, 120 s, which covers Yamcs's 30 s FIN-ACK limit and inactivity timer). Each poke reads
     `SendFile`'s answer, cfdpManager's events and `GET .../cfdp/transfers?direction=DOWNLOAD&start=<command - 5 s>`,
     and takes the newest transfer whose `remotePath` is the source, created at or after the command itself: Yamcs
     creates a downlink when its first PDU arrives, after F´ has the command, so an older transfer of the same path
