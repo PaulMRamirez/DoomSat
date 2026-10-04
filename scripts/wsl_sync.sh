@@ -6,7 +6,9 @@ SRC=$DOOMSAT_REPO/flight
 DST=$PROJ
 mkdir -p $DST/DoomMission/Components/Doom $DST/DoomMission/config
 cp $SRC/Components/Doom/Doom.fpp $SRC/Components/Doom/Doom.hpp $SRC/Components/Doom/Doom.cpp $SRC/Components/Doom/CMakeLists.txt $DST/DoomMission/Components/Doom/
-cp $SRC/DoomSat/Top/topology.fpp $SRC/DoomSat/Top/instances.fpp $SRC/DoomSat/Top/DoomSatTopology.cpp $DST/DoomSat/Top/
+# The topology header goes too: the one fprime-util new wrote fits only the topology it was made with, and
+# another branch's sync (feature/cfdp-spike has no FileHandling) replaces it with one that does not fit this one.
+cp $SRC/DoomSat/Top/topology.fpp $SRC/DoomSat/Top/instances.fpp $SRC/DoomSat/Top/DoomSatTopology.cpp $SRC/DoomSat/Top/DoomSatTopologyDefs.hpp $DST/DoomSat/Top/
 cp $SRC/config/FpConstants.fpp $SRC/config/CMakeLists.txt $DST/DoomMission/config/
 grep -q "/Doom/" $DST/DoomMission/Components/CMakeLists.txt || echo 'add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/Doom/")' >> $DST/DoomMission/Components/CMakeLists.txt
 # An `if`, not `grep || { ...; } > .cm && mv`: that parses as `(grep || ...) && mv`, so every sync after the

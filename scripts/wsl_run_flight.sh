@@ -39,7 +39,9 @@ start_payload() {
 }
 start_yamcs() {
   cd "$PROJ" || exit 1
-  detach "cd '$PROJ' && . fprime-venv/bin/activate && export FPRIME_DOWNLINK_DIR='$RUN/downlink' && fprime-yamcs --deployment $DEPLOY --skip-browser-open --yamcs-config-dir '$REPO/ground/yamcs' --yamcs-data-dir '$RUN/yamcs-data' --yamcs-realtime-only-channels DoomSat.doom.FRAME_CHUNK > '$RUN/yamcs.log' 2>&1"
+  # --app: without it the launcher guesses the binary as the only file in bin/, and exits if it finds two
+  # (a PrmDb.dat saved there, or one an older feature/cfdp-spike start wrote on the same install).
+  detach "cd '$PROJ' && . fprime-venv/bin/activate && export FPRIME_DOWNLINK_DIR='$RUN/downlink' && fprime-yamcs --deployment $DEPLOY --app $DEPLOY/bin/DoomSat --skip-browser-open --yamcs-config-dir '$REPO/ground/yamcs' --yamcs-data-dir '$RUN/yamcs-data' --yamcs-realtime-only-channels DoomSat.doom.FRAME_CHUNK > '$RUN/yamcs.log' 2>&1"
 }
 case "${1:-start}" in
   stop) stop; echo stopped ;;
