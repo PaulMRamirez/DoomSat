@@ -2,9 +2,9 @@
 
 The engine ignores SIGTERM (research/reap.py), so a payload that hangs inside it, or dies without closing it,
 used to leave it running: one more orphan per restart, competing for the cores of whatever ran next. The run
-script now reaps the payload's process group. Its functions run here against a stand-in payload and engine
-under per-test names, so no real payload or engine can ever match; the launcher's own stop() and payload arms
-are only read, never run.
+script now reaps what is left of the payload's process group, and still kills by name a payload that leads no
+group. Its functions run here against a stand-in payload and engine under per-test names, so no real payload or
+engine can ever match; the launcher's own stop() and payload arms are only read, never run.
 """
 import ast
 import os
@@ -91,6 +91,8 @@ class TestTheStopReapsTheEngine(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         nonce = uuid.uuid4().hex[:12]
         self.groups = []
+        # Matches this test's stand-ins (the nonce is in both paths) and nothing else; tearDown's last resort
+        self.nonce_pattern = f"{nonce[:-1]}[{nonce[-1]}]"
         self.payload = os.path.join(self.tmp.name, f"payload_{nonce}.py")
         engine_dir = os.path.join(self.tmp.name, f"eng_{nonce}")
         os.makedirs(engine_dir)
@@ -120,23 +122,36 @@ class TestTheStopReapsTheEngine(unittest.TestCase):
                 os.killpg(group, signal.SIGKILL)
             except OSError:
                 pass
+        # A stand-in that never wrote its pids left no group to kill
+        subprocess.run(["pkill", "-KILL", "-f", self.nonce_pattern], stdin=subprocess.DEVNULL, timeout=10)
 
-    def start(self, mode):
-        """Start the stand-in as start_payload does: setsid -f, exec, the payload leading its own group."""
+    def start(self, mode, leader=True):
+        """Start the stand-in as start_payload does: setsid -f, exec, the payload leading its own group. Without
+        `leader`, a shell whose command line names no payload leads the group and starts it, as under nohup."""
         pids = os.path.join(self.tmp.name, "pids")
-        command = f"exec '{sys.executable}' '{self.payload}' --fps 10 > '{self.tmp.name}/payload.log' 2>&1"
-        env = dict(os.environ, STANDIN_ENGINE=self.engine, STANDIN_PIDS=pids, STANDIN_MODE=mode)
-        subprocess.run(["setsid", "-f", "bash", "-c", command], stdin=subprocess.DEVNULL, env=env, check=True,
-                       timeout=10)
+        log = os.path.join(self.tmp.name, "payload.log")
+        env = dict(os.environ, STANDIN_ENGINE=self.engine, STANDIN_PIDS=pids, STANDIN_MODE=mode,
+                   STANDIN_PYTHON=sys.executable, STANDIN_PAYLOAD=self.payload, STANDIN_LOG=log)
+        if leader:
+            command = f"exec '{sys.executable}' '{self.payload}' --fps 10 > '{log}' 2>&1"
+        else:
+            command = '"$STANDIN_PYTHON" "$STANDIN_PAYLOAD" --fps 10 > "$STANDIN_LOG" 2>&1 & wait'
+        # The payload writes to its log; the shell's own "Killed" job notice would land in the test output
+        subprocess.run(["setsid", "-f", "bash", "-c", command], stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       env=env, check=True, timeout=10)
         deadline = time.time() + 15
         while not os.path.exists(pids) and time.time() < deadline:
             time.sleep(0.05)
         self.assertTrue(os.path.exists(pids), "the stand-in payload never started")
         with open(pids) as f:
             payload, engine = map(int, f.read().split())
-        self.groups.append(payload)
-        self.assertEqual(os.getpgid(payload), payload, "the payload leads its own process group")
-        self.assertEqual(os.getpgid(engine), payload, "the engine is in the payload's group")
+        group = os.getpgid(payload)
+        self.groups.append(group)
+        if leader:
+            self.assertEqual(group, payload, "the payload leads its own process group")
+        else:
+            self.assertNotEqual(group, payload, "the payload leads no group")
+        self.assertEqual(os.getpgid(engine), group, "the engine is in the payload's group")
         return payload, engine
 
     def stop(self, *pids):
@@ -157,6 +172,14 @@ class TestTheStopReapsTheEngine(unittest.TestCase):
         self.assertTrue(_gone(payload))
         self.assertTrue(_gone(engine), "the engine outlived its payload")
 
+    def test_a_hung_payload_that_leads_no_group_is_still_killed_by_name(self):
+        # The macOS case: there is no group to reap, so the engine stays (for research/reap.py, as before), but
+        # the payload must not keep holding its port. Only groups a payload leads are touched.
+        payload, engine = self.start("hung", leader=False)
+        self.stop(payload)
+        self.assertTrue(_gone(payload), "a hung payload outside a group of its own is still running")
+        self.assertFalse(_gone(engine), "an engine in a group no payload leads was killed")
+
 
 class TestTheLauncherSource(unittest.TestCase):
     def test_both_stops_use_it(self):
@@ -171,6 +194,15 @@ class TestTheLauncherSource(unittest.TestCase):
                 self.assertLess(taken, sigterm)
                 self.assertLess(sigterm, reaped)
                 self.assertNotIn("kill_hung_payload", body, "reap_payload calls it, after the groups")
+
+    def test_the_reap_waits_then_kills_the_groups_then_by_name(self):
+        lines = _function(RUN_SCRIPT, "reap_payload").splitlines()[1:-1]
+        waits = [i for i, line in enumerate(lines)
+                 if f'pgrep -f "{PAYLOAD_PATTERN}"' in line and "sleep" in line and "break" in line]
+        kills = [i for i, line in enumerate(lines) if "pkill -KILL -g" in line]
+        self.assertTrue(waits and kills, lines)
+        self.assertLess(waits[0], kills[0], "the payload gets its time to close the game before the SIGKILL")
+        self.assertEqual(lines[-1].strip(), "kill_hung_payload", "the only kill for a payload that leads no group")
 
     def test_the_payload_leads_its_group(self):
         start = _function(RUN_SCRIPT, "start_payload")

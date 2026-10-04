@@ -1584,8 +1584,9 @@ def main():
     def _stop(*_):
         # scripts/flight.sh stop and every restart send SIGTERM; without this the ViZDoom engine (and a
         # LOAD_WAD probe's) outlives the payload, one more orphan per restart. Armed before the game is built,
-        # so a SIGTERM during start-up still exits; scripts/wsl_run_flight.sh reaps an engine the payload could
-        # not close (it kills the payload's process group).
+        # so no SIGTERM finds a running game with no handler set; one that comes while the game is still being
+        # built just exits, and scripts/wsl_run_flight.sh reaps an engine the payload could not close (it kills
+        # what is left of the payload's process group).
         try:
             if payload is not None:
                 if payload.wad_job is not None:
