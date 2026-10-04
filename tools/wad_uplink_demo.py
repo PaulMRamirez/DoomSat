@@ -16,6 +16,8 @@
    cfdpManager) the file goes up as CCSDS CFDP class 2 instead (--cfdp 1 or 2 to choose), and COMMIT_WAD does
    the rename: in class 2 once the spacecraft's FIN says the file is whole, in class 1 once
    RxFileTransferCompleted comes with no RxCrcMismatch (class 1 has no retransmission: not for WADs).
+   On a build with cfdpGuard the spacecraft commits a class 2 file itself when its FIN goes out, and COMMIT_WAD is
+   only the fallback (a lost WadUplinked, a build without the guard, class 1).
    COMMIT_WAD carries the size and CFDP checksum of what was sent, and the Doom component renames the file
    only if it has both (WadCommitRefused otherwise). --checksum FILE prints the two, for a commit by hand.
 3. LOAD_WAD; the payload proves the game starts on it in a child process, then switches (WadLoaded) or keeps
@@ -61,6 +63,9 @@ CHUNK_HEADER = struct.Struct("!IHHH")   # seq, index, count, length: the FrameCh
 # How long to wait for the answer to a command. With --tries above 1 (a lossy link) a command whose answer has
 # not come is sent again; a lost answer can then be stood in for by telemetry that is sent every second.
 COMMIT_ANSWER_S = 8.0
+# How long after a class 2 FIN to wait for the on-board commit (cfdpGuard announces the file as its FIN leaves, so its
+# WadUplinked comes down with the FIN) before falling back to COMMIT_WAD
+GUARD_ANSWER_S = 5.0
 LOAD_ANSWER_S = 40.0
 LOAD_RETRY_ANSWER_S = 25.0
 TLM_STANDIN_S = 3.0
@@ -363,7 +368,15 @@ def uplink(a, link, bucket, part, remote, name, content):
             return 1, False
         return 0, False
 
-    # cfdpManager writes the file in place and has no fileAnnounce: commit it once it is known whole.
+    # cfdpManager writes the file in place and has no fileAnnounce. cfdpGuard commits a class 2 file on board as the
+    # receiver's FIN goes out, so its WadUplinked comes down with the FIN; COMMIT_WAD below is the fallback.
+    if a.cfdp == 2:
+        said = link.wait_event(t0, placed, timeout=GUARD_ANSWER_S)
+        if said:
+            say(f"event: {said} (committed on board at the FIN)")
+            return 0, False
+        say(f"no WadUplinked within {GUARD_ANSWER_S:.0f} s of the FIN (lost on the way down, or no cfdpGuard on this "
+            "build): sending COMMIT_WAD")
     # Class 1 has no FIN, and F' v4.3.0 reports a class 1 file whose CRC failed as completed anyway.
     if a.cfdp == 1:
         done = link.wait_event(t0, "[RxFileTransferCompleted]", "[RxFileTransferFailed]", "[RxCrcMismatch]",
@@ -397,14 +410,15 @@ def uplink(a, link, bucket, part, remote, name, content):
         say(f"FAIL: no answer to {commits} COMMIT_WAD; the file may still be {part}, and LOAD_WAD would use any older "
             f"{name} on board in its place. Commit it by hand (--checksum FILE) or run again with more --tries")
         return 1, False
-    if commits > 1 and "[WadUplinkFailed]" in said:
-        # A retry finding no .part: an earlier COMMIT_WAD, whose answer was lost, most likely moved it
+    if (commits > 1 or a.cfdp == 2) and "[WadUplinkFailed]" in said:
+        # No .part to commit: cfdpGuard put a class 2 file in place at its FIN, or an earlier COMMIT_WAD did, and
+        # that WadUplinked was lost on the way down
         if a.no_load:
             say(f"FAIL: COMMIT_WAD not confirmed ({said} after {commits}); LOAD_WAD would tell whether the file is "
                 "in place")
             return 1, False
-        say(f"{said} (after {commits} COMMIT_WAD; an earlier one's answer lost on the way down?); LOAD_WAD will "
-            "say whether the file is there")
+        say(f"{said} (after {commits} COMMIT_WAD: already in place, its WadUplinked lost on the way down?); LOAD_WAD "
+            "will say whether the file is there")
         return 0, True
     if "[WadUplinked]" not in said:
         say("FAIL: the spacecraft did not put the file in place")

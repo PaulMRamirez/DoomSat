@@ -8,6 +8,7 @@
 #   scripts/flight.sh payload                       restart only the game
 #   scripts/flight.sh stop | status | check         stop everything / processes / telemetry health
 #   scripts/flight.sh build | rebuild               after editing flight/ (incremental / full)
+#   scripts/flight.sh ut                            the flight components' unit tests (GTest; CfdpGuard)
 #   scripts/flight.sh gds                           F´ on its own with the stock F´ GDS (:5000), no Yamcs
 #
 # WAD=, MAP=, GEOMETRY=, ORACLE=, FPS=, QUALITY=, SKILL= pass through to the payload.
@@ -29,6 +30,7 @@ case "${1:-start}" in
   setup)   shift; exec bash "$HERE/setup_flight.sh" "$@" ;;
   build)   exec bash "$HERE/wsl_build.sh" ;;
   rebuild) exec bash "$HERE/wsl_rebuild.sh" ;;
+  ut)      exec bash "$HERE/wsl_ut.sh" ;;
   check)   exec bash "$HERE/wsl_check.sh" ;;
   gds)
     . "$HERE/common.sh"

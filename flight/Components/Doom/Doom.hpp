@@ -29,7 +29,7 @@ class Doom final : public DoomComponentBase {
   private:
     // Rate group tick: connect if needed, drain the socket, downlink what arrived
     void run_handler(FwIndexType portNum, U32 context) override;
-    // A file FileUplink has verified: an uplinked WAD is renamed into place (unconnected on the CFDP build)
+    // An uplinked WAD known to be whole (cfdpGuard on the receiver's FIN, or FileUplink): renamed into place
     void fileAnnounce_handler(FwIndexType portNum, Fw::StringBase& file_name) override;
 
     void CONTROL_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, I8 move, I8 strafe, F32 turn, bool fire, bool use,

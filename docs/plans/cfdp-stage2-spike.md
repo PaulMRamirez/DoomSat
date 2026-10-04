@@ -101,7 +101,9 @@ Two conditions come with the merge:
 2. **Destination paths are not sandboxed.** They were not on the Stage 1 build either, though FileUplink could
    have been (it has `configure(directory)`; Stage 1 never called it). What is and is not restricted is set out
    below. That is acceptable for a demonstration stack; anything more needs the guard
-   component or an upstream sandbox first.
+   component or an upstream sandbox first. *Since then:* `cfdpGuard` confines uploads to the uplink directory
+   and commits a Class 2 WAD on board at the receiver's FIN (`docs/plans/cfdp-guard.md`). Paths named by ground
+   commands and parameters (`SendFile`, `ChannelConfig`) are still open.
 
 Merging replaces the native file packets: FileUplink and FileDownlink leave the topology, because `FprimeRouter`
 has one file output and CFDP and `Fw::FilePacket` both arrive on APID 3 (Q1). The native path stays on
@@ -314,7 +316,8 @@ order:
 
 ### Risks and limits, most serious first
 
-1. **No destination sandbox** (above).
+1. **No destination sandbox** (above). Uploads are now confined by `cfdpGuard` (`docs/plans/cfdp-guard.md`);
+   `SendFile`, `PlaybackDirectory`, `PollDirectory` and `ChannelConfig` still name any path.
 2. **Class 1 is unsafe for WADs** (above). The demo defaults to Class 2 on this build.
 3. **Commands have no retransmission.** A lost `COMMIT_WAD` or `LOAD_WAD` needs a resend; the demo's `--tries`
    does it, and the dashboard's `LOAD_WAD` button does not. The commit itself need not be a ground command: a
@@ -322,10 +325,10 @@ order:
    do it with no upstream work. On the way up it records each Metadata PDU's destination against (source entity,
    sequence number), because a FIN carries no file name. On the way down, at the receiver's own FIN for a recorded
    transaction, it passes that destination to the unconnected `doom.fileAnnounce` and forgets the entry. It must
-   key on condition code NO_ERROR and file status RETAINED, not the delivery code (zeroed per transaction, so
-   COMPLETE even on failure, `TransactionRx.cpp:103`), and commit once per transaction, since FINs repeat [read].
-   It is the destination filter of "Destination paths" item 2 plus a transaction table, so more than that
-   filter's day. Not built.
+   key on condition code NO_ERROR and file status RETAINED, and commit once per transaction, since FINs repeat
+   [read]. (An earlier draft said the delivery code is COMPLETE even on failure. It is not: every receive starts
+   with INCOMPLETE and DISCARDED (`Engine.cpp:809-813`), and only a matching checksum sets COMPLETE and RETAINED.)
+   *Built since:* `cfdpGuard` (`docs/plans/cfdp-guard.md`); a Class 2 WAD is committed on board, with no command.
 4. **The v4.3.0 framer stalls** when `commsBufferManager` runs dry: it drops the packet without a `comStatus`,
    and ComQueue then waits for ever (`F´:Svc/Ccsds/SpacePacketFramer/SpacePacketFramer.cpp:40-46`) [read; in the
    harness an unpaced burst ran the pool dry, the framer dropped a downlink packet, ComQueue overflowed and no
@@ -615,7 +618,7 @@ Written for you to file. Each says what ran and what was only read.
 
 ### Not done
 
-- The guard component (Destination paths, 2), and running the flight side as a confined user.
+- Running the flight side as a confined user. (The guard component is built: `docs/plans/cfdp-guard.md`.)
 - Downlink pacing above 64 PDUs a tick, and its effect on game frames, measured.
 - The dashboard's `LOAD_WAD` button does not resend on a lossy link, and the dashboard has no upload.
 - COP-1 for commands.

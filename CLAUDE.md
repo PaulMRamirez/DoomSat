@@ -97,7 +97,7 @@ for the dev set. The shareware `doom1.wad` E1M1 is the test level.
 | Path | What |
 |---|---|
 | `scripts/` | `flight.sh` (entry point), `setup_flight.sh`, `setup_ground.sh`, `start_pilot.sh`, `start_openmct.sh`, `common.sh` (paths + `.env`) |
-| `flight/` | the F´ component (`Components/Doom/`), topology (`DoomSat/Top/`), config (com buffers, `CfdpCfg.fpp` and `CfdpCfg.hpp`, and `PrmDb.json`, which `wsl_run_flight.sh` turns into the `PrmDb.dat` the binary loads at boot). `wsl_sync.sh` copies them into `$DOOMSAT_HOME/DoomSat` before each build |
+| `flight/` | the F´ components (`Components/Doom/`, and `Components/CfdpGuard/`, which confines CFDP uploads and commits them on board), topology (`DoomSat/Top/`), config (com buffers, `CfdpCfg.fpp` and `CfdpCfg.hpp`, and `PrmDb.json`, which `wsl_run_flight.sh` turns into the `PrmDb.dat` the binary loads at boot). `wsl_sync.sh` copies them into `$DOOMSAT_HOME/DoomSat` before each build |
 | `payload/` | the game as an instrument: `doom_payload.py`, `world_model.py`, `executor.py`, `play.py`, `wad_uplink.py` (`LOAD_WAD`'s records and name checks). Many `*_probe.py` files are one-off developer probes with hard-coded paths, so ignore them |
 | `ground/` | `pilot.py` (the loop), `targeting.py`, `decision_graph.py`, `providers.py` (jev / Claude / OpenAI-compatible), `yamcs/`, `openmct/`, `dashboard/`, `graph/` |
 | `research/` | the measurement harness (the "ruler"). Read-only for experiments: see `research/PROGRAM.md` |
@@ -118,9 +118,10 @@ for the dev set. The shareware `doom1.wad` E1M1 is the test level.
 - openmct-yamcs asks for Node ≥ 24.14.1. The setup turns engine-strict off, so 24.14.0 works.
 - F´ `fprime-xtce` comes from a PR branch (for `!binary`). pip warns that it conflicts with fprime-yamcs's pin.
   Expect that warning and ignore it.
-- Uplinked WADs land in `$DOOMSAT_HOME/wads/uplink` as `NAME.<nonce>.part`, and `COMMIT_WAD(part, fileSize,
-  checksum)` renames them once the CFDP class 2 transfer has finished, and only if the size and CFDP checksum
-  match (`wad_uplink_demo.py --checksum FILE` prints both). Use absolute paths: F´ command strings hold 40
+- Uplinked WADs land in `$DOOMSAT_HOME/wads/uplink` as `NAME.<nonce>.part`; `cfdpGuard` refuses any other CFDP
+  destination and renames a class 2 upload on board at its FIN. `COMMIT_WAD(part, fileSize, checksum)` is for
+  class 1 or a commit by hand, and renames only if the size and CFDP checksum match
+  (`wad_uplink_demo.py --checksum FILE` prints both). `scripts/flight.sh ut` runs the guard's GTest suite. Use absolute paths: F´ command strings hold 40
   characters on board, and a relative path lands in the flight binary's working directory
   (`build-artifacts/Linux/DoomSat/bin`).
 - Yamcs starts through `ground/yamcs/launch.py`, not `fprime-yamcs` itself: fprime-yamcs writes the instance YAML

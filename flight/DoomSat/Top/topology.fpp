@@ -34,6 +34,7 @@ module DoomSat {
     instance doom
     instance cfdpManager
     instance cfdpBufferManager
+    instance cfdpGuard
     instance fileManager
     instance prmDb
 
@@ -64,17 +65,23 @@ module DoomSat {
     }
 
     connections ComCcsds_Cfdp {
-      # CFDP downlink: PDUs (FW_PACKET_FILE descriptor + PDU) into the FILE buffer queue, so APID 3.
+      # CFDP downlink: PDUs (FW_PACKET_FILE descriptor + PDU) into the FILE buffer queue, so APID 3, through
+      # cfdpGuard, which passes them on unchanged and watches for the receiver's FIN of an upload it let through.
       # Both channels share the one FILE slot; every command-reachable channel must be wired,
       # because an unconnected output port asserts when the engine uses it.
-      cfdpManager.dataOut[0] -> ComCcsds.comQueue.bufferQueueIn[ComCcsds.Ports_ComBufferQueue.FILE]
-      cfdpManager.dataOut[1] -> ComCcsds.comQueue.bufferQueueIn[ComCcsds.Ports_ComBufferQueue.FILE]
+      cfdpManager.dataOut[0] -> cfdpGuard.downlinkIn[0]
+      cfdpManager.dataOut[1] -> cfdpGuard.downlinkIn[1]
+      cfdpGuard.downlinkOut[0] -> ComCcsds.comQueue.bufferQueueIn[ComCcsds.Ports_ComBufferQueue.FILE]
+      cfdpGuard.downlinkOut[1] -> ComCcsds.comQueue.bufferQueueIn[ComCcsds.Ports_ComBufferQueue.FILE]
       # dataReturnIn only deallocates, and both channels allocate from cfdpBufferManager,
       # so returning every FILE buffer on port 0 is safe
       ComCcsds.comQueue.bufferReturnOut[ComCcsds.Ports_ComBufferQueue.FILE] -> cfdpManager.dataReturnIn[0]
 
-      # CFDP uplink: the router's FW_PACKET_FILE (APID 3) output feeds channel 0
-      ComCcsds.fprimeRouter.fileOut -> cfdpManager.dataIn[0]
+      # CFDP uplink: the router's FW_PACKET_FILE (APID 3) output feeds channel 0 through cfdpGuard, which keeps
+      # every upload inside the uplink directory. Every buffer comes back to the router from cfdpManager, a
+      # refused Metadata included (the guard changes its descriptor, so cfdpManager returns it unread).
+      ComCcsds.fprimeRouter.fileOut -> cfdpGuard.uplinkIn
+      cfdpGuard.uplinkOut -> cfdpManager.dataIn[0]
       cfdpManager.dataInReturn[0] -> ComCcsds.fprimeRouter.fileBufferReturnIn
       cfdpManager.dataInReturn[1] -> ComCcsds.fprimeRouter.fileBufferReturnIn
 
@@ -100,9 +107,12 @@ module DoomSat {
       comDriver.ready         -> ComCcsds.comStub.drvConnected
     }
 
-    # FileHandling_Doom is gone: CfdpManager has no fileAnnounce-style output, so doom.fileAnnounce is left
-    # unconnected (it is a sync input, so that is legal). The ground's COMMIT_WAD renames the .part once the
-    # Class 2 transfer has its FIN, and only if the file's size and checksum are the ones the ground sent.
+    connections Cfdp_Commit {
+      # CfdpManager has no fileAnnounce-style output: cfdpGuard announces an upload when the receiver's own FIN
+      # says it arrived whole (no error, retained), and the Doom component renames it to NAME.wad. COMMIT_WAD
+      # stays for what the guard does not commit (class 1, or a commit by hand), with its size and checksum check.
+      cfdpGuard.fileAnnounceOut -> doom.fileAnnounce
+    }
 
     connections Cfdp_DataProducts {
       # Data Products downlink over CFDP (channel, class, keep, priority and destination entity

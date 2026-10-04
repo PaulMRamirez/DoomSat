@@ -117,9 +117,10 @@ module DoomMission {
         @ Image product packets (FrameChunk telemetry records) sent straight to the com queue
         output port frameOut: Fw.Com
 
-        @ FileUplink announces each file whose checksum it has verified: an uplinked WAD arrives as
-        @ NAME.wad.<anything>.part and becomes NAME.wad here. Unconnected on the CFDP build, where cfdpManager
-        @ has no such output and COMMIT_WAD does the rename after its own check of the file.
+        @ An uplinked WAD known to be whole: it arrives as NAME.wad.<anything>.part in the uplink directory and
+        @ becomes NAME.wad here. On the CFDP build cfdpGuard announces it when the receiver's FIN says the transfer
+        @ ended with no error and the file retained; on the native build FileUplink announces each file whose
+        @ checksum it has verified. A path outside the uplink directory is refused.
         sync input port fileAnnounce: Svc.FileAnnounce
 
         # ----------------------------------------------------------------------
@@ -185,12 +186,12 @@ module DoomMission {
         ) opcode 0x06
 
         @ Put an uplinked WAD in place: rename UPLINK/NAME.wad.<nonce>.part to UPLINK/NAME.wad, where UPLINK is
-        @ $DOOMSAT_HOME/wads/uplink. FileUplink's fileAnnounce does this by itself; CFDP has no such signal and
-        @ writes in place, so the ground sends this once its Class 2 transfer has finished (FIN). The file is
-        @ renamed only if its size and CFDP checksum are the ones the ground sent: a commit sent before the whole
-        @ file is on board, or after a damaged Class 1 upload, leaves it a .part (WadCommitRefused; WadUplinkFailed
-        @ if no .part exists yet) and LOAD_WAD cannot use it. Wait for the FIN: a commit between the last byte and
-        @ cfdpManager's CRC pass renames the whole file, but the transfer then ends with a file-size error.
+        @ $DOOMSAT_HOME/wads/uplink. fileAnnounce does this by itself for a Class 2 upload (cfdpGuard) or a native
+        @ one; this command is for the rest (a Class 1 upload, or a commit by hand), once the transfer has finished.
+        @ The file is renamed only if its size and CFDP checksum are the ones the ground sent: a commit sent before
+        @ the whole file is on board, or after a damaged Class 1 upload, leaves it a .part (WadCommitRefused;
+        @ WadUplinkFailed if no .part exists yet) and LOAD_WAD cannot use it. Wait for the FIN: a commit between the
+        @ last byte and cfdpManager's CRC pass renames the whole file, but the transfer then ends with a file-size error.
         async command COMMIT_WAD(
             part: string size 40  @< the bare name it was uplinked under: NAME.wad.<nonce>.part
             fileSize: U32  @< the size the ground sent, in bytes

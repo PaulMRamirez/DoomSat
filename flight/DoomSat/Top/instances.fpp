@@ -102,4 +102,8 @@ module DoomSat {
   # (findings, risk 4). Set up in DoomSatTopology.cpp.
   instance cfdpBufferManager: Svc.BufferManager base id 0x10015000
 
+  # Between the router and cfdpManager, and between cfdpManager and the com queue: confines CFDP uploads to the
+  # uplink directory and commits a WAD on the receiver's FIN (flight/Components/CfdpGuard)
+  instance cfdpGuard: DoomMission.CfdpGuard base id 0x10016000
+
 }

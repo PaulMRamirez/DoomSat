@@ -4,13 +4,16 @@ set -e
 . "$(dirname "$0")/common.sh"
 SRC=$DOOMSAT_REPO/flight
 DST=$PROJ
-mkdir -p $DST/DoomMission/Components/Doom $DST/DoomMission/config
-cp $SRC/Components/Doom/Doom.fpp $SRC/Components/Doom/Doom.hpp $SRC/Components/Doom/Doom.cpp $SRC/Components/Doom/CMakeLists.txt $DST/DoomMission/Components/Doom/
+mkdir -p $DST/DoomMission/Components/Doom $DST/DoomMission/Components/CfdpGuard/test/ut $DST/DoomMission/config
+cp $SRC/Components/Doom/Doom.fpp $SRC/Components/Doom/Doom.hpp $SRC/Components/Doom/Doom.cpp $SRC/Components/Doom/WadPath.hpp $SRC/Components/Doom/CMakeLists.txt $DST/DoomMission/Components/Doom/
+cp $SRC/Components/CfdpGuard/CfdpGuard.fpp $SRC/Components/CfdpGuard/CfdpGuard.hpp $SRC/Components/CfdpGuard/CfdpGuard.cpp $SRC/Components/CfdpGuard/CMakeLists.txt $DST/DoomMission/Components/CfdpGuard/
+cp $SRC/Components/CfdpGuard/test/ut/CfdpGuardTester.hpp $SRC/Components/CfdpGuard/test/ut/CfdpGuardTester.cpp $SRC/Components/CfdpGuard/test/ut/CfdpGuardTestMain.cpp $DST/DoomMission/Components/CfdpGuard/test/ut/
 # The topology header goes too: the one fprime-util new wrote fits only the topology it was made with, and
 # the other branch's sync (feature/wad-uplink has FileHandling, this one has CFDP) replaces it.
 cp $SRC/DoomSat/Top/topology.fpp $SRC/DoomSat/Top/instances.fpp $SRC/DoomSat/Top/DoomSatTopology.cpp $SRC/DoomSat/Top/DoomSatTopologyDefs.hpp $DST/DoomSat/Top/
 cp $SRC/config/FpConstants.fpp $SRC/config/CfdpCfg.fpp $SRC/config/CfdpCfg.hpp $SRC/config/CMakeLists.txt $DST/DoomMission/config/
 grep -q "/Doom/" $DST/DoomMission/Components/CMakeLists.txt || echo 'add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/Doom/")' >> $DST/DoomMission/Components/CMakeLists.txt
+grep -q "/CfdpGuard/" $DST/DoomMission/Components/CMakeLists.txt || echo 'add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/CfdpGuard/")' >> $DST/DoomMission/Components/CMakeLists.txt
 # An `if`, not `grep || { ...; } > .cm && mv`: that parses as `(grep || ...) && mv`, so every sync after the
 # first ran the mv on a file it never wrote and set -e stopped the build there.
 if ! grep -q "/config" $DST/DoomMission/CMakeLists.txt; then
