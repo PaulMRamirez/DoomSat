@@ -6,6 +6,8 @@ SRC=$DOOMSAT_REPO/flight
 DST=$PROJ
 mkdir -p $DST/DoomMission/Components/Doom $DST/DoomMission/config
 cp $SRC/Components/Doom/Doom.fpp $SRC/Components/Doom/Doom.hpp $SRC/Components/Doom/Doom.cpp $SRC/Components/Doom/CMakeLists.txt $DST/DoomMission/Components/Doom/
+# The topology header goes too: the one fprime-util new wrote fits only the topology it was made with, and
+# the other branch's sync (feature/wad-uplink has FileHandling, this one has CFDP) replaces it.
 cp $SRC/DoomSat/Top/topology.fpp $SRC/DoomSat/Top/instances.fpp $SRC/DoomSat/Top/DoomSatTopology.cpp $SRC/DoomSat/Top/DoomSatTopologyDefs.hpp $DST/DoomSat/Top/
 cp $SRC/config/FpConstants.fpp $SRC/config/CfdpCfg.fpp $SRC/config/CfdpCfg.hpp $SRC/config/CMakeLists.txt $DST/DoomMission/config/
 grep -q "/Doom/" $DST/DoomMission/Components/CMakeLists.txt || echo 'add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/Doom/")' >> $DST/DoomMission/Components/CMakeLists.txt
