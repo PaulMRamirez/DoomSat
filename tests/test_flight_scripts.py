@@ -6,6 +6,8 @@ other branch left in bin/. No network, no F´ install: everything here reads fil
 """
 import os
 import re
+import shutil
+import subprocess
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -78,6 +80,19 @@ class TestTheLaunchers(unittest.TestCase):
         self.assertGreaterEqual(len(calls), 2, calls)
         for name, line in calls:
             self.assertRegex(line, r'--app "?\$DEPLOY/bin/DoomSat"?', f"{name}: {line.strip()}")
+
+    @unittest.skipUnless(shutil.which("git") and os.path.exists(os.path.join(ROOT, ".git")), "needs git and a checkout")
+    def test_every_script_with_a_shebang_is_executable(self):
+        # The README and CLAUDE.md run these by path (scripts/flight.sh start, scripts/start_pilot.sh): one committed
+        # as 100644 fails with "Permission denied" on a fresh clone. Read from git, which is what a clone gets.
+        listed = subprocess.run(["git", "-C", ROOT, "ls-files", "-s", "--", "scripts/*.sh"], capture_output=True,
+                                text=True, check=True).stdout
+        entries = [line.split(None, 3) for line in listed.splitlines()]
+        self.assertTrue(entries)
+        for mode, _, _, path in entries:
+            with open(os.path.join(ROOT, path), encoding="utf-8") as f:
+                if f.readline().startswith("#!"):
+                    self.assertEqual(mode, "100755", f"{path} starts with a shebang but is not executable in git")
 
 
 if __name__ == "__main__":
