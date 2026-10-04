@@ -208,7 +208,8 @@ the ground on Windows and the flight side in WSL, pass the WSL path explicitly, 
 `--remote-dir /home/you/doom/wads/uplink`.
 
 The dashboard's Level file panel shows the active WAD (`WAD_IWAD`, `WAD_PWAD`, `WAD_LOADS`) and the last
-result, and it can send `LOAD_WAD`. `scripts/flight.sh check` prints the WAD too.
+result, and it can send `LOAD_WAD`. With no answer within 25 s it sends it again, up to three tries, as the demo's
+`--tries` does on a lossy link. `scripts/flight.sh check` prints the WAD too.
 
 Flights on an uplinked WAD are demonstrations only. Never bench or grade them: the dev set is Freedoom Phase 1
 and the test set is the shareware episode (`docs/CHARTER.md` 2.5).
