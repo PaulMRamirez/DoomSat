@@ -12,6 +12,9 @@
    <remote-dir>/NAME.<nonce>.part on the spacecraft.
 2. FileUplink checks the checksum (FileReceived); the Doom component then renames it to NAME (WadUplinked).
    Only that event says the file is there whole: the service calls an upload complete once it has SENT it.
+   With --cfdp 1|2 (the CFDP spike build, docs/plans/cfdp-stage2-spike.md) the file goes up as CCSDS CFDP
+   through Yamcs's CfdpService to cfdpManager instead, and COMMIT_WAD does the rename: in class 2 once the
+   spacecraft's FIN says the file is whole, in class 1 once RxFileTransferCompleted comes with no RxCrcMismatch.
 3. LOAD_WAD; the payload proves the game starts on it in a child process, then switches (WadLoaded) or keeps
    flying what it had (WadLoadFailed). The tool shows WAD_IWAD / WAD_PWAD / WAD_LOADS, EPISODE and
    FRAMES_SENT, and saves the first whole frame from after the switch in out/.
@@ -51,6 +54,12 @@ import wad_uplink as wu  # noqa: E402  the payload's own name rules, so a bad na
 BUCKET_UPLOAD_MAX = 32 * 1024 * 1024 - 64 * 1024
 DOOM = "/DoomSat_DoomSat/DoomSat/doom"
 CHUNK_HEADER = struct.Struct("!IHHH")   # seq, index, count, length: the FrameChunk header (Doom.fpp)
+# How long to wait for the answer to a command. With --tries above 1 (a lossy link) a command whose answer has
+# not come is sent again; a lost answer can then be stood in for by telemetry that is sent every second.
+COMMIT_ANSWER_S = 8.0
+LOAD_ANSWER_S = 40.0
+LOAD_RETRY_ANSWER_S = 25.0
+TLM_STANDIN_S = 3.0
 WATCHED = ["WAD_IWAD", "WAD_PWAD", "WAD_LOADS", "EPISODE", "FRAMES_SENT", "CMDS_RECEIVED", "PAYLOAD_LINK",
            "FRAME_CHUNK"]
 
@@ -223,6 +232,9 @@ def main():
     p.add_argument("--load-early", action="store_true", help="issue LOAD_WAD while the file is still arriving")
     p.add_argument("--expect-fail", action="store_true", help="succeed only if LOAD_WAD is refused")
     p.add_argument("--latency", type=int, default=0, help="CONTROL round trips to time before and during the uplink")
+    p.add_argument("--tries", type=int, default=1,
+                   help="send COMMIT_WAD and LOAD_WAD up to this many times while they get no answer (a lossy link)")
+    p.add_argument("--pdu-delay", type=int, help="with --cfdp: milliseconds between PDUs (Yamcs's pduDelay option)")
     p.add_argument("--latency-gap", type=float, default=0.5,
                    help="seconds between round trips during the uplink (spread them over it; default %(default)s)")
     p.add_argument("--remote-dir", default=posixpath.join(home, "wads", "uplink"),
@@ -291,8 +303,11 @@ def main():
         updates = service.create_transfer_subscription()
         t0 = time.time()
         if a.cfdp:
+            options = {"reliable": a.cfdp == 2}
+            if a.pdu_delay:
+                options["pduDelay"] = a.pdu_delay
             transfer = service.upload(a.bucket, part, remote, source_entity="ground", destination_entity="doomsat",
-                                      options={"reliable": a.cfdp == 2})
+                                      options=options)
         else:
             transfer = service.upload(a.bucket, part, remote)
         say(f"uplink started: {len(content)} bytes -> {remote} (transfer {transfer.id})")
@@ -310,7 +325,7 @@ def main():
             say(f"LOAD_WAD {iwad} {pwad!r} {a.map} while the uplink is at {transfer.transferred_size}/{len(content)} bytes")
             t_cmd = time.time()
             link.command("LOAD_WAD", iwad=iwad, pwad=pwad, map=a.map)
-            said = link.wait_event(t_cmd, "[WadLoaded]", "[WadLoadFailed]", timeout=40)
+            said = link.wait_event(t_cmd, "[WadLoaded]", "[WadLoadFailed]", timeout=LOAD_ANSWER_S)
             say(f"event: {said}")
             if not said or "[WadLoadFailed]" not in said:
                 say("FAIL: a load during the uplink was not refused")
@@ -354,9 +369,23 @@ def main():
                 if not done or "[RxFileTransferCompleted]" not in done or link.wait_event(t0, "[RxCrcMismatch]", timeout=1):
                     say("FAIL: the class 1 file did not arrive whole (no retransmission in class 1); not committing it")
                     return 1
-            link.command("COMMIT_WAD", part=part)
+            # A command is one unprotected frame (no COP-1 here): on a lossy link, ask again if there is no answer.
+            # A second COMMIT_WAD after a first that worked finds no .part and says WadUplinkFailed, harmlessly.
+            commits = 0
+            for _ in range(a.tries):
+                t_commit = time.time()
+                link.command("COMMIT_WAD", part=part)
+                commits += 1
+                if link.wait_event(t_commit, "[WadUplinked]", "[WadUplinkFailed]", timeout=COMMIT_ANSWER_S):
+                    break
         said = link.wait_event(t0, f"[WadUplinked] Uplinked WAD ready to load: {a.remote_dir.rstrip('/')}/{name}",
-                               "[BadChecksum]", "[WadUplinkFailed]", "[FileWriteError]", "[FileOpenError]", timeout=30)
+                               "[BadChecksum]", "[WadUplinkFailed]", "[FileWriteError]", "[FileOpenError]",
+                               timeout=30 if not a.cfdp else 2)
+        if a.cfdp and (said is None or (commits > 1 and "[WadUplinkFailed]" in said)):
+            # No answer, or a retry finding no .part because an earlier COMMIT_WAD, whose answer was lost, moved it
+            say(f"{said or 'no WadUplinked seen'} (after {commits} COMMIT_WAD; an answer lost on the way down?); "
+                "LOAD_WAD will say whether the file is there")
+            said = "[WadUplinked] (not seen)"
         received = link.wait_event(t0, "[FileReceived]", timeout=1)
         say(f"event: {received}")
         say(f"event: {said}")
@@ -381,11 +410,20 @@ def main():
     episode0, frames0, loads0 = link.value("EPISODE"), link.value("FRAMES_SENT"), link.value("WAD_LOADS")
     say(f"LOAD_WAD iwad={iwad} pwad={pwad!r} map={a.map}")
     t_cmd = time.time()
-    link.command("LOAD_WAD", iwad=iwad, pwad=pwad, map=a.map)
-    said = link.wait_event(t_cmd, "[WadLoaded]", "[WadLoadFailed]", timeout=40)
+    said = None
+    for attempt in range(a.tries):
+        link.command("LOAD_WAD", iwad=iwad, pwad=pwad, map=a.map)
+        said = link.wait_event(t_cmd, "[WadLoaded]", "[WadLoadFailed]",
+                               timeout=LOAD_ANSWER_S if a.tries == 1 else LOAD_RETRY_ANSWER_S)
+        # The answer is one event frame; on a lossy link the WAD channels (sent every second) can stand for it
+        if said is None and link.wait(lambda: (link.value("WAD_LOADS") or 0) > (loads0 or 0), TLM_STANDIN_S):
+            said = f"[WadLoaded] (event not seen; WAD_LOADS {loads0} -> {link.value('WAD_LOADS')})"
+        if said is not None:
+            break
+        say(f"no answer to LOAD_WAD (attempt {attempt + 1}); sending it again")
     say(f"event: {said}")
     if said is None:
-        say("FAIL: no WadLoaded or WadLoadFailed within 40 s")
+        say("FAIL: no WadLoaded or WadLoadFailed")
         return 1
     failed = "[WadLoadFailed]" in said
     # The old game flies on while the new WAD is proven, and the event can overtake that game's last frame

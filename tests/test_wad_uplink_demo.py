@@ -31,8 +31,10 @@ def wad_bytes(name):
 class FakeStack:
     """Just enough of YamcsClient, a processor, the storage and file transfer clients."""
 
-    def __init__(self, refuse_load=False):
-        self.refuse_load = refuse_load
+    def __init__(self, refuse_load=False, cfdp=False, lose=()):
+        self.refuse_load, self.cfdp = refuse_load, cfdp
+        self.lose = list(lose)    # what a lossy link drops, once each: a command name, or an event's [Id]
+        self.parts = set()        # with cfdp: .part files on board, waiting for COMMIT_WAD
         self.uploaded, self.deleted, self.transfers, self.commands = [], [], [], []
         self.on_event = self.on_data = None
         self.tlm = {"CMDS_RECEIVED": 7, "WAD_IWAD": wad_bytes("freedoom1.wad"), "WAD_PWAD": wad_bytes(""),
@@ -84,8 +86,13 @@ class FakeStack:
     def get_transfer(self, _id):
         return None
 
-    def upload(self, bucket, obj, remote):
+    def upload(self, bucket, obj, remote, **kw):
         self.transfers.append((bucket, obj, remote))
+        self.upload_kw = kw
+        if self.cfdp:             # cfdpManager writes the file in place and announces nothing
+            self.parts.add(obj)
+            return types.SimpleNamespace(id="1", transferred_size=10, is_complete=lambda: True,
+                                         is_success=lambda: True, state="COMPLETED", error=None)
         name = remote.rsplit("/", 1)[1].rsplit(".", 2)[0]
         threading.Timer(0.1, self.event, [f"[FileReceived] Received file {remote[:40]}"]).start()
         threading.Timer(0.2, self.event, [f"[WadUplinked] Uplinked WAD ready to load: {remote.rsplit('/', 1)[0]}/{name}"]).start()
@@ -95,7 +102,16 @@ class FakeStack:
     # -- commands
     def issue_command(self, name, args):
         self.commands.append((name.rsplit("/", 1)[1], dict(args)))
+        if self.dropped(name.rsplit("/", 1)[1]):
+            return
         self.tlm["CMDS_RECEIVED"] += 1
+        if name.endswith("COMMIT_WAD"):
+            if args["part"] in self.parts:
+                self.parts.discard(args["part"])
+                final = args["part"].rsplit(".", 2)[0]
+                threading.Timer(0.1, self.event, [f"[WadUplinked] Uplinked WAD ready to load: /home/x/doom/wads/uplink/{final}"]).start()
+            else:
+                threading.Timer(0.1, self.event, [f"[WadUplinkFailed] Could not place {args['part']}"]).start()
         if name.endswith("LOAD_WAD"):
             if self.refuse_load:
                 threading.Timer(0.1, self.event, ["[WadLoadFailed] Could not load x: no"]).start()
@@ -103,12 +119,20 @@ class FakeStack:
                 self.tlm.update(WAD_IWAD=wad_bytes(args["iwad"]), WAD_PWAD=wad_bytes(args["pwad"]), WAD_LOADS=1,
                                 EPISODE=2)
                 threading.Timer(0.1, self.event, [f"[WadLoaded] Now flying {args['iwad']} on {args['map']}"]).start()
-                threading.Timer(0.3, self.frame, [500]).start()
+                for i in range(10):      # the new game flies on: frames keep coming
+                    threading.Timer(0.3 + 0.2 * i, self.frame, [500 + i]).start()
         self.publish()
+
+    def dropped(self, what):
+        if what in self.lose:
+            self.lose.remove(what)
+            return True
+        return False
 
     # -- what the stack sends down
     def event(self, message):
-        self.on_event(types.SimpleNamespace(message=message))
+        if not self.dropped(message.split("]", 1)[0] + "]"):
+            self.on_event(types.SimpleNamespace(message=message))
 
     def publish(self):
         if self.on_data:
@@ -165,6 +189,44 @@ class TestTheDemo(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.run_demo(stack, "--wad", self.wad, "--as", "two words.wad", "--map", "MAP01")
         self.assertEqual(stack.transfers, [])
+
+    def test_cfdp_class_2_commits_the_part_then_loads_it(self):
+        stack = FakeStack(cfdp=True)
+        self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--iwad", "freedoom2.wad", "--map", "MAP01",
+                                       "--cfdp", "2", "--pdu-delay", "10"), 0)
+        self.assertEqual(stack.upload_kw, {"source_entity": "ground", "destination_entity": "doomsat",
+                                           "options": {"reliable": True, "pduDelay": 10}})
+        names = [c for c, _ in stack.commands]
+        self.assertEqual(names, ["RXCRCCALCBYTESPERCYCLE_PRM_SET", "COMMIT_WAD", "LOAD_WAD"])
+        self.assertEqual(stack.commands[1][1], {"part": stack.transfers[0][1]})
+
+    def test_a_lost_commit_answer_is_asked_again_and_the_load_settles_it(self):
+        # The first COMMIT_WAD works but its WadUplinked is lost; the second finds no .part (WadUplinkFailed)
+        stack = FakeStack(cfdp=True, lose=["[WadUplinked]"])
+        with mock.patch.object(demo, "COMMIT_ANSWER_S", 0.5):
+            self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--iwad", "freedoom2.wad", "--map", "MAP01",
+                                           "--cfdp", "2", "--tries", "3"), 0)
+        self.assertEqual([c for c, _ in stack.commands].count("COMMIT_WAD"), 2)
+        self.assertIn("LOAD_WAD", [c for c, _ in stack.commands])
+
+    def test_a_failed_commit_on_the_first_try_is_a_failure(self):
+        stack = FakeStack(cfdp=True)
+        stack.upload = lambda *a, **k: (FakeStack.upload(stack, *a, **k), stack.parts.clear())[0]
+        self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--iwad", "freedoom2.wad", "--map", "MAP01",
+                                       "--cfdp", "2", "--tries", "3"), 1)
+        self.assertNotIn("LOAD_WAD", [c for c, _ in stack.commands])
+
+    def test_a_lost_load_wad_is_sent_again(self):
+        stack = FakeStack(lose=["LOAD_WAD"])
+        with mock.patch.object(demo, "LOAD_RETRY_ANSWER_S", 0.5), mock.patch.object(demo, "TLM_STANDIN_S", 0.2):
+            self.assertEqual(self.run_demo(stack, "--iwad", "freedoom1.wad", "--map", "E1M2", "--tries", "2"), 0)
+        self.assertEqual([c for c, _ in stack.commands].count("LOAD_WAD"), 2)
+
+    def test_a_lost_wad_loaded_event_is_stood_in_for_by_telemetry(self):
+        stack = FakeStack(lose=["[WadLoaded]"])
+        with mock.patch.object(demo, "LOAD_ANSWER_S", 0.5):
+            self.assertEqual(self.run_demo(stack, "--iwad", "freedoom1.wad", "--map", "E1M2"), 0)
+        self.assertEqual([c for c, _ in stack.commands].count("LOAD_WAD"), 1)
 
     def test_a_refused_load_fails_unless_expected(self):
         self.assertEqual(self.run_demo(FakeStack(refuse_load=True), "--iwad", "nothere.wad", "--map", "E1M1",
