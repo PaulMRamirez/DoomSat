@@ -44,7 +44,8 @@ constexpr U16 STATUS_LEN = STATUS_CORE_LEN + 1 + CAND_LEN * MAX_CANDIDATES + THR
 constexpr U8 WAD_ARG_MAX = 40;        // LOAD_WAD's string sizes in Doom.fpp, and the WadName array size
 constexpr U8 WAD_TEXT_MAX = 120;      // longest WAD report text kept (the reason; WadLoadFailed's size)
 // The payload's WAD report (kind 3): what it did with a LOAD_WAD, or, with result REPORT, what it is
-// running when the link comes up. ALREADY answers a LOAD_WAD for the game already flying: nothing changed.
+// running when the link comes up. ALREADY answers a LOAD_WAD for the game already flying: nothing changed
+// (WadAlreadyFlying).
 enum WadResult : U8 { WAD_REPORT = 0, WAD_LOADED = 1, WAD_FAILED = 2, WAD_ALREADY = 3 };
 }  // namespace
 
@@ -667,9 +668,9 @@ void Doom ::handleWad(const U8* body, U16 length) {
         this->m_lastLevel = 0;  // the new WAD starts at level 1: announce it even if the old one was on 1 too
         this->log_ACTIVITY_HI_WadLoaded(Fw::String(text[NAME]), Fw::String(text[MAP]));
     } else if (result == WAD_ALREADY) {
-        // The same answer a load gives, so a LOAD_WAD sent again after its answer was lost hears one; WAD_LOADS
-        // does not move and the level goes on as it was
-        this->log_ACTIVITY_HI_WadLoaded(Fw::String(text[NAME]), Fw::String(text[MAP]));
+        // A LOAD_WAD sent again after its answer was lost hears one, and the level goes on as it was. An event of
+        // its own: WadLoaded means a switch to everything that reads it (the SDS ends an episode on it)
+        this->log_ACTIVITY_HI_WadAlreadyFlying(Fw::String(text[NAME]), Fw::String(text[MAP]));
     } else if (result == WAD_FAILED) {
         this->log_WARNING_HI_WadLoadFailed(Fw::String(text[NAME]), Fw::String(text[REASON]));
     }

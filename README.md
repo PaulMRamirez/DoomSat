@@ -190,7 +190,7 @@ ground/.venv/bin/python tools/wad_uplink_demo.py --iwad freedoom1.wad --map E1M1
    rather than raising an error. Only then does it rebuild its game and start a fresh episode
    (`WadLoaded`, `EPISODE` steps). If anything is wrong, it reports `WadLoadFailed` with the reason and
    carries on with the WAD it had. It is safe to send again too: for the files and map already flying it changes
-   nothing and answers `WadLoaded` (`WAD_LOADS` stays where it was; `RESET_GAME` restarts the level), and a repeat
+   nothing and answers `WadAlreadyFlying` (`RESET_GAME` restarts the level), and a repeat
    that arrives while the same load is being proven gets that load's answer.
 
 This is the CFDP build (`docs/plans/cfdp-stage2-spike.md`). The tool sees which transfer the running Yamcs

@@ -179,8 +179,8 @@ module DoomMission {
         @ WAD directory. The payload proves the game starts on them in a separate process before it rebuilds
         @ its own game and starts a fresh episode; the outcome comes back as WadLoaded or WadLoadFailed, and on
         @ failure the game carries on with the WAD it had. Safe to send again: one for the files and map already
-        @ flying changes nothing and answers WadLoaded (WAD_LOADS does not move; RESET_GAME restarts the level),
-        @ and one that repeats the load being proven gets that load's answer.
+        @ flying changes nothing and answers WadAlreadyFlying (RESET_GAME restarts the level), and one that repeats
+        @ the load being proven gets that load's answer.
         async command LOAD_WAD(
             iwad: string size 40  @< the IWAD (freedoom2.wad, doom1.wad, ...)
             pwad: string size 40  @< a PWAD to load over it; empty for none
@@ -329,6 +329,7 @@ module DoomMission {
         event WadUplinked(fileName: string size 120) severity activity high id 14 format "Uplinked WAD ready to load: {}"
         event WadUplinkFailed(fileName: string size 120) severity warning high id 15 format "Uplinked WAD could not be renamed into place: {}"
         event WadCommitRefused(fileName: string size 120, haveSize: U64, haveChecksum: U32, wantSize: U32, wantChecksum: U32) severity warning high id 16 format "Uplinked WAD not committed, it is not the file the ground sent: {} has {} bytes, checksum 0x{x}; expected {} bytes, checksum 0x{x}"
+        event WadAlreadyFlying(name: string size 90, $map: string size 8) severity activity high id 17 format "Already flying {} on {}: LOAD_WAD changed nothing"
 
         # ----------------------------------------------------------------------
         # Standard ports

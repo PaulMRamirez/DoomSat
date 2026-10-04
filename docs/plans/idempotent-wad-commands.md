@@ -34,9 +34,12 @@ Now a repeat answers as the first did and changes nothing.
   modification time), and the map. What flies is remembered as it was when the game was built on it (at start, and
   at each switch), never looked up again from its name: without a pin (another file system), a new upload of the
   same name renamed over the path must still load.
-  - A request for what is flying now is answered with the new result `ALREADY`. The Doom component logs it as
-    `WadLoaded`, the answer a load gives. `WAD_LOADS` does not move, the level is not restarted, and no new level
-    is announced (`m_lastLevel` is kept).
+  - A request for what is flying now is answered with the new result `ALREADY`, which the Doom component logs as
+    a new event, `WadAlreadyFlying` ("Already flying … on …: LOAD_WAD changed nothing"). `WAD_LOADS` does not move,
+    the level is not restarted, and no new level is announced (`m_lastLevel` is kept). Not `WadLoaded`: that means
+    a switch to everything that reads it, and the science data system on `main` takes a `WadLoaded` just before
+    an `EpisodeStarted` for a switch that ended the episode (`ground/sds/doomsat_sds/episodes.py`); a no-op load
+    followed within 10 s by a `RESET_GAME` would otherwise be cataloged as a `wad_switch`.
   - A request equal to the one being proven gets no answer of its own. The proof's answer serves both.
   - Any other request during a proof is refused, as before.
   - A new upload of the same name is a new file, renamed over the old one, so it gets a new key and is loaded.
@@ -45,12 +48,11 @@ Now a repeat answers as the first did and changes nothing.
 - **`tools/wad_uplink_demo.py`.**
   - A `WadUplinkFailed` now fails the run. A repeat that found the file in place would have said `WadUplinked`,
     so there is no longer an "unconfirmed, let `LOAD_WAD` decide" case.
-  - A `WadLoaded` is reported as "already flying" only when a `WAD_LOADS` sample that arrived well after the answer
-    (1.5 s; the channels go down once a second, and an event can overtake telemetry queued before it) still shows
-    the count from before. With no such sample the run goes on to the frame check and says it cannot tell.
-- **No change to the dashboard.** Its resend accepts a fresh `WadLoaded` event as the answer, and that is what a
-  repeat now gets. For a load of what is already flying it shows that answer ("Now flying …"); the Level file
-  panel's count, which does not move, is what tells the two apart.
+  - It takes `WadAlreadyFlying` as an answer. When `WAD_LOADS` has moved since before the first `LOAD_WAD`, an
+    earlier copy switched the game and had its answer lost, and the run goes on to the frame from after the
+    switch; otherwise it reports "already flying".
+- **The dashboard** (`feature/dashboard-load-resend`) takes `WadAlreadyFlying` as an answer too, and shows it as
+  such.
 
 ## Tests
 
@@ -75,12 +77,18 @@ The final build, on top of the reviewed guard (4 October 2026, flight `2026_10_0
 | An older `cigro.wad` put on board by hand with two 8-byte runs swapped (the same size and checksum), and a `COMMIT_WAD` for an upload that never came | `WadUplinkFailed`: not taken for the upload |
 | A `.part` as class 1 leaves it, `COMMIT_WAD` with the downlink blacked out (TM 100 %), then sent again | The first renamed it on board, and its answer was lost. The resend got `WadUplinked …/cigrep.wad` and `OpCodeCompleted` |
 | The same `LOAD_WAD` three times, 0.1 s apart (`cig.wad` over `freedoom2.wad`, MAP02) | The payload absorbed both repeats while proving. One `WadLoaded`, `WAD_LOADS` +1, `EPISODE` +1 |
-| The same `LOAD_WAD` once more | `WadLoaded`. `WAD_LOADS` and `EPISODE` did not move, and frames kept coming. Payload: "already flying it; nothing to do" |
+| The same `LOAD_WAD` once more | Answered (then as `WadLoaded`; `WadAlreadyFlying` since, see below). `WAD_LOADS` and `EPISODE` did not move, and frames kept coming. Payload: "already flying it; nothing to do" |
 | `doom1.wad` on E1M2, then E1M3 | Two switches, `WAD_LOADS` +1 each |
 | `LOAD_WAD doom1.wad E1M1` with the downlink blacked out, then the downlink restored and the same command resent | Nothing heard for 25 s. `WAD_LOADS` had already moved by 1. The resend got `WadLoaded`, and `WAD_LOADS` was +1 in all |
 | Demo with the downlink blacked out from full size for 12 s (`cigfe.wad`) | The guard committed it on board during the blackout, and its `UploadCommitted` and `WadUplinked` were lost. The demo sent `COMMIT_WAD` 5 s after the FIN and got `WadUplinked` from the repeat, then `LOAD_WAD` flew it. Before this change, that repeat answered `WadUplinkFailed` |
 | Demo, 5 % loss each way (seed 31), `cig.wad` as `cigs1`–`cigs3` | 3 of 3 OK, each committed on board at the FIN. In one, the `WadLoaded` was lost and the WAD channels stood in for it |
-| Demo for what was already flying (`--pwad cigs3.wad --map map02`), same link | `WadLoaded`, then a later sample with `WAD_LOADS` still 9: "OK: already flying" |
+| Demo for what was already flying (`--pwad cigs3.wad --map map02`), same link | Answered, `WAD_LOADS` still 9: "OK: already flying" |
+
+Then, with `main` merged in and the no-op answer made its own event (flight `2026_10_04-21_44_46`): the five
+`COMMIT_WAD` checks above again OK; three `LOAD_WAD` 0.1 s apart gave one `WadLoaded` and one switch (`EPISODE`
+1 → 2), the repeats absorbed while proving; once more gave `WadAlreadyFlying` with nothing moved; with the downlink
+blacked out, `LOAD_WAD doom1.wad E1M1` switched on board (its `WadLoaded` lost) and the resend was answered
+`WadAlreadyFlying`; and the demo for what was flying printed "OK: already flying".
 
 An earlier build of this branch (flight `2026_10_04-16_46_37`, before its review) ran the same checks and four demo
 runs at TC 5 % / TM 30 %, all OK; one of those lost its first `LOAD_WAD` answer and resent it.
@@ -93,7 +101,7 @@ signal 11. The payload refused the load and kept flying what it had, which is wh
 - **Older flight builds.** One built before this change answers a repeat `COMMIT_WAD` with `WadUplinkFailed`, and
   the demo now fails on that. That errs on the safe side. Commit by hand after checking what is on board. The
   other way round, this payload with an older flight build, a load of what is already flying gets no answer at
-  all: the old Doom component has no `ALREADY` and drops the report. The flight software and the payload come
+  all: the old Doom component has no `ALREADY` and logs nothing for it. The flight software and the payload come
   from the same checkout; rebuild with `scripts/flight.sh build`.
 - **A restart between a commit and its repeat.** The record of which upload each `NAME.wad` came from is kept in
   memory, so after a restart a repeat answers `WadUplinkFailed`, and the demo fails, although the file is in place.

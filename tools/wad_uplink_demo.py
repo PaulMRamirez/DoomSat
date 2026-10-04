@@ -24,7 +24,7 @@
 3. LOAD_WAD; the payload proves the game starts on it in a child process, then switches (WadLoaded) or keeps
    flying what it had (WadLoadFailed). The tool shows WAD_IWAD / WAD_PWAD / WAD_LOADS, EPISODE and
    FRAMES_SENT, and saves the first whole frame from after the switch in out/. LOAD_WAD is safe to send again
-   too: one for the files and map already flying answers WadLoaded and leaves WAD_LOADS where it was.
+   too: one for the files and map already flying answers WadAlreadyFlying and changes nothing.
 
 What is loaded: with --iwad, the uplinked file is the PWAD over that IWAD; without, it is the IWAD. With no
 --wad, nothing is uplinked and LOAD_WAD names files already on board (--iwad, --pwad).
@@ -71,9 +71,6 @@ GUARD_ANSWER_S = 5.0
 LOAD_ANSWER_S = 40.0
 LOAD_RETRY_ANSWER_S = 25.0
 TLM_STANDIN_S = 3.0
-# A WAD channel sample that arrives this long after an answer was written after it: the channels go down once a second,
-# and an event can overtake telemetry queued before it
-TLM_FRESH_S = 1.5
 # An uplink is given up when neither its state nor its byte count has moved for this long. No budget from the size:
 # the pace (--pdu-delay, or sleepBetweenPdus in yamcs.yaml) decides how long it takes. Yamcs counts only first-pass
 # bytes, so a CFDP upload at full size waiting on NAK resends and the FIN has its own, longer limit (tail_limit).
@@ -302,7 +299,7 @@ def uplink(a, link, bucket, part, remote, name, content):
             say(f"LOAD_WAD {iwad} {pwad!r} {a.map} while the uplink is at {transfer.transferred_size}/{len(content)} bytes")
             t_cmd = time.time()
             link.command("LOAD_WAD", iwad=iwad, pwad=pwad, map=a.map)
-            said = link.wait_event(t_cmd, "[WadLoaded]", "[WadLoadFailed]", timeout=LOAD_ANSWER_S)
+            said = link.wait_event(t_cmd, "[WadLoaded]", "[WadLoadFailed]", "[WadAlreadyFlying]", timeout=LOAD_ANSWER_S)
             say(f"event: {said}")
             if not said or "[WadLoadFailed]" not in said:
                 say("FAIL: a load during the uplink was not refused")
@@ -571,12 +568,12 @@ def main():
                 and link.value("WAD_PWAD") == (pwad or ""))
 
     # LOAD_WAD is safe to send again: a repeat of the load being proven gets that load's answer, and one after it
-    # switched finds the game already flying it (WadLoaded again, WAD_LOADS unmoved)
+    # switched finds the game already flying it (WadAlreadyFlying, nothing changed)
     t_cmd = time.time()
     said = None
     for attempt in range(a.tries):
         link.command("LOAD_WAD", iwad=iwad, pwad=pwad, map=a.map)
-        said = link.wait_event(t_cmd, "[WadLoaded]", "[WadLoadFailed]",
+        said = link.wait_event(t_cmd, "[WadLoaded]", "[WadLoadFailed]", "[WadAlreadyFlying]",
                                timeout=LOAD_ANSWER_S if a.tries == 1 else LOAD_RETRY_ANSWER_S)
         # The answer is one event frame; on a lossy link the WAD channels (sent every second) can stand for it,
         # but only against a count known from before the command
@@ -585,7 +582,6 @@ def main():
         if said is not None:
             break
         say(f"no answer to LOAD_WAD (attempt {attempt + 1}); sending it again")
-    t_answer = time.time()
     say(f"event: {said}")
     if said is None:
         say("FAIL: no WadLoaded or WadLoadFailed")
@@ -608,22 +604,21 @@ def main():
     if a.expect_fail:
         say("FAIL: LOAD_WAD was expected to be refused")
         return 1
+    answer = said.split("]", 1)[0].lstrip("[")
     if (link.value("WAD_IWAD"), link.value("WAD_PWAD")) != (iwad, pwad or ""):
-        say(f"FAIL: WadLoaded, but the WAD channels name {link.value('WAD_IWAD')!r} {link.value('WAD_PWAD')!r}, "
+        say(f"FAIL: {answer}, but the WAD channels name {link.value('WAD_IWAD')!r} {link.value('WAD_PWAD')!r}, "
             f"not {iwad!r} {pwad!r}: that answer was not for this load")
         return 1
-    if loads0 is not None and link.value("WAD_LOADS") == loads0:
-        # Answered, and the count has not moved. Only a sample written after the answer shows the game did not switch:
-        # with the samples lost, a real switch would look the same
-        def fresh():
-            return link.values.get("WAD_LOADS", (0, None))[0] >= t_answer + TLM_FRESH_S
-        if link.wait(lambda: fresh() or link.value("WAD_LOADS") != loads0, TLM_FRESH_S + TLM_STANDIN_S) and \
-                link.value("WAD_LOADS") == loads0:
-            say(f"OK: already flying {iwad} {pwad!r} on {a.map}; LOAD_WAD changed nothing (WAD_LOADS stays {loads0}; "
-                "RESET_GAME restarts the level)")
+    if answer == "WadAlreadyFlying":
+        # Nothing changed for this copy. An earlier copy may have switched the game and had its answer lost: then the
+        # count has moved since before the first was sent
+        if loads0 is not None and link.wait(lambda: link.value("WAD_LOADS") != loads0, TLM_STANDIN_S):
+            say(f"an earlier LOAD_WAD switched the game (its answer lost); the repeat found it flying "
+                f"(WAD_LOADS {loads0} -> {link.value('WAD_LOADS')})")
+        else:
+            say(f"OK: already flying {iwad} {pwad!r} on {a.map}; LOAD_WAD changed nothing (RESET_GAME restarts the "
+                "level)")
             return 0
-        if link.value("WAD_LOADS") == loads0:
-            say("no WAD channels from after the answer: whether it switched or was already flying, the frames tell")
     if not link.wait(lambda: any(s > seq0 for _, s, _ in link.frames), 10):
         say("FAIL: no whole frame from after the switch within 10 s")
         return 1

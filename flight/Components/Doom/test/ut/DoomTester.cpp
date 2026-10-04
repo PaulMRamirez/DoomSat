@@ -299,12 +299,13 @@ void DoomTester ::testAnnouncedFilesOutsideTheUplinkDirectoryStayWhereTheyAre() 
 // ----------------------------------------------------------------------
 
 void DoomTester ::testWadReports() {
-    // ALREADY: a LOAD_WAD for the game already flying. The answer a load gives, the count as it was, and the level
-    // goes on (no new level announced)
+    // ALREADY: a LOAD_WAD for the game already flying. An answer of its own (WadLoaded means a switch), the count as
+    // it was, and the level goes on (no new level announced)
     this->component.m_lastLevel = 3;
     this->report(ALREADY, 1, "basic.wad over freedoom2.wad", "MAP01");
     ASSERT_EVENTS_SIZE(1);
-    ASSERT_EVENTS_WadLoaded(0, "basic.wad over freedoom2.wad", "MAP01");
+    ASSERT_EVENTS_WadAlreadyFlying(0, "basic.wad over freedoom2.wad", "MAP01");
+    ASSERT_EVENTS_WadLoaded_SIZE(0);
     ASSERT_TLM_WAD_LOADS_SIZE(1);
     ASSERT_TLM_WAD_LOADS(0, 1);
     EXPECT_EQ(3, this->component.m_lastLevel);

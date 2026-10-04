@@ -1281,7 +1281,7 @@ class Payload:
         running until the child has flown a second on the new file; only then does it switch.
 
         Safe to send again, which the ground does when no answer comes on a lossy link: a request for the files
-        and map already flying changes nothing and is answered ALREADY (WadLoaded on the ground, WAD_LOADS
+        and map already flying changes nothing and is answered ALREADY (WadAlreadyFlying on the ground, WAD_LOADS
         unmoved), and one that repeats the request being proven waits for that request's answer.
         """
         try:

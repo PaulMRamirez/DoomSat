@@ -217,7 +217,9 @@ class FakeStack:
                     self.fresh -= {args["iwad"], args["pwad"]}
                     self.tlm.update(WAD_IWAD=wad_bytes(args["iwad"]), WAD_PWAD=wad_bytes(args["pwad"]),
                                     WAD_LOADS=(self.tlm.get("WAD_LOADS") or 0) + 1, EPISODE=self.tlm["EPISODE"] + 1)
-                threading.Timer(0.1, self.event, [f"[WadLoaded] Now flying {args['iwad']} on {args['map']}"]).start()
+                    threading.Timer(0.1, self.event, [f"[WadLoaded] Now flying {args['iwad']} on {args['map']}"]).start()
+                else:
+                    threading.Timer(0.1, self.event, [f"[WadAlreadyFlying] Already flying {args['iwad']} on {args['map']}: LOAD_WAD changed nothing"]).start()
                 threading.Timer(0.3, self.channels).start()   # the WAD channels again, a little later
                 for i in range(10):      # the game flies on: frames keep coming
                     threading.Timer(0.3 + 0.2 * i, self.frame, [self.seq + i]).start()
@@ -289,7 +291,6 @@ class TestTheDemo(unittest.TestCase):
             patches.enter_context(mock.patch.object(sys, "argv", argv))
             patches.enter_context(mock.patch.object(demo, "say", say))
             patches.enter_context(mock.patch.object(demo, "GUARD_ANSWER_S", 0.3))   # most stand-ins have no guard
-            patches.enter_context(mock.patch.object(demo, "TLM_FRESH_S", 0.05))
             patches.enter_context(mock.patch.object(demo.time, "sleep", clock.sleep if clock else lambda _s: None))
             if clock:
                 patches.enter_context(mock.patch.object(demo.time, "time", clock.time))
@@ -457,7 +458,7 @@ class TestTheDemo(unittest.TestCase):
             if name.endswith("LOAD_WAD"):
                 threading.Timer(1.0, stack.publish).start()
         stack.issue_command = issue
-        with mock.patch.object(demo, "TLM_STANDIN_S", 2.0), mock.patch.object(demo, "TLM_FRESH_S", 1.5):
+        with mock.patch.object(demo, "TLM_STANDIN_S", 2.0):
             self.assertEqual(self.run_demo(stack, "--iwad", "freedoom1.wad", "--map", "E1M2", said=said), 0)
         self.assertEqual(stack.switches, 1)
         self.assertFalse([m for m in said if m.startswith("OK: already flying")], said)

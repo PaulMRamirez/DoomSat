@@ -112,14 +112,17 @@ class TestTheFlightSoftwareAgrees(unittest.TestCase):
         self.assertEqual({k: int(v) for k, v in codes.items()},
                          {"REPORT": wu.REPORT, "LOADED": wu.LOADED, "FAILED": wu.FAILED, "ALREADY": wu.ALREADY})
 
-    def test_a_load_of_what_is_flying_answers_as_a_load_and_restarts_nothing(self):
-        # Its behaviour is in the Doom GTest suite (scripts/flight.sh ut); this pins the branch from here
+    def test_a_load_of_what_is_flying_has_its_own_answer_and_restarts_nothing(self):
+        # Its behaviour is in the Doom GTest suite (scripts/flight.sh ut); this pins the branch from here. Not
+        # WadLoaded: the SDS takes a WadLoaded just before an EpisodeStarted for a switch that ended the episode
         handler = CPP[CPP.index("void Doom ::handleWad"):]
         handler = handler[:handler.index("\n}\n")]
         already = re.search(r"result == WAD_ALREADY\) \{(.*?)\} else if", handler, re.S)
         self.assertIsNotNone(already)
-        self.assertIn("log_ACTIVITY_HI_WadLoaded(Fw::String(text[NAME]), Fw::String(text[MAP]))", already.group(1))
+        self.assertIn("log_ACTIVITY_HI_WadAlreadyFlying(Fw::String(text[NAME]), Fw::String(text[MAP]))", already.group(1))
+        self.assertNotIn("WadLoaded(", already.group(1))
         self.assertNotIn("m_lastLevel", already.group(1), "the level goes on: nothing to announce again")
+        self.assertRegex(FPP, r"event WadAlreadyFlying\(name: string size 90, \$map: string size 8\)")
 
     def test_the_payload_answers_a_repeat_without_a_second_switch(self):
         # Its behaviour is in tests/test_payload_load_wad.py, which needs the payload venv; this runs anywhere
