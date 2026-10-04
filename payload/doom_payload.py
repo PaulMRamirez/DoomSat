@@ -54,6 +54,7 @@ import executor as ex_mod            # noqa: E402  the onboard executor (charter
 import seen_geometry as geom_mod     # noqa: E402  exact lines, gated on the automap having drawn them
 import world_model as wm_mod         # noqa: E402  frontiers, objects, the planner (charter 3.2)
 import wad_uplink as wu              # noqa: E402  LOAD_WAD: its link records and which names may load
+import episode_record as rec_mod     # noqa: E402  a record of each episode for the ground to downlink, off by default
 
 TICRATE = 35
 STATUS_FMT = "!hhhhBBHfffBfHHHHHHHHBBBBBHfHfHHHHfffBBBIHBBHBBBhHHHHBBBBBBBBBBBB"   # 120 bytes, 64 fields (see pack_status)
@@ -706,6 +707,9 @@ class Payload:
         # against. Not looked up again from the path, which a new uplink of the same name may have taken over.
         self.wad_files = wu.files_key(self.wad, self.pwad)
         self.wad_serial, self.wad_pinned = 0, None   # LOAD_WAD's pinned links (wad_uplink.pin): the request, the one flying
+        # The ground's science data system can ask for a record of each episode (payload/episode_record.py).
+        # None unless --records on; nothing on board reads it.
+        self.records = rec_mod.from_args(args, self)
         self.new_episode()
 
     @staticmethod
@@ -1528,6 +1532,9 @@ class Payload:
                 if self.last_obs is not None:
                     self.last_obs["dead"] = int(died)
                     self.last_obs["level_done"] = int(not died)
+                    if self.records:      # on disk before the ground hears of the end and asks for it
+                        self.records.status(self.last_obs)
+                        self.records.close("died" if died else "level_finished")
                     self.send(conn, 1, self.pack_status(self.last_obs))
                 print(f"[payload] episode {self.episode} over on {self.map}: {'died' if died else 'LEVEL FINISHED'} at tic {tic}", flush=True)
                 time.sleep(2.0)
@@ -1544,6 +1551,8 @@ class Payload:
             tic += 1
             if tic % self.args.status_every == 0:
                 self.send(conn, 1, self.pack_status(obs))
+                if self.records:
+                    self.records.status(obs)
             now = time.perf_counter()
             if self.frame_hz and now >= next_frame:
                 next_frame = now + 1.0 / self.frame_hz
@@ -1587,6 +1596,9 @@ def main():
     p.add_argument("--probe", action="store_true",
                    help="fly one second on --wad/--pwad and exit 0 if the game ran: LOAD_WAD's check, run "
                         "in a child process because a damaged WAD kills the process rather than raising")
+    p.add_argument("--records", default="off", choices=["off", "on"],
+                   help="write a record of each episode to $DOOMSAT_HOME/run/rec for the ground's science data "
+                        "system to downlink (payload/episode_record.py)")
     args = p.parse_args()
     if args.probe:
         # If the payload that started this probe dies before it can, a watchdog takes the probe and its engine
@@ -1598,19 +1610,26 @@ def main():
             os._exit(0)
         sys.exit(Payload(args).probe())
     wu.unpin()   # pinned links a previous flight left behind (only the flight payload pins or clears them)
-    payload = Payload(args)
+    payload = None
 
     def _stop(*_):
         # scripts/flight.sh stop and every restart send SIGTERM; without this the ViZDoom engine (and a
-        # LOAD_WAD probe's) outlives the payload, one more orphan per restart
-        if payload.wad_job is not None:
-            try:
-                os.killpg(payload.wad_job[0].pid, signal.SIGKILL)
-            except OSError:
-                pass
-        payload.game.close()
-        sys.exit(0)
+        # LOAD_WAD probe's) outlives the payload, one more orphan per restart. Armed before the game is built,
+        # so no SIGTERM finds a running game with no handler set; one that comes while the game is still being
+        # built just exits, and scripts/wsl_run_flight.sh reaps an engine the payload could not close (it kills
+        # what is left of the payload's process group).
+        try:
+            if payload is not None:
+                if payload.wad_job is not None:
+                    try:
+                        os.killpg(payload.wad_job[0].pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+                payload.game.close()
+        finally:
+            sys.exit(0)
     signal.signal(signal.SIGTERM, _stop)
+    payload = Payload(args)
     payload.serve()
 
 

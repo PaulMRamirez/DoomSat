@@ -11,14 +11,14 @@
 #   scripts/flight.sh ut                            the flight components' unit tests (GTest; CfdpGuard)
 #   scripts/flight.sh gds                           F´ on its own with the stock F´ GDS (:5000), no Yamcs
 #
-# WAD=, MAP=, GEOMETRY=, ORACLE=, FPS=, QUALITY=, SKILL= pass through to the payload.
+# WAD=, MAP=, GEOMETRY=, ORACLE=, FPS=, QUALITY=, SKILL=, RECORDS= pass through to the payload.
 HERE="$(cd "$(dirname "$0")" && pwd)"
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
     PASS=()
     [ -n "${DOOMSAT_HOME:-}" ] && PASS+=("DOOMSAT_HOME=$DOOMSAT_HOME")   # a WSL path, if set by hand
     . "$HERE/common.sh"
-    for v in WAD MAP GEOMETRY ORACLE FPS QUALITY SKILL DOOMSAT_RELAY DOOMSAT_RELAY_TM_PORT DOOMSAT_RELAY_TC_PORT DOOMSAT_PRM_DEFAULTS; do [ -n "${!v:-}" ] && PASS+=("$v=${!v}"); done
+    for v in WAD MAP GEOMETRY ORACLE FPS QUALITY SKILL RECORDS DOOMSAT_RELAY DOOMSAT_RELAY_TM_PORT DOOMSAT_RELAY_TC_PORT DOOMSAT_PRM_DEFAULTS; do [ -n "${!v:-}" ] && PASS+=("$v=${!v}"); done
     WSL=(-d "${DOOMSAT_WSL_DISTRO:-Ubuntu}")
     [ -n "${DOOMSAT_WSL_USER:-}" ] && WSL+=(-u "$DOOMSAT_WSL_USER")
     REPO_WIN="$(cd "$HERE/.." && pwd -W)"
