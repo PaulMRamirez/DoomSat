@@ -193,8 +193,8 @@ packets instead, which are not retransmitted: there one lost packet fails the fi
 Add `--tries 3` to the demo there: a command is one frame, and the tool resends `COMMIT_WAD` and `LOAD_WAD`
 when no answer comes back.
 
-**What the transfer does not restrict.** CFDP writes wherever the ground's destination path points, as F´ file
-packets did: anyone who can command the spacecraft through Yamcs can write (or overwrite) any file the flight
+**What the transfer does not restrict.** CFDP writes wherever the ground's destination path points (F´ file
+packets did too on the native build, which never set FileUplink's write directory): anyone who can command the spacecraft through Yamcs can write (or overwrite) any file the flight
 process can, and its `cfdpManager.SendFile` command can downlink any file it can read, deleting it if asked
 (`keep` DELETE). Only `COMMIT_WAD` and `LOAD_WAD` are confined to the WAD directories. Run the flight side as
 an ordinary user, never as root, on anything that matters.

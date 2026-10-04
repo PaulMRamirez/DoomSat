@@ -97,7 +97,7 @@ for the dev set. The shareware `doom1.wad` E1M1 is the test level.
 | Path | What |
 |---|---|
 | `scripts/` | `flight.sh` (entry point), `setup_flight.sh`, `setup_ground.sh`, `start_pilot.sh`, `start_openmct.sh`, `common.sh` (paths + `.env`) |
-| `flight/` | the F´ component (`Components/Doom/`), topology (`DoomSat/Top/`), config (com buffers, `CfdpCfg.fpp`, and `PrmDb.json`, which `wsl_run_flight.sh` turns into the `PrmDb.dat` the binary loads at boot). `wsl_sync.sh` copies them into `$DOOMSAT_HOME/DoomSat` before each build |
+| `flight/` | the F´ component (`Components/Doom/`), topology (`DoomSat/Top/`), config (com buffers, `CfdpCfg.fpp` and `CfdpCfg.hpp`, and `PrmDb.json`, which `wsl_run_flight.sh` turns into the `PrmDb.dat` the binary loads at boot). `wsl_sync.sh` copies them into `$DOOMSAT_HOME/DoomSat` before each build |
 | `payload/` | the game as an instrument: `doom_payload.py`, `world_model.py`, `executor.py`, `play.py`, `wad_uplink.py` (`LOAD_WAD`'s records and name checks). Many `*_probe.py` files are one-off developer probes with hard-coded paths, so ignore them |
 | `ground/` | `pilot.py` (the loop), `targeting.py`, `decision_graph.py`, `providers.py` (jev / Claude / OpenAI-compatible), `yamcs/`, `openmct/`, `dashboard/`, `graph/` |
 | `research/` | the measurement harness (the "ruler"). Read-only for experiments: see `research/PROGRAM.md` |
