@@ -414,8 +414,8 @@ class TestCapture(CaptureCase):
         ctx = self.capture([proc(202, ["python", "ground/pilot.py", "--system-two=anthropic"], BEFORE)])
         self.assertEqual(ctx["pilot_mode"], "system-one=typesafe system-two=anthropic")
 
-    # Regression test for a bug the tests found (now fixed): the same _options defect (context.py:66-67) as seen in the catalog. pilot.py has flags that take
-    # no value (--no-after-action, --auto-apply-graph, --log-questions, --no-reset; pilot.py:657-677), and
+    # Regression test for a bug the tests found (now fixed): the same context._options defect as seen in the catalog. pilot.py has flags that take
+    # no value (--no-after-action, --auto-apply-graph, --log-questions, --no-reset; pilot.py's argument parser), and
     # "pilot.py --log-questions --system-two none" swallows --system-two, so the episode is cataloged as flown
     # with "system-two=claude-cli", a mode it did not have. scripts/play.sh documents such a call: "play.sh
     # --no-reset --system-two claude-cli" runs "pilot.py --system-one manual --system-two none --no-reset
