@@ -248,49 +248,49 @@ Every parameter a display or custom view reads. Alarm ranges for flight paramete
 | `doom/ARMOR_ITEM_DIST` | integer | Distance to the nearest armor pickup seen. |
 | `doom/BULLETS` | integer | Bullets held (pistol, chaingun). |
 | `doom/CAND0.kind` | enumeration | Candidate slot 0: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND0.novelty` | integer | Candidate slot 0: for a frontier or a door, the unseen 32-unit cells reachable through it, a count up to 255; 0 for every other kind. |
+| `doom/CAND0.novelty` | integer | Candidate slot 0: for a frontier or a door, the unseen 32-unit cells reachable through it, a count up to 255; usually 0 for other kinds (a place that was once a frontier or door keeps its count). |
 | `doom/CAND0.pathUnits` | integer | Candidate slot 0: distance along floor the payload has seen (not the straight line). |
 | `doom/CAND0.threatCount` | integer | Candidate slot 0: live things near it. |
 | `doom/CAND0.x` | float | Candidate slot 0: x, map units. |
 | `doom/CAND0.y` | float | Candidate slot 0: y, map units. |
 | `doom/CAND1.kind` | enumeration | Candidate slot 1: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND1.novelty` | integer | Candidate slot 1: for a frontier or a door, the unseen 32-unit cells reachable through it, a count up to 255; 0 for every other kind. |
+| `doom/CAND1.novelty` | integer | Candidate slot 1: for a frontier or a door, the unseen 32-unit cells reachable through it, a count up to 255; usually 0 for other kinds (a place that was once a frontier or door keeps its count). |
 | `doom/CAND1.pathUnits` | integer | Candidate slot 1: distance along floor the payload has seen (not the straight line). |
 | `doom/CAND1.threatCount` | integer | Candidate slot 1: live things near it. |
 | `doom/CAND1.x` | float | Candidate slot 1: x, map units. |
 | `doom/CAND1.y` | float | Candidate slot 1: y, map units. |
 | `doom/CAND2.kind` | enumeration | Candidate slot 2: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND2.novelty` | integer | Candidate slot 2: for a frontier or a door, the unseen 32-unit cells reachable through it, a count up to 255; 0 for every other kind. |
+| `doom/CAND2.novelty` | integer | Candidate slot 2: for a frontier or a door, the unseen 32-unit cells reachable through it, a count up to 255; usually 0 for other kinds (a place that was once a frontier or door keeps its count). |
 | `doom/CAND2.pathUnits` | integer | Candidate slot 2: distance along floor the payload has seen (not the straight line). |
 | `doom/CAND2.threatCount` | integer | Candidate slot 2: live things near it. |
 | `doom/CAND2.x` | float | Candidate slot 2: x, map units. |
 | `doom/CAND2.y` | float | Candidate slot 2: y, map units. |
 | `doom/CAND3.kind` | enumeration | Candidate slot 3: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND3.novelty` | integer | Candidate slot 3: for a frontier or a door, the unseen 32-unit cells reachable through it, a count up to 255; 0 for every other kind. |
+| `doom/CAND3.novelty` | integer | Candidate slot 3: for a frontier or a door, the unseen 32-unit cells reachable through it, a count up to 255; usually 0 for other kinds (a place that was once a frontier or door keeps its count). |
 | `doom/CAND3.pathUnits` | integer | Candidate slot 3: distance along floor the payload has seen (not the straight line). |
 | `doom/CAND3.threatCount` | integer | Candidate slot 3: live things near it. |
 | `doom/CAND3.x` | float | Candidate slot 3: x, map units. |
 | `doom/CAND3.y` | float | Candidate slot 3: y, map units. |
 | `doom/CAND4.kind` | enumeration | Candidate slot 4: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND4.novelty` | integer | Candidate slot 4: for a frontier or a door, the unseen 32-unit cells reachable through it, a count up to 255; 0 for every other kind. |
+| `doom/CAND4.novelty` | integer | Candidate slot 4: for a frontier or a door, the unseen 32-unit cells reachable through it, a count up to 255; usually 0 for other kinds (a place that was once a frontier or door keeps its count). |
 | `doom/CAND4.pathUnits` | integer | Candidate slot 4: distance along floor the payload has seen (not the straight line). |
 | `doom/CAND4.threatCount` | integer | Candidate slot 4: live things near it. |
 | `doom/CAND4.x` | float | Candidate slot 4: x, map units. |
 | `doom/CAND4.y` | float | Candidate slot 4: y, map units. |
 | `doom/CAND5.kind` | enumeration | Candidate slot 5: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND5.novelty` | integer | Candidate slot 5: for a frontier or a door, the unseen 32-unit cells reachable through it, a count up to 255; 0 for every other kind. |
+| `doom/CAND5.novelty` | integer | Candidate slot 5: for a frontier or a door, the unseen 32-unit cells reachable through it, a count up to 255; usually 0 for other kinds (a place that was once a frontier or door keeps its count). |
 | `doom/CAND5.pathUnits` | integer | Candidate slot 5: distance along floor the payload has seen (not the straight line). |
 | `doom/CAND5.threatCount` | integer | Candidate slot 5: live things near it. |
 | `doom/CAND5.x` | float | Candidate slot 5: x, map units. |
 | `doom/CAND5.y` | float | Candidate slot 5: y, map units. |
 | `doom/CAND6.kind` | enumeration | Candidate slot 6: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND6.novelty` | integer | Candidate slot 6: for a frontier or a door, the unseen 32-unit cells reachable through it, a count up to 255; 0 for every other kind. |
+| `doom/CAND6.novelty` | integer | Candidate slot 6: for a frontier or a door, the unseen 32-unit cells reachable through it, a count up to 255; usually 0 for other kinds (a place that was once a frontier or door keeps its count). |
 | `doom/CAND6.pathUnits` | integer | Candidate slot 6: distance along floor the payload has seen (not the straight line). |
 | `doom/CAND6.threatCount` | integer | Candidate slot 6: live things near it. |
 | `doom/CAND6.x` | float | Candidate slot 6: x, map units. |
 | `doom/CAND6.y` | float | Candidate slot 6: y, map units. |
 | `doom/CAND7.kind` | enumeration | Candidate slot 7: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND7.novelty` | integer | Candidate slot 7: for a frontier or a door, the unseen 32-unit cells reachable through it, a count up to 255; 0 for every other kind. |
+| `doom/CAND7.novelty` | integer | Candidate slot 7: for a frontier or a door, the unseen 32-unit cells reachable through it, a count up to 255; usually 0 for other kinds (a place that was once a frontier or door keeps its count). |
 | `doom/CAND7.pathUnits` | integer | Candidate slot 7: distance along floor the payload has seen (not the straight line). |
 | `doom/CAND7.threatCount` | integer | Candidate slot 7: live things near it. |
 | `doom/CAND7.x` | float | Candidate slot 7: x, map units. |

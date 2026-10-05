@@ -13,7 +13,7 @@ if [ "$campaign" -nt ../../ground/openmct/displays/doomsat-displays.json ]; then
   if [ -n "$(find "$campaign" -mmin -1440)" ]; then
     cp "$campaign" example/displays/doomsat-displays.json && echo "serving the campaign displays (--plan-start)"
   else
-    echo "not serving the campaign displays: over a day old (delete $campaign, or rebuild with --plan-start)"
+    echo "not serving the campaign displays: over a day old (delete ground/openmct/displays/doomsat-displays.campaign.json, or rebuild with --plan-start)"
   fi
 fi
 mkdir -p example/aar && cp ../../docs/results/e1m1-progress.html example/aar/

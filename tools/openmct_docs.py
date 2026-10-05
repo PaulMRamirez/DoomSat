@@ -192,7 +192,7 @@ CAND_MEMBERS = {"kind": "what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SW
                 "x": "x, map units", "y": "y, map units",
                 "pathUnits": "distance along floor the payload has seen (not the straight line)",
                 "novelty": "for a frontier or a door, the unseen 32-unit cells reachable through it, a count up to 255; "
-                           "0 for every other kind",
+                           "usually 0 for other kinds (a place that was once a frontier or door keeps its count)",
                 "threatCount": "live things near it"}
 
 

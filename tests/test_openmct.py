@@ -209,6 +209,7 @@ class AlarmTool(unittest.TestCase):
         # enemy would be watch alarms live, and WATCHDOG_TRIPS would never alarm
         self.assertEqual(self.allowed(set_yamcs_alarms.alarm_request({"watch": [50, None], "warning": [None, 0]})),
                          {"watch": [50, None], "warning": [None, 0]})
+        self.assertEqual(self.allowed(set_yamcs_alarms.alarm_request({"watch": [0, 10]})), {"watch": [0, 10]})
         for q, r in self.RANGES.items():
             if q.startswith("/") and "enum" not in r:
                 self.assertEqual(self.allowed(set_yamcs_alarms.alarm_request(r)), r, q)
