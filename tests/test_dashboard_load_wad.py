@@ -195,7 +195,6 @@ class TestTheLoadHandler(unittest.TestCase):
     # In the archive before every send: this very load's answer from an earlier flight (the archive persists)
     OLD = [LOADED, "[WadLoadFailed] Could not load basic.wad over freedoom2.wad: no"]
     TRIES = int(re.search(r"const LOAD_TRIES = (\d+)", PAGE).group(1))
-    READS = int(re.search(r"ARCHIVE_TRIES = (\d+)", PAGE).group(1))
     WAIT_S = int(re.search(r"LOAD_ANSWER_MS = (\d+)", PAGE).group(1)) / 1000
 
     def run_form(self, answers=None, archive=None, fail_reads=0, fail_as="html", refuse=False):
@@ -255,8 +254,8 @@ class TestTheLoadHandler(unittest.TestCase):
             with self.subTest(fail_as=fail_as):
                 got = self.run_form(answers={1: [self.LOADED]}, fail_reads=1000, fail_as=fail_as)
                 self.assertEqual(got["posts"], [])
-                self.assertEqual(got["reads"], 2 * self.READS, "every read asks both queries")
-                self.assertGreaterEqual(got["seconds"], self.READS - 1, "about 1 s between reads")
+                self.assertEqual(got["reads"], 6, "3 reads, each asking both queries")
+                self.assertGreaterEqual(got["seconds"], 2, "about 1 s between reads")
                 self.assertIn("MAP01 not sent: the event archive did not answer", got["text"])
                 self.assertIn(f"HTTP {status}", got["text"])
 

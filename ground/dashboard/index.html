@@ -361,7 +361,7 @@ async function wadEvents() {
 // What the spacecraft said to this load, or null for nothing yet: a WadLoaded, WadLoadFailed or WadAlreadyFlying
 // event that names this load and was not seen before it was sent, or else the WAD channels showing this load (the
 // count above the one before, and the names asked for). Without a count from before, the channels prove nothing.
-// An event names its load as payload/wad_uplink.py's display_name does, so another load's answer is not this one's.
+// An event names its load as payload/wad_uplink.py's display_name does, so a load of other files is not this one's answer.
 // The payload reads the names as ASCII, so a character outside it comes back as a "?" per UTF-8 byte (and is refused).
 function loadAnswer(before, events, tlm, args) {
   const ascii = s => [...s].map(c => c < "\x80" ? c : "?".repeat(new TextEncoder().encode(c).length)).join("");
