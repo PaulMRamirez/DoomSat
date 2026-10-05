@@ -6,6 +6,7 @@
 
     python tools/build_openmct_replay.py                                   # research/out/flight-32
     python tools/build_openmct_replay.py --flight research/out/flight-27 --frame-stride 1
+    python tools/build_openmct_replay.py --log path/to/decisions.jsonl     # frames, map, overlay: path/to
 
 Writes ground/openmct/replay/<flight>/ (git-ignored: it is rebuilt from research/out, which is already in
 the repo).
@@ -43,8 +44,8 @@ CAND_KIND = {"frontier": "FRONTIER", "door": "DOOR", "exit": "EXIT", "key": "KEY
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--flight", default="research/out/flight-32",
-                    help="a flight directory holding decisions.jsonl and frames/")
+    ap.add_argument("--flight", help="a flight directory holding decisions.jsonl and frames/ (default: the "
+                    "--log file's directory, else research/out/flight-32)")
     ap.add_argument("--log", help="decisions.jsonl (default: <flight>/decisions.jsonl)")
     ap.add_argument("--frames", help="frames directory (default: <flight>/frames)")
     ap.add_argument("--out", help="default: ground/openmct/replay/<flight name>")
@@ -52,7 +53,9 @@ def main():
     ap.add_argument("--name", default=None)
     ap.add_argument("--no-displays", action="store_true", help="build the pack only (tests use this)")
     a = ap.parse_args()
-    flight = doomdict.ROOT / a.flight
+    # the frames, the map and the grader overlay come from the log's own flight, never another one's
+    flight = (Path(a.log).resolve().parent if a.log and not a.flight
+              else doomdict.ROOT / (a.flight or "research/out/flight-32"))
     a.name = a.name or flight.name
     a.log = a.log or str(flight / "decisions.jsonl")
     a.frames = a.frames or (str(flight / "frames") if (flight / "frames").is_dir() else None)
@@ -186,7 +189,7 @@ def main():
         if mp.exists():
             shutil.copy(mp, out / "map.png")
     # the grader writes its overlay beside decisions.jsonl (research/out/<flight>/), not into frames/
-    for d in dict.fromkeys(p for p in (flight, Path(a.log).parent, a.frames and Path(a.frames)) if p):
+    for d in dict.fromkeys(p.resolve() for p in (flight, Path(a.log).parent, a.frames and Path(a.frames)) if p):
         for ov in sorted(Path(d).glob("overlay-*.png")):
             (out / "grader").mkdir(exist_ok=True)
             shutil.copy(ov, out / "grader" / ov.name)

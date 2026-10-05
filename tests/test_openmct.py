@@ -424,21 +424,27 @@ report({before, back, empty: seen});
 
 
 class Replay(unittest.TestCase):
+    def build(self, flight, *args):
+        """Three made-up rows as <flight>/decisions.jsonl, then the builder on --log alone."""
+        flight.mkdir(parents=True, exist_ok=True)
+        rows = []
+        for i, (hp, mode) in enumerate([(100, "EXPLORE"), (40, "FIGHT"), (20, "FIGHT")]):
+            r = row(mode=mode, tx=float(i), model="code (fallback)" if i == 2 else "jev-1.13.0")
+            r.update(t=1790000000 + i, tic=400 + 35 * i, kills=i, goal="EXPLORE", candidates=1,
+                     cand_xy=[{"kind": "frontier", "x": 1.0, "y": 2.0}],
+                     raw={"HEALTH": hp, "STUCK": False, "POS_X": float(i), "POS_Y": 0.0, "WEAPON": "PISTOL"})
+            rows.append(json.dumps(r))
+        (flight / "decisions.jsonl").write_text("\n".join(rows))
+        out = flight.parent / "pack"
+        subprocess.run([sys.executable, str(ROOT / "tools" / "build_openmct_replay.py"),
+                        "--log", str(flight / "decisions.jsonl"), "--out", str(out), "--no-displays", *args],
+                       check=True, capture_output=True)
+        return out, json.loads((out / "pack.json").read_text())
+
     def test_a_pack_from_three_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
-            log = Path(tmp) / "decisions.jsonl"
-            rows = []
-            for i, (hp, mode) in enumerate([(100, "EXPLORE"), (40, "FIGHT"), (20, "FIGHT")]):
-                r = row(mode=mode, tx=float(i), model="code (fallback)" if i == 2 else "jev-1.13.0")
-                r.update(t=1790000000 + i, tic=400 + 35 * i, kills=i, goal="EXPLORE", candidates=1,
-                         cand_xy=[{"kind": "frontier", "x": 1.0, "y": 2.0}],
-                         raw={"HEALTH": hp, "STUCK": False, "POS_X": float(i), "POS_Y": 0.0, "WEAPON": "PISTOL"})
-                rows.append(json.dumps(r))
-            log.write_text("\n".join(rows))
-            subprocess.run([sys.executable, str(ROOT / "tools" / "build_openmct_replay.py"), "--log", str(log),
-                            "--out", str(Path(tmp) / "pack"), "--name", "t", "--no-displays"],
-                           check=True, capture_output=True)
-            pack = json.loads((Path(tmp) / "pack" / "pack.json").read_text())
+            out, pack = self.build(Path(tmp) / "flight-x", "--name", "t")
+            grader = (out / "grader").exists()
         meta = pack["meta"]
         self.assertEqual(meta["rows"], 3)
         self.assertFalse(set(meta["provenance"]["recorded"]) & set(meta["provenance"]["derived"]))
@@ -450,7 +456,26 @@ class Replay(unittest.TestCase):
         # the live feed's rules: jev made the one intent change, then jev was unreachable
         self.assertEqual([v for _, v in pack["series"]["/DoomGround/DecisionSource"]], ["JEV", "UNAVAILABLE"])
         self.assertEqual([v for _, v in pack["series"]["/DoomGround/JevShare"]], [1.0])
+        # a log with no frames beside it gets none: not research/out/flight-32's camera, map or grader wall
+        self.assertEqual((meta["name"], meta["frames"]), ("t", 0))
+        self.assertEqual(pack["images"], {"/DoomGround/DoomFrame": []})
+        self.assertFalse(grader)
 
+    def test_a_log_brings_its_own_frames_map_and_overlay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            flight = Path(tmp) / "flight-x"
+            (flight / "frames").mkdir(parents=True)
+            for n in (10, 11, 12):
+                (flight / "frames" / f"frame-{n:06d}.jpg").write_bytes(b"frame %d" % n)
+            (flight / "frames" / "latest_map.png").write_bytes(b"map")
+            (flight / "overlay-E1M1-0.png").write_bytes(b"overlay")
+            out, pack = self.build(flight, "--frame-stride", "1")
+            frames = [(out / f).read_bytes() for _, f in pack["images"]["/DoomGround/DoomFrame"]]
+            copied = (out / "map.png").read_bytes(), (out / "grader" / "overlay-E1M1-0.png").read_bytes()
+        self.assertEqual((pack["meta"]["name"], pack["meta"]["frames"]), ("flight-x", 3))
+        self.assertEqual(frames, [b"frame 10", b"frame 11", b"frame 12"])
+        self.assertEqual(copied, (b"map", b"overlay"))
+        self.assertIn("/DoomGround/DoomMap", pack["images"])
 
 if __name__ == "__main__":
     unittest.main()
