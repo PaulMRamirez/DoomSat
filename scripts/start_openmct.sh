@@ -1,6 +1,6 @@
 #!/bin/bash
 # Serve Open MCT with the DoomSat config and displays (docs/OPENMCT.md; openmct-yamcs dev server) on
-# http://localhost:9000. ?commanding=on enables the guarded HOLD button.
+# http://localhost:9000.
 # Needs scripts/setup_ground.sh openmct, and Yamcs on :8090 (scripts/flight.sh start, or flight.sh yamcs).
 cd "$(dirname "$0")/../external/openmct-yamcs" || { echo "run scripts/setup_ground.sh openmct first"; exit 1; }
 cp ../../ground/openmct/index.html ../../ground/openmct/index.js example/

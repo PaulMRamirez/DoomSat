@@ -8,9 +8,9 @@
  *   doomsat.candidates  Candidate Board. What the onboard world model offered (CAND0..7), what jev scored each
  *                       one (DoomGround/Score0..7), which one code picked and why, drawn as a table beside a plan
  *                       view of the player's traverse, the candidates and the pick.
- *   doomsat.command     A guarded command button (default HOLD = SET_GOAL HOLD). Disabled unless the page was
- *                       installed with {commanding: true}. A human command confounds jev_share, so it is a
- *                       flight-rule safety action, logged as human-origin, never a way to play.
+ *   doomsat.command     A guarded command button, kept for later: no generated display uses it. Disabled unless
+ *                       the page was installed with {commanding: true}. Its default, SET_GOAL HOLD, only changes
+ *                       the GOAL the payload reports; nothing on board stops for it.
  */
 const NS = 'taxonomy';
 const DOOM = '/DoomSat_DoomSat/DoomSat/doom';
@@ -327,7 +327,7 @@ export default function DoomSatPlugin(options = {}) {
       initialize: (o) => { o.configuration = {}; } });
     openmct.types.addType('doomsat.command', { name: 'DoomSat Command Button', cssClass: 'icon-bell',
       description: 'A guarded, two-step command. Disabled unless the page enables commanding.', creatable: true,
-      initialize: (o) => { o.configuration = { command: `${DOOM}/SET_GOAL`, args: { goal: 'HOLD' }, label: 'HOLD (safe)' }; },
+      initialize: (o) => { o.configuration = { command: `${DOOM}/SET_GOAL`, args: { goal: 'HOLD' }, label: 'SET_GOAL HOLD' }; },
       form: [{ key: 'label', name: 'Label', control: 'textfield', property: ['configuration', 'label'] }] });
 
     const sectorNames = [...new Set(SECTORS.flatMap(([, , c, nw, d]) => [c, nw, d]).concat(
@@ -364,14 +364,14 @@ export default function DoomSatPlugin(options = {}) {
           b.textContent = commanding ? c.label : `${c.label} (commanding disabled)`;
           b.disabled = !commanding;
           b.title = commanding ? `${c.command} ${JSON.stringify(c.args)}; counts as a human command`
-            : 'Enable with DoomSatPlugin({commanding: true}). Code owns the loop; a human command confounds jev_share.';
+            : 'Enable with DoomSatPlugin({commanding: true}). Code owns the loop.';
           b.onclick = async () => {
             const ok = window.confirm(`Send ${c.command} ${JSON.stringify(c.args)}?\n\nThis is a human command. ` +
-              'It will be logged as human-origin and excluded from jev_share.');
+              'Yamcs command history records it as human-origin.');
             if (!ok) return;
             const url = `${yamcs.url}api/processors/${yamcs.instance}/${yamcs.processor}/commands${c.command}`;
             const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ args: c.args, comment: 'human-origin: Open MCT safety action' }) });
+              body: JSON.stringify({ args: c.args, comment: 'human-origin: Open MCT' }) });
             openmct.notifications[r.ok ? 'info' : 'error'](`${c.command}: ${r.ok ? 'queued' : r.status}`);
           };
           element.appendChild(b);

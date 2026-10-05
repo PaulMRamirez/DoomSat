@@ -2102,27 +2102,6 @@
    "location": "48b13011-3b32-570f-a9a2-fc8b9e4a6153",
    "configuration": {}
   },
-  "6bca9e3e-e431-5b4b-9002-14ccd4eebb79": {
-   "identifier": {
-    "key": "6bca9e3e-e431-5b4b-9002-14ccd4eebb79",
-    "namespace": ""
-   },
-   "name": "HOLD (safe mode)",
-   "type": "doomsat.command",
-   "modified": 1790000000000,
-   "created": 1790000000000,
-   "persisted": 1790000000000,
-   "createdBy": "build_displays",
-   "modifiedBy": "build_displays",
-   "location": "48b13011-3b32-570f-a9a2-fc8b9e4a6153",
-   "configuration": {
-    "command": "/DoomSat_DoomSat/DoomSat/doom/SET_GOAL",
-    "args": {
-     "goal": "HOLD"
-    },
-    "label": "HOLD (safe)"
-   }
-  },
   "720075c5-92a2-5dce-98c9-58163fd73b8f": {
    "identifier": {
     "key": "720075c5-92a2-5dce-98c9-58163fd73b8f",
@@ -6385,10 +6364,6 @@
     },
     {
      "key": "8a81bad8-7eec-5ab8-860e-79dce4cec232",
-     "namespace": ""
-    },
-    {
-     "key": "6bca9e3e-e431-5b4b-9002-14ccd4eebb79",
      "namespace": ""
     },
     {

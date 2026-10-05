@@ -96,6 +96,12 @@ class Displays(unittest.TestCase):
         self.assertIn("get('commanding') === 'on'", (WEB / "index.js").read_text(encoding="utf-8"))
         self.assertIn("commanding: false", (WEB / "replay.js").read_text(encoding="utf-8"))
 
+    def test_no_display_sends_commands(self):
+        # plugin.js keeps the command button for later; SET_GOAL HOLD stops nothing on board, so no display
+        # carries it and the reference does not offer it
+        self.assertEqual([o["name"] for o in self.b.objects.values() if o["type"] == "doomsat.command"], [])
+        self.assertNotIn("commanding", openmct_docs.render(self.b, self.root, self.params, self.drift))
+
 
 class FakeYamcs:
     """Stands in for the parameters:batchSet request, no network. Like Yamcs, it takes a batch whole or not at

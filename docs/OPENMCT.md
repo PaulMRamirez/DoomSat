@@ -8,7 +8,7 @@ DoomSat's Open MCT displays treat Doom's player as the spacecraft, the F´ deplo
 
 ## Running
 
-**Live**, with the flight stack up (`scripts/flight.sh start`): `python tools/set_yamcs_alarms.py`, then `scripts/start_openmct.sh`, then http://localhost:9000 and open **DoomSat Displays** in the tree. `?commanding=on` enables the HOLD button; `?theme=snow` or `?theme=darkmatter` changes the theme.
+**Live**, with the flight stack up (`scripts/flight.sh start`): `python tools/set_yamcs_alarms.py`, then `scripts/start_openmct.sh`, then http://localhost:9000 and open **DoomSat Displays** in the tree. `?theme=snow` or `?theme=darkmatter` changes the theme.
 
 **Replay**, no Yamcs: `python tools/build_openmct_replay.py` (from `research/out/flight-32`), then `python tools/openmct_serve.py` and open http://localhost:8071/replay.html. Add `?anchor=0` to serve the recorded timestamps (set the time conductor to Fixed), or leave it off to play the flight as if live. `python tools/openmct_snapshots.py` renders every screen to `out/openmct-shots/` and logs page errors.
 
@@ -230,10 +230,6 @@ Forward is up and left is left, as the player sees it. Each of the eight wedges 
 
 Left: the candidates the onboard world model is offering this decision, one row per slot (t0 to t7): kind, jev's score on the nine-level rubric with a bar, path units along the seen floor, percent new ground behind it, and live things near it. The picked row is highlighted. The header gives the intent mode, the picked slot, the gap to the runner-up, jev's confidence, and **by**: who decided (JEV in green, anything else in orange; see DecisionSource). `n/r` means the value is not in the dictionary or not in the recording. Right: a north-up plan view. The pale line is the player's traverse within the time conductor's bounds (POS_X and POS_Y paired by time), circles are the candidates coloured by kind and sized by score, the dashed white line runs from the player to the pick, and the white tick is the heading.
 
-### HOLD (safe mode)
-
-A guarded button that sends `SET_GOAL HOLD`, the payload's safe mode. It is disabled unless the page is opened with `?commanding=on`, it asks for confirmation, and it tags the command as human-origin. Code owns the loop in DoomSat; a human command changes who made the decision and has to be excluded from jev_share, so this is a flight-rule safety action, never a way to play.
-
 ## Parameters
 
 Every parameter a display or custom view reads. Alarm ranges for flight parameters are applied at runtime by `tools/set_yamcs_alarms.py` from `ground/yamcs/alarm-ranges.json`; ground ones are in the XTCE. Types come from the XTCE, and from `Doom.fpp` where the committed `fprime.xtce.xml` lacks a channel (marked **snapshot lag**). That file is a reference snapshot: Yamcs never loads it, because `scripts/wsl_run_flight.sh` starts fprime-yamcs with the deployment, and fprime-yamcs regenerates the XTCE from the deployment's F´ dictionary at every launch. A snapshot-lag channel is live as soon as the deployment is built from the current `Doom.fpp`.
@@ -446,7 +442,7 @@ Every parameter a display or custom view reads. Alarm ranges for flight paramete
 
 ## The knowledge boundary
 
-The displays sit downstream of the stack and never upstream of a decision. Nothing Open MCT shows or stores is read by the pilot, jev or Sonnet; `ground/ops_telemetry.py` only writes `/DoomGround` parameters and nothing in the loop reads them back. The only write path from the displays is the HOLD button, off by default. Nothing derived from the WAD appears on a live screen: the grader's overlay is shown only on the Grader Wall, in after-action.
+The displays sit downstream of the stack and never upstream of a decision. Nothing Open MCT shows or stores is read by the pilot, jev or Sonnet; `ground/ops_telemetry.py` only writes `/DoomGround` parameters and nothing in the loop reads them back. No display sends a command. Open MCT's Mission Status and Operator Status indicators can write the `/DoomOps` parameters, and nothing in the loop reads those either. Nothing derived from the WAD appears on a live screen: the grader's overlay is shown only on the Grader Wall, in after-action.
 
 ## Behaviours worth knowing
 

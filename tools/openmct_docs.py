@@ -35,7 +35,6 @@ NOTES = {
     # custom views
     "Sector radar": "The payload's eight-direction sensing around the player, forward up. See Custom views.",
     "Candidate board": "The world model's candidate targets, jev's score for each, the pick and why, beside a plan view of the traverse. See Custom views.",
-    "HOLD (safe mode)": "Sends SET_GOAL HOLD after a confirmation. Disabled unless the page is opened with ?commanding=on. See Custom views.",
     # plots
     "Vitals over time": "HEALTH, ARMOR, SHELLS and BULLETS stacked, each with its alarm limits drawn.",
     "Hull and consumables": "HEALTH, ARMOR and SHELLS on one axis, for the time strip.",
@@ -240,11 +239,7 @@ Forward is up and left is left, as the player sees it. Each of the eight wedges 
 
 ### Candidate Board
 
-Left: the candidates the onboard world model is offering this decision, one row per slot (t0 to t7): kind, jev's score on the nine-level rubric with a bar, path units along the seen floor, percent new ground behind it, and live things near it. The picked row is highlighted. The header gives the intent mode, the picked slot, the gap to the runner-up, jev's confidence, and **by**: who decided (JEV in green, anything else in orange; see DecisionSource). `n/r` means the value is not in the dictionary or not in the recording. Right: a north-up plan view. The pale line is the player's traverse within the time conductor's bounds (POS_X and POS_Y paired by time), circles are the candidates coloured by kind and sized by score, the dashed white line runs from the player to the pick, and the white tick is the heading.
-
-### HOLD (safe mode)
-
-A guarded button that sends `SET_GOAL HOLD`, the payload's safe mode. It is disabled unless the page is opened with `?commanding=on`, it asks for confirmation, and it tags the command as human-origin. Code owns the loop in DoomSat; a human command changes who made the decision and has to be excluded from jev_share, so this is a flight-rule safety action, never a way to play."""
+Left: the candidates the onboard world model is offering this decision, one row per slot (t0 to t7): kind, jev's score on the nine-level rubric with a bar, path units along the seen floor, percent new ground behind it, and live things near it. The picked row is highlighted. The header gives the intent mode, the picked slot, the gap to the runner-up, jev's confidence, and **by**: who decided (JEV in green, anything else in orange; see DecisionSource). `n/r` means the value is not in the dictionary or not in the recording. Right: a north-up plan view. The pale line is the player's traverse within the time conductor's bounds (POS_X and POS_Y paired by time), circles are the candidates coloured by kind and sized by score, the dashed white line runs from the player to the pick, and the white tick is the heading."""
 
 COLOR_NAMES = {"#38761d": "green", "#bf9000": "amber", "#b45f06": "orange", "#990000": "red", "#434343": "grey",
                "#0b5394": "blue", "#134f5c": "teal", "#351c75": "purple", "#7f6000": "olive", "#cc0000": "red",
@@ -289,7 +284,7 @@ def render(b, root, params, drift):
     w("")
     w("**Live**, with the flight stack up (`scripts/flight.sh start`): `python tools/set_yamcs_alarms.py`, then "
       "`scripts/start_openmct.sh`, then http://localhost:9000 and open **DoomSat Displays** in the tree. "
-      "`?commanding=on` enables the HOLD button; `?theme=snow` or `?theme=darkmatter` changes the theme.")
+      "`?theme=snow` or `?theme=darkmatter` changes the theme.")
     w("")
     w("**Replay**, no Yamcs: `python tools/build_openmct_replay.py` (from `research/out/flight-32`), then "
       "`python tools/openmct_serve.py` and open http://localhost:8071/replay.html. Add `?anchor=0` to serve the "
@@ -468,9 +463,10 @@ def render(b, root, params, drift):
     w("")
     w("The displays sit downstream of the stack and never upstream of a decision. Nothing Open MCT shows or "
       "stores is read by the pilot, jev or Sonnet; `ground/ops_telemetry.py` only writes `/DoomGround` "
-      "parameters and nothing in the loop reads them back. The only write path from the displays is the HOLD "
-      "button, off by default. Nothing derived from the WAD appears on a live screen: the grader's overlay is "
-      "shown only on the Grader Wall, in after-action.")
+      "parameters and nothing in the loop reads them back. No display sends a command. Open MCT's Mission Status "
+      "and Operator Status indicators can write the `/DoomOps` parameters, and nothing in the loop reads those "
+      "either. Nothing derived from the WAD appears on a live screen: the grader's overlay is shown only on the "
+      "Grader Wall, in after-action.")
     w("")
     w("## Behaviours worth knowing")
     w("")

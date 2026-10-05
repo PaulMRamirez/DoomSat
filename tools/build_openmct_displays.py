@@ -315,8 +315,6 @@ def build(b, plan_start, aar_url, grader_url):
     # ============================================================ custom views
     radar = b.add("Sector radar", "doomsat.sectors", configuration={})
     board = b.add("Candidate board", "doomsat.candidates", configuration={})
-    hold = b.add("HOLD (safe mode)", "doomsat.command", configuration={
-        "command": f"{DOOM}/SET_GOAL", "args": {"goal": "HOLD"}, "label": "HOLD (safe)"})
 
     # ============================================================ images and clocks
     frame_img = b.P(f"{G}/DoomFrame")
@@ -515,7 +513,7 @@ def build(b, plan_start, aar_url, grader_url):
                                                                                       "conditionWidget")])
     derived = b.folder("Derived telemetry", [game_time, door_prec, frame_loss, chunks_pf, mem_pct, track_src])
     parts = b.folder("Parts (duplicate into My Items to build new screens)",
-                     [radar, board, hold, traverse, rays, novelty, scores, vit_health, utc])
+                     [radar, board, traverse, rays, novelty, scores, vit_health, utc])
     b.bar  # kept for array-valued sources
     root = b.folder("DoomSat Displays", [overview, game, onboard, ground, strip, aar, pocket, conds, derived, parts])
     return root

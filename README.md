@@ -309,9 +309,9 @@ python3 tools/build_openmct_displays.py --doc  # after changing a display: regen
 ```
 
 The DoomSat configuration is `ground/openmct/index.html` and `index.js`, with the displays and custom views
-beside them. Edit them there: `start_openmct.sh` copies them into the plugin's example on every start. Add
-`?commanding=on` to the URL to enable the guarded HOLD button. **fprime-project → DoomGround → DoomFrame**
-opens the video as an imagery view, and parameters under **DoomSat_DoomSat** open as plots.
+beside them. Edit them there: `start_openmct.sh` copies them into the plugin's example on every start.
+**fprime-project → DoomGround → DoomFrame** opens the video as an imagery view, and parameters under
+**DoomSat_DoomSat** open as plots.
 
 </details>
 
