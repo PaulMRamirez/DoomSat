@@ -617,9 +617,10 @@ Written for you to file. Each says what ran and what was only read.
 
 - The guard component (Destination paths, 2), and running the flight side as a confined user.
 - Downlink pacing above 64 PDUs a tick, and its effect on game frames, measured.
-- The dashboard has no upload. (Its `LOAD_WAD` form now resends when no answer comes: live, a first command
-  dropped before Yamcs was sent again and answered on try 2, and with the answer events hidden the WAD channels
-  stood in.)
+- The dashboard has no upload. (Its `LOAD_WAD` form now resends when no answer comes. Live, a first `LOAD_WAD`
+  the page was told Yamcs took but that never reached it, standing in for a lost TC frame, was sent again and
+  answered on try 2, and with the answer events hidden the WAD channels stood in. A command Yamcs refuses, or
+  cannot be reached for, is reported once and not resent.)
 - COP-1 for commands.
 - Data products through `dpCat.fileOut` → `cfdpManager.fileIn`: wired, but none was downlinked (DoomSat makes
   none).

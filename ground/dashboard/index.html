@@ -61,6 +61,8 @@
   #wadform button { font:13px "Segoe UI", sans-serif; color:var(--fg); cursor:pointer; background:#2a3242;
     border:1px solid #3d4759; border-radius:5px; padding:3px 12px; }
   #wadsent, #wadmsg { font: 12.5px Consolas, monospace; color:#cfd6e2; white-space:pre; overflow:hidden; margin-top:4px; }
+  /* LOAD_WAD's own line wraps: the reason for a refusal, and where to look when nothing answers, come last */
+  #wadsent { white-space:pre-wrap; }
 </style>
 </head>
 <body>
@@ -329,7 +331,7 @@ setInterval(() => { if (drive.on && (held.size || Date.now() < drive.weaponUntil
 // A command is one unprotected TC frame and its answer one event frame (no COP-1 here), so on a lossy link a
 // load can vanish either way. A load that hears nothing back is sent again, as tools/wad_uplink_demo.py --tries
 // does. The wait outlasts the payload's own proof of the file (15 s), so a slow answer is not mistaken for none.
-const LOAD_TRIES = 3, LOAD_ANSWER_MS = 25000;
+const LOAD_TRIES = 3, LOAD_ANSWER_MS = 25000, ARCHIVE_TRIES = 3;
 // The WAD channels; null when this flight build has none. The names come down as zero-padded bytes (F'
 // string telemetry does not survive fprime-xtce).
 async function readWadTlm() {
@@ -344,18 +346,29 @@ async function readWadTlm() {
 }
 // The latest WadLoaded / WadLoadFailed / WadAlreadyFlying events, newest first, each with a key that names it.
 // WadAlreadyFlying answers a LOAD_WAD for the game already flying (a repeat after a lost answer): nothing changed.
+// Throws when the archive does not answer; a 200 with no events is none (Yamcs leaves an empty list out).
 async function wadEvents() {
-  const get = async q => (await (await fetch(`/api/archive/fprime-project/events?limit=20&order=desc&q=${q}`)).json());
+  const get = async q => {
+    const r = await fetch(`/api/archive/fprime-project/events?limit=20&order=desc&q=${q}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  };
   const lists = await Promise.all(["WadLoad", "WadAlreadyFlying"].map(get));
   return lists.flatMap(ev => ev.events || ev.event || [])
     .map(e => ({t: e.generationTime || "", key: `${e.generationTime}|${e.seqNumber}|${e.message}`, message: e.message || ""}))
     .sort((a, b) => (a.t < b.t ? 1 : a.t > b.t ? -1 : 0));
 }
 // What the spacecraft said to this load, or null for nothing yet: a WadLoaded, WadLoadFailed or WadAlreadyFlying
-// event not seen before it was sent, or else the WAD channels showing this load (the count above the one before,
-// and the names asked for). Without a count from before, the channels prove nothing.
+// event that names this load and was not seen before it was sent, or else the WAD channels showing this load (the
+// count above the one before, and the names asked for). Without a count from before, the channels prove nothing.
+// An event names its load as payload/wad_uplink.py's display_name does, so another load's answer is not this one's.
+// The payload reads the names as ASCII, so a character outside it comes back as a "?" per UTF-8 byte (and is refused).
 function loadAnswer(before, events, tlm, args) {
-  const fresh = events.filter(e => !before.seen.has(e.key) && /\[Wad(Loaded|LoadFailed|AlreadyFlying)\]/.test(e.message));
+  const ascii = s => [...s].map(c => c < "\x80" ? c : "?".repeat(new TextEncoder().encode(c).length)).join("");
+  const name = args.pwad ? `${ascii(args.pwad)} over ${ascii(args.iwad)}` : ascii(args.iwad);
+  const ours = [`[WadLoaded] Now flying ${name} on `, `[WadLoadFailed] Could not load ${name}: `,
+    `[WadAlreadyFlying] Already flying ${name} on `];
+  const fresh = events.filter(e => !before.seen.has(e.key) && ours.some(p => e.message.startsWith(p)));
   if (fresh.length) return fresh[fresh.length - 1].message;   // newest first: the last is the earliest
   if (tlm && before.loads !== null && tlm.loads !== null && tlm.loads > before.loads &&
       tlm.iwad === args.iwad && tlm.pwad === args.pwad)
@@ -371,7 +384,14 @@ $("wadform").addEventListener("submit", async e => {
   button.disabled = true;
   try {
     const tlm0 = await readWadTlm().catch(() => null);
-    const before = {seen: new Set((await wadEvents().catch(() => [])).map(e => e.key)), loads: tlm0 ? tlm0.loads : null};
+    // The events from before the send: without them any old answer would pass for this one's, so no send either
+    let seen = null, why = "";
+    for (let i = 1; i <= ARCHIVE_TRIES && !seen; i++) {
+      if (i > 1) await new Promise(r => setTimeout(r, 1000));
+      try { seen = new Set((await wadEvents()).map(e => e.key)); } catch (err) { why = String(err.message || err).slice(0, 80); }
+    }
+    if (!seen) { $("wadsent").textContent = `${stamp()} LOAD_WAD ${said} not sent: the event archive did not answer (${why})`; return; }
+    const before = {seen, loads: tlm0 ? tlm0.loads : null};
     for (let t = 1; t <= LOAD_TRIES; t++) {
       try { await issue("LOAD_WAD", args); }
       catch (err) { $("wadsent").textContent = `LOAD_WAD ${said}: refused by Yamcs, ${String(err.message || err).slice(0, 80)}`; return; }
