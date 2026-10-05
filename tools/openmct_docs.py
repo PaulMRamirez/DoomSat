@@ -180,7 +180,7 @@ GLOSSARY = {
     f"{G}/EngageAnswer": "The engage head's last answer (fight where I stand, fight while moving, break off, retreat), when an enemy was met.",
     f"{G}/GraphVersion": "Decision graph version in use (ground/graph/graph_v<N>.json).",
     f"{G}/Attempt": "Episode (attempt) number the pilot is on.",
-    f"{G}/HonestyStatus": "Result of the honesty suite at preflight: UNKNOWN, PASS or FAIL. FAIL is critical and voids the attempt.",
+    f"{G}/HonestyStatus": "PASS when research/preflight.py's honesty suite (canaries included) passed and the payload was fresh (EXPLORED_CELLS 1 or less, honesty test 3); FAIL otherwise, even when preflight cleared without --require-fresh-payload. FAIL is critical: a failed honesty test voids the attempt. Preflight sets it each time it runs and reaches Yamcs, and nothing else does, so it holds the last preflight's result until Yamcs restarts; UNKNOWN before the first.",
     "/DoomOps/FlyAttempt": "Mission Status action: may an attempt be flown (GO / NO GO).",
     "/DoomOps/JevInLoop": "Mission Status action: may jev hold the loop.",
     "/DoomOps/SystemTwoReview": "Mission Status action: may Sonnet's reviews be proposed.",

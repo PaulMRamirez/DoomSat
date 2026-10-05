@@ -151,7 +151,8 @@ rather than as a frozen good value. Alarm ranges here are the charter's budgets 
       <Parameter name="EngageAnswer" parameterTypeRef="text_t"><ParameterProperties dataSource="local" persistence="false"/></Parameter>
       <Parameter name="GraphVersion" parameterTypeRef="count_t"><ParameterProperties dataSource="local" persistence="false"/></Parameter>
       <Parameter name="Attempt" parameterTypeRef="count_t"><ParameterProperties dataSource="local" persistence="false"/></Parameter>
-      <!-- Set by research/preflight.py before the run and after every level start (honesty test 3). -->
+      <!-- PASS when research/preflight.py's honesty suite passed and the payload was fresh (EXPLORED_CELLS 1 or
+           less, honesty test 3), FAIL otherwise. Only preflight sets it, when it runs; it holds until Yamcs restarts. -->
       <Parameter name="HonestyStatus" parameterTypeRef="honesty_t"><ParameterProperties dataSource="local" persistence="false"/></Parameter>
     </ParameterSet>
   </TelemetryMetaData>

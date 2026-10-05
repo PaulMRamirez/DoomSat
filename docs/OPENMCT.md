@@ -405,7 +405,7 @@ Every parameter a display or custom view reads. Alarm ranges for flight paramete
 | `/DoomGround/FramesComplete` | integer | Frames reassembled with every chunk present. |
 | `/DoomGround/FramesIncomplete` | integer | Frames given up on with chunks missing. |
 | `/DoomGround/GraphVersion` | integer | Decision graph version in use (ground/graph/graph_v<N>.json). |
-| `/DoomGround/HonestyStatus` | enumeration | Result of the honesty suite at preflight: UNKNOWN, PASS or FAIL. FAIL is critical and voids the attempt. |
+| `/DoomGround/HonestyStatus` | enumeration | PASS when research/preflight.py's honesty suite (canaries included) passed and the payload was fresh (EXPLORED_CELLS 1 or less, honesty test 3); FAIL otherwise, even when preflight cleared without --require-fresh-payload. FAIL is critical: a failed honesty test voids the attempt. Preflight sets it each time it runs and reaches Yamcs, and nothing else does, so it holds the last preflight's result until Yamcs restarts; UNKNOWN before the first. |
 | `/DoomGround/IntentMode` | enumeration | Mode of the last INTENT: EXPLORE, APPROACH, OPERATE, FIGHT, RETREAT, RECOVER. |
 | `/DoomGround/JevShare` | float | Share of the last 40 intent changes (a new mode or a new pick) that a jev answer caused, by charter 7's rule. A rule's answer never counts, so it reads a little under summary.json's jev_share when jev could not be reached. Warning under the charter's 0.70 floor; blank until the first change. |
 | `/DoomGround/PickConfidence` | float | jev's confidence in the picked candidate's score, 0 to 1. |
