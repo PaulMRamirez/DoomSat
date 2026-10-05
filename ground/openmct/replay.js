@@ -1,6 +1,6 @@
 /*
  * Replay: the DoomSat displays against a recorded flight, no Yamcs, no build step.
- *   uv run tools/serve.py     then open http://localhost:8071/replay.html
+ *   python3 tools/openmct_serve.py     then open http://localhost:8071/replay.html
  * ?pack=replay/flight-32/pack.json   which recording
  * ?anchor=0                          serve recorded timestamps (use with a fixed time conductor)
  * (no anchor)                        play as if live from now, looping

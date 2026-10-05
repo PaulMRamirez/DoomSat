@@ -1,9 +1,10 @@
 """The DoomSat parameter dictionary as Open MCT will see it (tools/build_openmct_*.py, tests/test_openmct.py).
 
 Doom.fpp is authoritative. The running Yamcs never loads the committed ground/yamcs/mdb/fprime.xtce.xml:
-scripts/wsl_run_flight.sh starts fprime-yamcs with --deployment and --yamcs-config-dir ground/yamcs, and
-fprime-yamcs copies that directory to a temporary one at every launch and regenerates fprime.xtce.xml there
-(fprime-to-xtce) from the deployment's F' dictionary. The committed file is a reference snapshot, and it lags.
+scripts/wsl_run_flight.sh starts fprime-yamcs (through ground/yamcs/launch.py) with --deployment and
+--yamcs-config-dir ground/yamcs, and fprime-yamcs copies that directory to a temporary one at every launch and
+regenerates fprime.xtce.xml there (fprime-to-xtce) from the deployment's F' dictionary. The committed file is a
+reference snapshot, and it lags.
 
 So the merge is: every XTCE file in ground/yamcs/mdb, then any Doom.fpp channel the snapshot lacks, taken
 from Doom.fpp. A display that names a parameter in neither fails the build. A name found only in Doom.fpp

@@ -1,8 +1,8 @@
 /*
  * DoomSat replay provider for Open MCT.
  *
- * Serves one recorded flight (a pack built by tools/build_replay.py) under exactly the identifiers the
- * openmct-yamcs plugin uses live: namespace "taxonomy", key = Yamcs qualified name with "/" -> "~".
+ * Serves one recorded flight (a pack built by tools/build_openmct_replay.py) under exactly the identifiers
+ * the openmct-yamcs plugin uses live: namespace "taxonomy", key = Yamcs qualified name with "/" -> "~".
  * So the same display JSON runs against Yamcs in flight and against this in replay, with no edits.
  *
  * Time. With ?anchor=<epoch ms> the recording is served at its own timestamps shifted so that it starts at

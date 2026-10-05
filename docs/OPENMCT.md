@@ -232,7 +232,7 @@ Left: the candidates the onboard world model is offering this decision, one row 
 
 ## Parameters
 
-Every parameter a display or custom view reads. Alarm ranges for flight parameters are applied at runtime by `tools/set_yamcs_alarms.py` from `ground/yamcs/alarm-ranges.json` (see Running); ground ones are in the XTCE. Types come from the XTCE, and from `Doom.fpp` where the committed `fprime.xtce.xml` lacks a channel (marked **snapshot lag**). That file is a reference snapshot: Yamcs never loads it, because `scripts/wsl_run_flight.sh` starts fprime-yamcs with the deployment, and fprime-yamcs regenerates the XTCE from the deployment's F´ dictionary at every launch. A snapshot-lag channel is live as soon as the deployment is built from the current `Doom.fpp`.
+Every parameter a display or custom view reads. Alarm ranges for flight parameters are applied at runtime by `tools/set_yamcs_alarms.py` from `ground/yamcs/alarm-ranges.json` (see Running); ground ones are in the XTCE. Types come from the XTCE, and from `Doom.fpp` where the committed `fprime.xtce.xml` lacks a channel (marked **snapshot lag**). That file is a reference snapshot: Yamcs never loads it, because `scripts/wsl_run_flight.sh` starts fprime-yamcs (through `ground/yamcs/launch.py`) with the deployment, and fprime-yamcs regenerates the XTCE from the deployment's F´ dictionary at every launch. A snapshot-lag channel is live as soon as the deployment is built from the current `Doom.fpp`.
 
 ### Flight: the Doom payload component
 
