@@ -77,7 +77,7 @@ What the onboard world model offered the ground, what jev thought of it, where t
 | Candidate board | doomsat.candidates | The world model's candidate targets, jev's score for each, the pick and why, beside a plan view of the traverse. See Custom views. | - |
 | Traverse (built-in scatter) | telemetry.plot.scatter-plot | POS_X against POS_Y through Open MCT's own Correlation Telemetry and Scatter Plot, for comparison with the candidate board's plan view. | - |
 | Sector radar | doomsat.sectors | The payload's eight-direction sensing around the player, forward up. See Custom views. | - |
-| Executor and world model | LadTable | The intent being executed, the navigation goal, how many candidates are on offer, whether the executor is stuck, watchdog trips, door presses and opens, Sonnet's exploration hint, and the game tic. | INTENT_ID, GOAL, CAND_COUNT, STUCK, WATCHDOG_TRIPS, DOOR_PRESSES, DOOR_OPENS, HINT_ACTIVE, HINT_REL, TIC |
+| Executor and world model | LadTable | The intent being executed, the goal the ground last set (reported only), how many candidates are on offer, whether the executor is stuck, watchdog trips, door presses and opens, Sonnet's exploration hint, and the game tic. | INTENT_ID, GOAL, CAND_COUNT, STUCK, WATCHDOG_TRIPS, DOOR_PRESSES, DOOR_OPENS, HINT_ACTIVE, HINT_REL, TIC |
 | Map rays: open way per direction (u) | LadTable | Open way in the eight directions: map rays, except CLEAR_FWD, which is the range camera straight ahead. Then the map ray straight ahead (CLEAR_MAP_FWD) and the range camera's ahead-left and ahead-right bands. | CLEAR_FWD, CLEAR_AL, CLEAR_LEFT, CLEAR_BL, CLEAR_BACK, CLEAR_BR, CLEAR_RIGHT, CLEAR_AR, CLEAR_MAP_FWD, CLEAR_FL, CLEAR_FR |
 | New ground and doors per direction | LadTable | Percentage of never-walked ground (255 = ground the map has not seen lies that way), and distance to a door (in 8-unit steps, 0 = none), in each of the eight directions. | NEW_FWD, NEW_AL, NEW_LEFT, NEW_BL, NEW_BACK, NEW_BR, NEW_RIGHT, NEW_AR, DOOR_FWD, DOOR_AL, DOOR_LEFT, DOOR_BL, DOOR_BACK, DOOR_BR, DOOR_RIGHT, DOOR_AR |
 | Cells seen this attempt | telemetry.plot.overlay | EXPLORED_CELLS: 32-unit cells the player has stood in. Flat for long means circling; it resets to 1 at every level start (honesty test 3). | EXPLORED_CELLS |
@@ -330,7 +330,7 @@ Every parameter a display or custom view reads. Alarm ranges for flight paramete
 | `doom/EXPLORED_CELLS` | integer | 32-unit cells of the self-built map the player has stood in; the charter's coverage_rate counts 128-unit cells, so the two do not compare. 1 at every level start (honesty test 3). |
 | `doom/FRAMES_SENT` | integer | JPEG frames the Doom component has sent. |
 | `doom/FRAME_BYTES` | integer | Bytes in the last frame. |
-| `doom/GOAL` | enumeration | Navigation goal the ground last set (EXPLORE, KILL_ENEMY, STOCK_AMMO, RESTORE_HEALTH, ADD_ARMOR, UPGRADE_WEAPON, SCOUT, HOLD). |
+| `doom/GOAL` | enumeration | Goal the ground last set with SET_GOAL (EXPLORE, KILL_ENEMY, STOCK_AMMO, RESTORE_HEALTH, ADD_ARMOR, UPGRADE_WEAPON, SCOUT, HOLD). The pilot plans with its own copy; on board it is only reported, so HOLD does not stop the player. |
 | `doom/HEALTH` | integer | Player health, 0 to 200. Alarms: watch under 50, warning under 25, critical at 10 or less. |
 | `doom/HEALTH_BEARING` | float | Bearing to that health pickup. |
 | `doom/HEALTH_ITEM_DIST` | integer | Distance to the nearest health pickup seen. |
