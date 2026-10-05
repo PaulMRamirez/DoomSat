@@ -20,7 +20,7 @@
    COMMIT_WAD carries the size and CFDP checksum of what was sent, and the Doom component renames the file
    only if it has both (WadCommitRefused otherwise). --checksum FILE prints the two, for a commit by hand.
    It is safe to send again: a repeat for an upload already put in place answers WadUplinked as the first commit
-   did (the Doom component remembers which upload each NAME came from, until a restart).
+   did (the Doom component remembers which upload each NAME came from: eight names, until a restart).
 3. LOAD_WAD; the payload proves the game starts on it in a child process, then switches (WadLoaded) or keeps
    flying what it had (WadLoadFailed). The tool shows WAD_IWAD / WAD_PWAD / WAD_LOADS, EPISODE and
    FRAMES_SENT, and saves the first whole frame from after the switch in out/. LOAD_WAD is safe to send again
@@ -429,12 +429,14 @@ def uplink(a, link, bucket, part, remote, name, content):
         return 1
     if "[WadUplinked]" not in said:
         # WadUplinkFailed names the .part either way: it is not there (never arrived where COMMIT_WAD looks, or
-        # committed before a restart), or its rename failed and it is still there. A repeat of a commit that worked
-        # says WadUplinked instead. A flight build from before COMMIT_WAD was safe to repeat says this for a repeat
-        # too: see what is on board, and commit by hand (--checksum FILE).
-        say(f"FAIL: the spacecraft did not put the file in place (after {commits} COMMIT_WAD): {part} is missing or "
-            f"could not be renamed, and the {name} on board is not from this upload. See what is in the uplink "
-            "directory")
+        # committed already), or its rename failed and it is still there. A repeat of a commit that worked says
+        # WadUplinked instead, unless the flight software restarted since or was built before COMMIT_WAD was safe to
+        # repeat: then no record says this upload is the NAME on board, although it may be. A commit by hand only
+        # helps while the .part is there; with it gone, compare NAME with the file sent and send LOAD_WAD.
+        say(f"FAIL: this upload is not known to be in place (after {commits} COMMIT_WAD): {part} is missing or could "
+            f"not be renamed, and no record on board says the {name} there is from this upload (a flight restart "
+            "since the commit, or an older flight build, has none). See what is in the uplink directory: with no "
+            f"{part} there, compare {name} with the file sent (--checksum) and load it with this tool without --wad")
         return 1
     return 0
 
@@ -591,7 +593,7 @@ def main():
         say(f"no answer to LOAD_WAD (attempt {attempt + 1}); sending it again")
     say(f"event: {said}")
     if said is None:
-        say("FAIL: no WadLoaded or WadLoadFailed")
+        say("FAIL: no answer to LOAD_WAD (WadLoaded, WadAlreadyFlying or WadLoadFailed)")
         return 1
     failed = "[WadLoadFailed]" in said
     # The old game flies on while the new WAD is proven, and the event can overtake that game's last frame

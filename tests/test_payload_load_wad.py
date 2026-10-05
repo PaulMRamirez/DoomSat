@@ -181,6 +181,29 @@ class TestALoadWadSentAgain(unittest.TestCase):
         self.assertEqual([a[0] for a in self.answers()], [wu.FAILED, wu.FAILED])
         self.assertEqual(self.children, [])
 
+    def test_a_failed_proof_is_not_remembered_as_flying(self):
+        # The probe child dies (a damaged WAD kills ViZDoom), and the answer is lost: the repeat is proven again
+        dp.subprocess.Popen.side_effect = lambda cmd, **kw: (self.children.append(cmd), mock.Mock(
+            pid=4321, poll=mock.Mock(return_value=-11), wait=mock.Mock(return_value=-11)))[1]
+        self.load("freedoom2.wad", "basic.wad", "MAP01")
+        self.assertFalse(self.p.poll_wad())
+        self.load("freedoom2.wad", "basic.wad", "MAP01")
+        self.assertIsNotNone(self.p.wad_job, "proven again, not ALREADY")
+        self.assertFalse(self.p.poll_wad())
+        self.assertEqual([a[0] for a in self.answers()], [wu.FAILED, wu.FAILED])
+        self.assertEqual(self.p.switch_wad.call_count, 0)
+
+    def test_a_failed_switch_is_not_remembered_as_flying(self):
+        # The proof passed but the game would not rebuild on the files, so the old game flies on
+        self.p.switch_wad.side_effect = lambda *a: "the game would not start on it (RuntimeError: x)"
+        self.load("freedoom2.wad", "basic.wad", "MAP01")
+        self.assertFalse(self.p.poll_wad())
+        self.load("freedoom2.wad", "basic.wad", "MAP01")
+        self.assertIsNotNone(self.p.wad_job, "proven again, not ALREADY")
+        self.assertFalse(self.p.poll_wad())
+        self.assertEqual([a[0] for a in self.answers()], [wu.FAILED, wu.FAILED])
+        self.assertEqual(self.p.switch_wad.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

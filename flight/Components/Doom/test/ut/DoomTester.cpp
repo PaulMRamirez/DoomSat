@@ -205,6 +205,16 @@ void DoomTester ::testOnlyThisUploadAnswersARepeat() {
     this->commit(PART, this->m_wad, 13);
     this->assertAnswer(13, Fw::CmdResponse::OK);
     this->clearHistory();
+    // ... and only for the size and checksum it was put in place with: the same size, another checksum, is not it
+    std::vector<U8> otherBytes(this->m_wad);
+    otherBytes[100] = static_cast<U8>(otherBytes[100] + 1);
+    ASSERT_NE(checksum(this->m_wad), checksum(otherBytes));
+    this->commit(PART, otherBytes, 17);
+    this->assertAnswer(17, Fw::CmdResponse::EXECUTION_ERROR);
+    ASSERT_EVENTS_SIZE(1);
+    ASSERT_EVENTS_WadUplinkFailed(0, this->uplink(PART).c_str());
+    EXPECT_EQ(this->m_wad, this->read(this->uplink("basic.wad")));
+    this->clearHistory();
     // ... but not once NAME.wad has changed since, even to the same checksum (four zero bytes more)
     std::vector<U8> grown(this->m_wad);
     grown.insert(grown.end(), 4, 0);

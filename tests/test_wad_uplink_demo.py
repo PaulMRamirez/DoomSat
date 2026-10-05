@@ -385,9 +385,9 @@ class TestTheDemo(unittest.TestCase):
         self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--iwad", "freedoom2.wad", "--map", "MAP01",
                                        "--cfdp", "1", "--tries", "3"), 1)
         self.assertNotIn("LOAD_WAD", self.names(stack))
-        # Class 2 too: a file put in place already (cfdpGuard, its WadUplinked lost) answers WadUplinked, so
-        # WadUplinkFailed means it is on board under neither name, even with an older basic.wad there that LOAD_WAD
-        # would fly
+        # Class 2 too: a file put in place already (cfdpGuard, its WadUplinked lost) answers WadUplinked, so a
+        # WadUplinkFailed (here the file is on board under neither name) fails the run, even with an older basic.wad
+        # there that LOAD_WAD would fly
         for older in (False, True):
             with self.subTest(older=older):
                 stack, said = FakeStack(cfdp=True), []
@@ -398,8 +398,7 @@ class TestTheDemo(unittest.TestCase):
                 self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--iwad", "freedoom2.wad", "--map", "MAP01",
                                                "--cfdp", "2", "--tries", "3", said=said), 1)
                 self.assertEqual(self.names(stack), ["COMMIT_WAD"])
-                self.assertTrue([m for m in said if m.startswith("FAIL: the spacecraft did not put the file in place")],
-                                said)
+                self.assertTrue([m for m in said if m.startswith("FAIL: this upload is not known to be in place")], said)
 
     def test_a_lost_load_wad_is_sent_again(self):
         stack = FakeStack(lose=["LOAD_WAD"])
@@ -422,9 +421,9 @@ class TestTheDemo(unittest.TestCase):
 
     def test_a_load_resent_after_its_answer_was_lost_takes_the_repeats_answer(self):
         # The first LOAD_WAD switches the game, but its WadLoaded and the WAD channels after it are lost: the tool sends
-        # it again, takes the repeat's WadLoaded, sees the count moved since before the first, and finds a frame from
-        # after the switch. (That the payload switches once is its own test, tests/test_payload_load_wad.py; here the
-        # stand-in's copy of that rule only keeps the scene consistent.)
+        # it again, takes the repeat's WadAlreadyFlying, sees the count moved since before the first, and finds a frame
+        # from after the switch. (That the payload switches once is its own test, tests/test_payload_load_wad.py;
+        # here the stand-in's copy of that rule only keeps the scene consistent.)
         stack, said = FakeStack(lose=["[WadLoaded]", "tlm", "tlm"]), []
         with mock.patch.object(demo, "LOAD_RETRY_ANSWER_S", 0.5), mock.patch.object(demo, "TLM_STANDIN_S", 0.2):
             self.assertEqual(self.run_demo(stack, "--iwad", "freedoom1.wad", "--map", "E1M2", "--tries", "3",
@@ -449,22 +448,31 @@ class TestTheDemo(unittest.TestCase):
         self.assertFalse([m for m in said if m.startswith("OK: already flying")], said)
 
     def test_a_count_that_comes_down_late_is_a_switch(self):
-        # The WAD channels sent with the answer are lost, and the next ones come a second later: a switch
-        stack, said = FakeStack(lose=["tlm", "tlm"]), []
+        # The first LOAD_WAD switches the game, but its WadLoaded and every WAD channel sample after it are lost. The
+        # repeat is answered WadAlreadyFlying, and the count that shows the switch comes down a second after that
+        # answer: still a switch, so the tool waits for it and goes on to a frame from after the switch
+        stack, said, loads = FakeStack(lose=["[WadLoaded]", "tlm", "tlm", "tlm", "tlm"]), [], []
         real = stack.issue_command
 
         def issue(name, args):
             real(name, args)
             if name.endswith("LOAD_WAD"):
-                threading.Timer(1.0, stack.publish).start()
+                loads.append(args)
+                if len(loads) == 2:
+                    threading.Timer(1.0, stack.publish).start()
         stack.issue_command = issue
-        with mock.patch.object(demo, "TLM_STANDIN_S", 2.0):
-            self.assertEqual(self.run_demo(stack, "--iwad", "freedoom1.wad", "--map", "E1M2", said=said), 0)
+        with mock.patch.object(demo, "LOAD_RETRY_ANSWER_S", 0.5), mock.patch.object(demo, "TLM_STANDIN_S", 2.0):
+            self.assertEqual(self.run_demo(stack, "--iwad", "freedoom1.wad", "--map", "E1M2", "--tries", "3",
+                                           said=said), 0)
+        self.assertEqual(len(loads), 2)
         self.assertEqual(stack.switches, 1)
+        self.assertTrue([m for m in said if m.startswith("event: [WadAlreadyFlying]")], said)
+        self.assertTrue([m for m in said if m.startswith("an earlier LOAD_WAD switched the game")], said)
+        self.assertTrue([m for m in said if m.startswith("frame ") and "from after the switch" in m], said)
         self.assertFalse([m for m in said if m.startswith("OK: already flying")], said)
 
-    def test_a_switch_whose_channels_are_lost_is_not_called_already_flying(self):
-        # The count did not come down after the answer: that is no evidence the game stayed as it was
+    def test_a_wad_loaded_is_never_called_already_flying(self):
+        # WadLoaded is a switch whatever the WAD channels do: here they are lost after the answer
         stack, said = FakeStack(lose=["tlm", "tlm"]), []
         with mock.patch.object(demo, "TLM_STANDIN_S", 0.2):
             self.assertEqual(self.run_demo(stack, "--iwad", "freedoom1.wad", "--map", "E1M2", said=said), 0)
