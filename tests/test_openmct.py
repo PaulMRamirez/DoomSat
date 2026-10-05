@@ -112,12 +112,24 @@ class Displays(unittest.TestCase):
                     self.assertIn(c["key"].replace("~", "/"), self.params, o["name"])
 
     def test_custom_views_read_what_the_reference_says(self):
+        # Every parameter plugin.js names, however it is written: a quoted Doom channel ('CLEAR_FWD'), a template
+        # (`${DOOM}/POS_X`, `${GROUND}/PickSlot`), or a numbered slot (`${DOOM}/CAND${n}` with the members the
+        # board reads, `${GROUND}/Score${n}`). Compared both ways with the inputs docs/OPENMCT.md lists.
         src = (WEB / "doomsat" / "plugin.js").read_text(encoding="utf-8")
-        documented = {q.rsplit("/", 1)[1].split(".")[0] for q in
-                      openmct_docs.SECTOR_RADAR_INPUTS + openmct_docs.CANDIDATE_BOARD_INPUTS}
-        channels = {q.rsplit("/", 1)[1] for q in self.params if q.startswith(openmct_docs.DOOM + "/")}
-        read = set(re.findall(r"'([A-Z][A-Z0-9_]{2,})'", src)) & channels
-        self.assertEqual(sorted(read - documented), [], "plugin.js reads channels docs/OPENMCT.md does not list")
+        base = {"DOOM": openmct_docs.DOOM, "GROUND": openmct_docs.G}
+        members = set(re.findall(r"\$\{b\}\.(\w+)", src))
+        members |= set(re.findall(r"'(\w+)'", re.search(r"\[([^\]]*)\]\.forEach\(\(m\)", src)[1]))
+        read = {f"{openmct_docs.DOOM}/{k}" for k in re.findall(r"'([A-Z][A-Z0-9_]{2,})'", src)}
+        for ns, name, slot in re.findall(r"\$\{(DOOM|GROUND)\}/(\w+)(\$\{n\})?", src):
+            if not slot:
+                read.add(f"{base[ns]}/{name}")
+            else:
+                read |= {f"{base[ns]}/{name}{n}" + (f".{m}" if ns == "DOOM" else "")
+                         for n in range(8) for m in (members if ns == "DOOM" else [""])}
+        read &= set(self.params)   # commands (SET_GOAL) and labels ('JEV', 'HOLD') are not parameters
+        documented = set(openmct_docs.SECTOR_RADAR_INPUTS + openmct_docs.CANDIDATE_BOARD_INPUTS)
+        self.assertEqual(sorted(read - documented), [], "plugin.js reads parameters docs/OPENMCT.md does not list")
+        self.assertEqual(sorted(documented - read), [], "docs/OPENMCT.md lists inputs plugin.js does not read")
 
     def test_nothing_from_the_wad_on_a_live_screen(self):
         objs = self.b.objects
