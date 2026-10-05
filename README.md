@@ -205,15 +205,15 @@ PDUs can use up the buffers the downlink also needs.
 directory: `cfdpGuard` refuses any other destination on board (`UploadRefused` and `UPLOADS_REFUSED`; a class 2
 transfer then fails on the ground with `NAK_LIMIT_REACHED`, while a class 1 transfer still shows COMPLETED there,
 because class 1 never hears back), so no other destination can be written or overwritten through CFDP
-(`docs/plans/cfdp-guard.md`). The bytes of a refused class 2 upload are still staged in `cfdpManager`'s `tmp_dir`
-(class 1 file data with no Metadata is dropped unwritten), which the parameter file puts in `wads/uplink/.cfdp-tmp`
-(F´'s own default, `/tmp`, applies only to a start that flies without the parameter file, which
-`DOOMSAT_PRM_DEFAULTS=1` allows). On the native build F´ file packets still write wherever they are sent, since it
-never set FileUplink's write directory. Commands are another matter: anyone who can command the spacecraft can still write over or delete
-any file the flight process can. `fileManager.MoveFile`, `AppendFile` and `RemoveFile` take any path (moving an
-uplinked WAD over another file, for example), `cfdpManager.SendFile` can downlink any file the flight process can
-read, deleting it if asked (`keep` DELETE), and its `ChannelConfig` parameter names directories. Run the flight side
-as an ordinary user, never as root, on anything that matters.
+(`docs/plans/cfdp-guard.md`). The bytes of a refused class 2 upload are still staged in `cfdpManager`'s `tmp_dir`,
+which the parameter file puts in `wads/uplink/.cfdp-tmp` (F´'s own default, `/tmp`, applies only to a start that
+flies without the parameter file, which `DOOMSAT_PRM_DEFAULTS=1` allows). The file data of a refused class 1 upload
+has no Metadata and is dropped unwritten. On the native build F´ file packets still write wherever they are sent,
+since it never set FileUplink's write directory. Commands are another matter: anyone who can command the spacecraft
+can still write over or delete any file the flight process can. `fileManager.MoveFile`, `AppendFile` and
+`RemoveFile` take any path (moving an uplinked WAD over another file, for example), `cfdpManager.SendFile` can
+downlink any file the flight process can read, deleting it if asked (`keep` DELETE), and its `ChannelConfig`
+parameter names directories. Run the flight side as an ordinary user, never as root, on anything that matters.
 
 The demo takes the uplink directory from `DOOMSAT_HOME` (the environment, then `.env`), as the scripts do. With
 the ground on Windows and the flight side in WSL, pass the WSL path explicitly, for example

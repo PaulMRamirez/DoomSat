@@ -126,8 +126,8 @@ is built and what the numbers actually say, including where they say it is not f
   `docs/plans/wad-uplink-stage1.md`): a WAD goes up as F´ file packets (fprime-yamcs `FprimeFilePacketService`,
   APID 3, 512-byte chunks, about 25 KB/s) to `NAME.wad.<nonce>.part`. FileUplink verifies the checksum and
   announces the file on `fileAnnounce`, and the Doom component renames it to `NAME.wad`. `LOAD_WAD` then has the
-  payload prove the game in a child process and rebuild its `DoomGame` in place. The F´ binary, Yamcs and the flight link stay
-  up throughout. Command round trips stay around 100 ms during an uplink.
+  payload prove the game in a child process and rebuild its `DoomGame` in place. The F´ binary, Yamcs and the
+  flight link stay up throughout. Command round trips stay around 100 ms during an uplink.
 - CFDP (4 October 2026, `docs/plans/cfdp-stage2-spike.md`): the same uplink as CCSDS CFDP class 2, Yamcs
   `CfdpService` to F´ `Svc/Ccsds/CfdpManager` in place of FileUplink/FileDownlink, PDUs on APID 3 behind the
   F´ file descriptor, wrapped and unwrapped by stream SQL (`ground/yamcs/etc/cfdp_streams.sql`). At 5 % frame
