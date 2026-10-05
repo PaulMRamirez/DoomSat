@@ -78,9 +78,9 @@ What the onboard world model offered the ground, what jev thought of it, where t
 | Traverse (built-in scatter) | telemetry.plot.scatter-plot | POS_X against POS_Y through Open MCT's own Correlation Telemetry and Scatter Plot, for comparison with the candidate board's plan view. | - |
 | Sector radar | doomsat.sectors | The payload's eight-direction sensing around the player, forward up. See Custom views. | - |
 | Executor and world model | LadTable | The intent being executed, the navigation goal, how many candidates are on offer, whether the executor is stuck, watchdog trips, door presses and opens, Sonnet's exploration hint, and the game tic. | INTENT_ID, GOAL, CAND_COUNT, STUCK, WATCHDOG_TRIPS, DOOR_PRESSES, DOOR_OPENS, HINT_ACTIVE, HINT_REL, TIC |
-| Map rays: open way per direction (u) | LadTable | Map-ray clearance in the eight directions, plus the range camera's forward, ahead-left and ahead-right bands. | CLEAR_FWD, CLEAR_AL, CLEAR_LEFT, CLEAR_BL, CLEAR_BACK, CLEAR_BR, CLEAR_RIGHT, CLEAR_AR, CLEAR_MAP_FWD, CLEAR_FL, CLEAR_FR |
-| New ground and doors per direction | LadTable | Percentage of never-walked ground, and distance to a door (in 8-unit steps, 0 = none), in each of the eight directions. | NEW_FWD, NEW_AL, NEW_LEFT, NEW_BL, NEW_BACK, NEW_BR, NEW_RIGHT, NEW_AR, DOOR_FWD, DOOR_AL, DOOR_LEFT, DOOR_BL, DOOR_BACK, DOOR_BR, DOOR_RIGHT, DOOR_AR |
-| Cells seen this attempt | telemetry.plot.overlay | EXPLORED_CELLS: 128-unit cells the player has stood in. Flat for long means circling; it resets to 1 at every level start (honesty test 3). | EXPLORED_CELLS |
+| Map rays: open way per direction (u) | LadTable | Open way in the eight directions: map rays, except CLEAR_FWD, which is the range camera straight ahead. Then the map ray straight ahead (CLEAR_MAP_FWD) and the range camera's ahead-left and ahead-right bands. | CLEAR_FWD, CLEAR_AL, CLEAR_LEFT, CLEAR_BL, CLEAR_BACK, CLEAR_BR, CLEAR_RIGHT, CLEAR_AR, CLEAR_MAP_FWD, CLEAR_FL, CLEAR_FR |
+| New ground and doors per direction | LadTable | Percentage of never-walked ground (255 = ground the map has not seen lies that way), and distance to a door (in 8-unit steps, 0 = none), in each of the eight directions. | NEW_FWD, NEW_AL, NEW_LEFT, NEW_BL, NEW_BACK, NEW_BR, NEW_RIGHT, NEW_AR, DOOR_FWD, DOOR_AL, DOOR_LEFT, DOOR_BL, DOOR_BACK, DOOR_BR, DOOR_RIGHT, DOOR_AR |
+| Cells seen this attempt | telemetry.plot.overlay | EXPLORED_CELLS: 32-unit cells the player has stood in. Flat for long means circling; it resets to 1 at every level start (honesty test 3). | EXPLORED_CELLS |
 
 #### Tab: Flight software (F´)
 
@@ -160,7 +160,7 @@ The attempt on one time axis: the campaign plan, the camera, hull and consumable
 | Hull and consumables | telemetry.plot.overlay | HEALTH, ARMOR and SHELLS on one axis, for the time strip. | HEALTH, ARMOR, SHELLS |
 | Decision timing (ms): jev round trip, decision age | telemetry.plot.overlay | jev's round trip and the approximate decision age, with their alarm limits (decision age critical past the 900 ms budget). | SystemOneLatencyMs, DecisionAgeMs |
 | Yamcs events, info | Yamcs events | F´ and ground events at that severity and above, as a lane on the same clock. | - |
-| Cells seen this attempt | telemetry.plot.overlay | EXPLORED_CELLS: 128-unit cells the player has stood in. Flat for long means circling; it resets to 1 at every level start (honesty test 3). | EXPLORED_CELLS |
+| Cells seen this attempt | telemetry.plot.overlay | EXPLORED_CELLS: 32-unit cells the player has stood in. Flat for long means circling; it resets to 1 at every level start (honesty test 3). | EXPLORED_CELLS |
 
 
 ### 50 AFTER-ACTION
@@ -224,11 +224,11 @@ Both DoomSat views follow the time conductor. In real time they update live, and
 
 ### Sector Radar
 
-Forward is up and left is left, as the player sees it. Each of the eight wedges is one direction the payload senses (FWD, AL, LEFT, BL, BACK, BR, RIGHT, AR). A wedge's **length** is the map ray's open way in that direction, up to 400 map units (the dotted rings are 100, 200, 300 and 400). Its **fill** is how much of the ground that way has never been walked: pale is walked, bright green is new, and the percentage is printed inside. An **orange bar** across a wedge is a door at that distance. Markers: a **red dot** is the nearest enemy in view (with the count and range), a **green triangle** the exit once recognised, a **yellow triangle** a remembered key, and small dots the nearest health (+HP), ammunition (AMMO) and armor (ARM) pickups. A **dashed magenta line** is Sonnet's exploration hint while it is in force. The top line gives the heading and whether the executor reports STUCK; the bottom line what is at arm's length.
+Forward is up and left is left, as the player sees it. Each of the eight wedges is one direction the payload senses (FWD, AL, LEFT, BL, BACK, BR, RIGHT, AR). A wedge's **length** is the open way in that direction, up to 400 map units (the dotted rings are 100, 200, 300 and 400): the map ray, except forward, where it is the range camera (CLEAR_FWD). Its **fill** is how much of the ground that way has never been walked: pale is walked, bright green is new, and the percentage is printed inside, or **new** where the map has not seen the ground on the way. An **orange bar** across a wedge is a door at that distance. Markers: a **red dot** is the nearest enemy in view (with the count and range), a **green triangle** the exit once recognised, a **yellow triangle** a remembered key, and small dots the nearest health (+HP), ammunition (AMMO) and armor (ARM) pickups. A **dashed magenta line** is Sonnet's exploration hint while it is in force. The top line gives the heading and whether the executor reports STUCK; the bottom line what is at arm's length.
 
 ### Candidate Board
 
-Left: the candidates the onboard world model is offering this decision, one row per slot (t0 to t7): kind, jev's score on the nine-level rubric with a bar, path units along the seen floor, percent new ground behind it, and live things near it. The picked row is highlighted. The header gives the intent mode, the picked slot, the gap to the runner-up, jev's confidence, and **by**: who decided (JEV in green, anything else in orange; see DecisionSource). `n/r` means the value is not in the dictionary or not in the recording. Right: a north-up plan view. The pale line is the player's traverse within the time conductor's bounds (POS_X and POS_Y paired by time), circles are the candidates coloured by kind and sized by score, the dashed white line runs from the player to the pick, and the white tick is the heading.
+Left: the candidates the onboard world model is offering this decision, one row per slot (t0 to t7): kind, jev's score on the nine-level rubric with a bar, path units along the seen floor, the unseen cells behind it (a count, 255 at most), and live things near it. The picked row is highlighted. The header gives the intent mode, the picked slot, the gap to the runner-up, jev's confidence, and **by**: who decided (JEV in green, anything else in orange; see DecisionSource). `n/r` means the value is not in the dictionary or not in the recording. Right: a north-up plan view. The pale line is the player's traverse within the time conductor's bounds (POS_X and POS_Y paired by time), circles are the candidates coloured by kind and sized by score, the dashed white line runs from the player to the pick, and the white tick is the heading.
 
 ## Parameters
 
@@ -248,49 +248,49 @@ Every parameter a display or custom view reads. Alarm ranges for flight paramete
 | `doom/ARMOR_ITEM_DIST` | integer | Distance to the nearest armor pickup seen. |
 | `doom/BULLETS` | integer | Bullets held (pistol, chaingun). |
 | `doom/CAND0.kind` | enumeration | Candidate slot 0: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND0.novelty` | integer | Candidate slot 0: how much unseen ground lies behind it. |
+| `doom/CAND0.novelty` | integer | Candidate slot 0: unseen 32-unit cells reachable through it, a count up to 255 (0 for all but a frontier). |
 | `doom/CAND0.pathUnits` | integer | Candidate slot 0: distance along floor the payload has seen (not the straight line). |
 | `doom/CAND0.threatCount` | integer | Candidate slot 0: live things near it. |
 | `doom/CAND0.x` | float | Candidate slot 0: x, map units. |
 | `doom/CAND0.y` | float | Candidate slot 0: y, map units. |
 | `doom/CAND1.kind` | enumeration | Candidate slot 1: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND1.novelty` | integer | Candidate slot 1: how much unseen ground lies behind it. |
+| `doom/CAND1.novelty` | integer | Candidate slot 1: unseen 32-unit cells reachable through it, a count up to 255 (0 for all but a frontier). |
 | `doom/CAND1.pathUnits` | integer | Candidate slot 1: distance along floor the payload has seen (not the straight line). |
 | `doom/CAND1.threatCount` | integer | Candidate slot 1: live things near it. |
 | `doom/CAND1.x` | float | Candidate slot 1: x, map units. |
 | `doom/CAND1.y` | float | Candidate slot 1: y, map units. |
 | `doom/CAND2.kind` | enumeration | Candidate slot 2: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND2.novelty` | integer | Candidate slot 2: how much unseen ground lies behind it. |
+| `doom/CAND2.novelty` | integer | Candidate slot 2: unseen 32-unit cells reachable through it, a count up to 255 (0 for all but a frontier). |
 | `doom/CAND2.pathUnits` | integer | Candidate slot 2: distance along floor the payload has seen (not the straight line). |
 | `doom/CAND2.threatCount` | integer | Candidate slot 2: live things near it. |
 | `doom/CAND2.x` | float | Candidate slot 2: x, map units. |
 | `doom/CAND2.y` | float | Candidate slot 2: y, map units. |
 | `doom/CAND3.kind` | enumeration | Candidate slot 3: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND3.novelty` | integer | Candidate slot 3: how much unseen ground lies behind it. |
+| `doom/CAND3.novelty` | integer | Candidate slot 3: unseen 32-unit cells reachable through it, a count up to 255 (0 for all but a frontier). |
 | `doom/CAND3.pathUnits` | integer | Candidate slot 3: distance along floor the payload has seen (not the straight line). |
 | `doom/CAND3.threatCount` | integer | Candidate slot 3: live things near it. |
 | `doom/CAND3.x` | float | Candidate slot 3: x, map units. |
 | `doom/CAND3.y` | float | Candidate slot 3: y, map units. |
 | `doom/CAND4.kind` | enumeration | Candidate slot 4: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND4.novelty` | integer | Candidate slot 4: how much unseen ground lies behind it. |
+| `doom/CAND4.novelty` | integer | Candidate slot 4: unseen 32-unit cells reachable through it, a count up to 255 (0 for all but a frontier). |
 | `doom/CAND4.pathUnits` | integer | Candidate slot 4: distance along floor the payload has seen (not the straight line). |
 | `doom/CAND4.threatCount` | integer | Candidate slot 4: live things near it. |
 | `doom/CAND4.x` | float | Candidate slot 4: x, map units. |
 | `doom/CAND4.y` | float | Candidate slot 4: y, map units. |
 | `doom/CAND5.kind` | enumeration | Candidate slot 5: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND5.novelty` | integer | Candidate slot 5: how much unseen ground lies behind it. |
+| `doom/CAND5.novelty` | integer | Candidate slot 5: unseen 32-unit cells reachable through it, a count up to 255 (0 for all but a frontier). |
 | `doom/CAND5.pathUnits` | integer | Candidate slot 5: distance along floor the payload has seen (not the straight line). |
 | `doom/CAND5.threatCount` | integer | Candidate slot 5: live things near it. |
 | `doom/CAND5.x` | float | Candidate slot 5: x, map units. |
 | `doom/CAND5.y` | float | Candidate slot 5: y, map units. |
 | `doom/CAND6.kind` | enumeration | Candidate slot 6: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND6.novelty` | integer | Candidate slot 6: how much unseen ground lies behind it. |
+| `doom/CAND6.novelty` | integer | Candidate slot 6: unseen 32-unit cells reachable through it, a count up to 255 (0 for all but a frontier). |
 | `doom/CAND6.pathUnits` | integer | Candidate slot 6: distance along floor the payload has seen (not the straight line). |
 | `doom/CAND6.threatCount` | integer | Candidate slot 6: live things near it. |
 | `doom/CAND6.x` | float | Candidate slot 6: x, map units. |
 | `doom/CAND6.y` | float | Candidate slot 6: y, map units. |
 | `doom/CAND7.kind` | enumeration | Candidate slot 7: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND7.novelty` | integer | Candidate slot 7: how much unseen ground lies behind it. |
+| `doom/CAND7.novelty` | integer | Candidate slot 7: unseen 32-unit cells reachable through it, a count up to 255 (0 for all but a frontier). |
 | `doom/CAND7.pathUnits` | integer | Candidate slot 7: distance along floor the payload has seen (not the straight line). |
 | `doom/CAND7.threatCount` | integer | Candidate slot 7: live things near it. |
 | `doom/CAND7.x` | float | Candidate slot 7: x, map units. |
@@ -327,7 +327,7 @@ Every parameter a display or custom view reads. Alarm ranges for flight paramete
 | `doom/EPISODE` | integer | Episode counter; rises on every RESET_GAME. |
 | `doom/EXIT_BEARING` | float | Bearing to the exit line if recognised, degrees, positive left. |
 | `doom/EXIT_DIST` | integer | Distance to the exit line; 0 until one has been recognised within 512 units this attempt. |
-| `doom/EXPLORED_CELLS` | integer | 128-unit cells of the self-built map the player has stood in. 1 at every level start (honesty test 3). |
+| `doom/EXPLORED_CELLS` | integer | 32-unit cells of the self-built map the player has stood in; the charter's coverage_rate counts 128-unit cells, so the two do not compare. 1 at every level start (honesty test 3). |
 | `doom/FRAMES_SENT` | integer | JPEG frames the Doom component has sent. |
 | `doom/FRAME_BYTES` | integer | Bytes in the last frame. |
 | `doom/GOAL` | enumeration | Navigation goal the ground last set (EXPLORE, KILL_ENEMY, STOCK_AMMO, RESTORE_HEALTH, ADD_ARMOR, UPGRADE_WEAPON, SCOUT, HOLD). |
@@ -343,14 +343,14 @@ Every parameter a display or custom view reads. Alarm ranges for flight paramete
 | `doom/KILLS` | integer | Monsters killed this episode. |
 | `doom/LEVEL` | integer | Levels started so far; 1 is the first map. |
 | `doom/LEVEL_DONE` | enumeration | The exit was reached. |
-| `doom/NEW_AL` | integer | Percent of not-yet-walked ground ahead-left (45°). |
-| `doom/NEW_AR` | integer | Percent of not-yet-walked ground ahead-right. |
-| `doom/NEW_BACK` | integer | Percent of not-yet-walked ground behind. |
-| `doom/NEW_BL` | integer | Percent of not-yet-walked ground behind-left (135°). |
-| `doom/NEW_BR` | integer | Percent of not-yet-walked ground behind-right. |
-| `doom/NEW_FWD` | integer | Percent of not-yet-walked ground straight ahead. |
-| `doom/NEW_LEFT` | integer | Percent of not-yet-walked ground left (90°). |
-| `doom/NEW_RIGHT` | integer | Percent of not-yet-walked ground right. |
+| `doom/NEW_AL` | integer | Percent of not-yet-walked ground ahead-left (45°); 255 = ground the map has not seen lies that way. |
+| `doom/NEW_AR` | integer | Percent of not-yet-walked ground ahead-right; 255 = ground the map has not seen lies that way. |
+| `doom/NEW_BACK` | integer | Percent of not-yet-walked ground behind; 255 = ground the map has not seen lies that way. |
+| `doom/NEW_BL` | integer | Percent of not-yet-walked ground behind-left (135°); 255 = ground the map has not seen lies that way. |
+| `doom/NEW_BR` | integer | Percent of not-yet-walked ground behind-right; 255 = ground the map has not seen lies that way. |
+| `doom/NEW_FWD` | integer | Percent of not-yet-walked ground straight ahead; 255 = ground the map has not seen lies that way. |
+| `doom/NEW_LEFT` | integer | Percent of not-yet-walked ground left (90°); 255 = ground the map has not seen lies that way. |
+| `doom/NEW_RIGHT` | integer | Percent of not-yet-walked ground right; 255 = ground the map has not seen lies that way. |
 | `doom/OWN_SHOTGUN` | enumeration | Whether the shotgun has been picked up. |
 | `doom/PAYLOAD_LINK` | enumeration | The F´ Doom component has a live socket to the game process. Critical when False. |
 | `doom/POS_X` | float | Player x, map units. |

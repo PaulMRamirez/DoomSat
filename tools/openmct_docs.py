@@ -38,7 +38,7 @@ NOTES = {
     # plots
     "Vitals over time": "HEALTH, ARMOR, SHELLS and BULLETS stacked, each with its alarm limits drawn.",
     "Hull and consumables": "HEALTH, ARMOR and SHELLS on one axis, for the time strip.",
-    "Cells seen this attempt": "EXPLORED_CELLS: 128-unit cells the player has stood in. Flat for long means circling; it resets to 1 at every level start (honesty test 3).",
+    "Cells seen this attempt": "EXPLORED_CELLS: 32-unit cells the player has stood in. Flat for long means circling; it resets to 1 at every level start (honesty test 3).",
     "Decision timing (ms): jev round trip, decision age": "jev's round trip and the approximate decision age, with their alarm limits (decision age critical past the 900 ms budget).",
     "jev share and fallback rate (rolling)": "Share of the last 40 intent changes that a jev answer decided, against the charter's 0.70 floor; and share of the last 40 decisions settled by the unsure band, a hold, the cache or a rule, or with no jev answer.",
     "Pick gap and confidence": "How far the chosen candidate's score was clear of the next one, and jev's confidence in it. Small gaps are what the unsure band exists for.",
@@ -58,8 +58,8 @@ NOTES = {
     "Surroundings": "Everything the payload reports about what is near the player: the nearest enemy, the worst threat in view, the exit and key if recognised, the nearest pickups, and what is at arm's length.",
     "Inventory and progress": "Weapon and ammunition, keys, kills, level and episode, and whether the level is done or the player is dead.",
     "Executor and world model": "The intent being executed, the navigation goal, how many candidates are on offer, whether the executor is stuck, watchdog trips, door presses and opens, Sonnet's exploration hint, and the game tic.",
-    "Map rays: open way per direction (u)": "Map-ray clearance in the eight directions, plus the range camera's forward, ahead-left and ahead-right bands.",
-    "New ground and doors per direction": "Percentage of never-walked ground, and distance to a door (in 8-unit steps, 0 = none), in each of the eight directions.",
+    "Map rays: open way per direction (u)": "Open way in the eight directions: map rays, except CLEAR_FWD, which is the range camera straight ahead. Then the map ray straight ahead (CLEAR_MAP_FWD) and the range camera's ahead-left and ahead-right bands.",
+    "New ground and doors per direction": "Percentage of never-walked ground (255 = ground the map has not seen lies that way), and distance to a door (in 8-unit steps, 0 = none), in each of the eight directions.",
     "Ground brain (latest)": "The latest of everything the ground decided: the Controls line, the engage answer, Sonnet's plan and hint, why the last pick came out as it did, gap, confidence, timing, jev share and graph version.",
     "Command, event and buffer health": "F´ command dispatcher counters, dropped events, late health pings, the com buffer pool, the payload link and the framework and project versions.",
     "Downlink products (latest)": "Frames, chunks and bytes as latest values.",
@@ -121,7 +121,7 @@ GLOSSARY = {
     f"{DOOM}/EPISODE": "Episode counter; rises on every RESET_GAME.",
     f"{DOOM}/DEAD": "The player is dead. Critical when True.",
     f"{DOOM}/LEVEL_DONE": "The exit was reached.",
-    f"{DOOM}/EXPLORED_CELLS": "128-unit cells of the self-built map the player has stood in. 1 at every level start (honesty test 3).",
+    f"{DOOM}/EXPLORED_CELLS": "32-unit cells of the self-built map the player has stood in; the charter's coverage_rate counts 128-unit cells, so the two do not compare. 1 at every level start (honesty test 3).",
     f"{DOOM}/LEVEL": "Levels started so far; 1 is the first map.",
     f"{DOOM}/KEYS": "Keys held as a bitmask: red 1, blue 2, yellow 4.",
     f"{DOOM}/HINT_ACTIVE": "Sonnet's exploration hint is in force.",
@@ -191,7 +191,8 @@ GLOSSARY = {
 CAND_MEMBERS = {"kind": "what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY",
                 "x": "x, map units", "y": "y, map units",
                 "pathUnits": "distance along floor the payload has seen (not the straight line)",
-                "novelty": "how much unseen ground lies behind it", "threatCount": "live things near it"}
+                "novelty": "unseen 32-unit cells reachable through it, a count up to 255 (0 for all but a frontier)",
+                "threatCount": "live things near it"}
 
 
 def describe(q, params):
@@ -203,7 +204,8 @@ def describe(q, params):
                 "DOOR": "Distance to a door in 8-unit steps (0 = none)"}[m.group(1)]
         if m.group(1) == "CLEAR" and m.group(2) == "FWD":
             return "Range camera: free space straight ahead, map units."
-        return f"{what} {DIRS[m.group(2)]}."
+        unseen = "; 255 = ground the map has not seen lies that way" if m.group(1) == "NEW" else ""
+        return f"{what} {DIRS[m.group(2)]}{unseen}."
     m = re.fullmatch(rf"{G}/Score(\d)", q)
     if m:
         return f"jev's target-head score for candidate slot {m.group(1)}, on the nine-level rubric; 0 = empty slot."
@@ -235,11 +237,11 @@ CUSTOM_VIEWS = """Both DoomSat views follow the time conductor. In real time the
 
 ### Sector Radar
 
-Forward is up and left is left, as the player sees it. Each of the eight wedges is one direction the payload senses (FWD, AL, LEFT, BL, BACK, BR, RIGHT, AR). A wedge's **length** is the map ray's open way in that direction, up to 400 map units (the dotted rings are 100, 200, 300 and 400). Its **fill** is how much of the ground that way has never been walked: pale is walked, bright green is new, and the percentage is printed inside. An **orange bar** across a wedge is a door at that distance. Markers: a **red dot** is the nearest enemy in view (with the count and range), a **green triangle** the exit once recognised, a **yellow triangle** a remembered key, and small dots the nearest health (+HP), ammunition (AMMO) and armor (ARM) pickups. A **dashed magenta line** is Sonnet's exploration hint while it is in force. The top line gives the heading and whether the executor reports STUCK; the bottom line what is at arm's length.
+Forward is up and left is left, as the player sees it. Each of the eight wedges is one direction the payload senses (FWD, AL, LEFT, BL, BACK, BR, RIGHT, AR). A wedge's **length** is the open way in that direction, up to 400 map units (the dotted rings are 100, 200, 300 and 400): the map ray, except forward, where it is the range camera (CLEAR_FWD). Its **fill** is how much of the ground that way has never been walked: pale is walked, bright green is new, and the percentage is printed inside, or **new** where the map has not seen the ground on the way. An **orange bar** across a wedge is a door at that distance. Markers: a **red dot** is the nearest enemy in view (with the count and range), a **green triangle** the exit once recognised, a **yellow triangle** a remembered key, and small dots the nearest health (+HP), ammunition (AMMO) and armor (ARM) pickups. A **dashed magenta line** is Sonnet's exploration hint while it is in force. The top line gives the heading and whether the executor reports STUCK; the bottom line what is at arm's length.
 
 ### Candidate Board
 
-Left: the candidates the onboard world model is offering this decision, one row per slot (t0 to t7): kind, jev's score on the nine-level rubric with a bar, path units along the seen floor, percent new ground behind it, and live things near it. The picked row is highlighted. The header gives the intent mode, the picked slot, the gap to the runner-up, jev's confidence, and **by**: who decided (JEV in green, anything else in orange; see DecisionSource). `n/r` means the value is not in the dictionary or not in the recording. Right: a north-up plan view. The pale line is the player's traverse within the time conductor's bounds (POS_X and POS_Y paired by time), circles are the candidates coloured by kind and sized by score, the dashed white line runs from the player to the pick, and the white tick is the heading."""
+Left: the candidates the onboard world model is offering this decision, one row per slot (t0 to t7): kind, jev's score on the nine-level rubric with a bar, path units along the seen floor, the unseen cells behind it (a count, 255 at most), and live things near it. The picked row is highlighted. The header gives the intent mode, the picked slot, the gap to the runner-up, jev's confidence, and **by**: who decided (JEV in green, anything else in orange; see DecisionSource). `n/r` means the value is not in the dictionary or not in the recording. Right: a north-up plan view. The pale line is the player's traverse within the time conductor's bounds (POS_X and POS_Y paired by time), circles are the candidates coloured by kind and sized by score, the dashed white line runs from the player to the pick, and the white tick is the heading."""
 
 COLOR_NAMES = {"#38761d": "green", "#bf9000": "amber", "#b45f06": "orange", "#990000": "red", "#434343": "grey",
                "#0b5394": "blue", "#134f5c": "teal", "#351c75": "purple", "#7f6000": "olive", "#cc0000": "red",

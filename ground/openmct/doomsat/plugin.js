@@ -3,8 +3,9 @@
  * telemetry API, so they work the same against Yamcs live and against the replay provider.
  *
  *   doomsat.sectors     Sector Radar. The payload's eight-direction sensing around the player: how far the way
- *                       is open (map rays), how much of the ground is new, where doors are, plus the bearings to
- *                       the enemy, the exit, a key, pickups and Sonnet's exploration hint. Forward is up.
+ *                       is open (map rays; forward, the range camera), how much of the ground is new, where doors
+ *                       are, plus the bearings to the enemy, the exit, a key, pickups and Sonnet's exploration
+ *                       hint. Forward is up.
  *   doomsat.candidates  Candidate Board. What the onboard world model offered (CAND0..7), what jev scored each
  *                       one (DoomGround/Score0..7), which one code picked and why, drawn as a table beside a plan
  *                       view of the player's traverse, the candidates and the pick.
@@ -18,7 +19,8 @@ const GROUND = '/DoomGround';
 const id = (q) => ({ namespace: NS, key: q.replace(/\//g, '~') });
 
 const SECTORS = [
-  // name, bearing (degrees, positive left, 0 = ahead), clearance channel, novelty channel, door channel
+  // name, bearing (degrees, positive left, 0 = ahead), clearance channel, novelty channel, door channel.
+  // CLEAR_FWD is the range camera, the other clearances map rays; NEW_* is a percentage, or 255 for unseen ground.
   ['FWD', 0, 'CLEAR_FWD', 'NEW_FWD', 'DOOR_FWD'],
   ['AL', 45, 'CLEAR_AL', 'NEW_AL', 'DOOR_AL'],
   ['LEFT', 90, 'CLEAR_LEFT', 'NEW_LEFT', 'DOOR_LEFT'],
@@ -182,13 +184,13 @@ function renderSectors(v) {
     const r = (clear / MAX) * R;
     const [x1, y1] = polar(cx, cy, r, b + 20);
     const [x2, y2] = polar(cx, cy, r, b - 20);
-    const fill = novelty === undefined ? '#444' : `rgba(106,168,79,${0.12 + 0.5 * novelty / 100})`;
+    const fill = novelty === undefined ? '#444' : `rgba(106,168,79,${0.12 + 0.5 * Math.min(novelty, 100) / 100})`;
     s += `<path d="M${cx},${cy} L${x1},${y1} A${r},${r} 0 0 1 ${x2},${y2} Z" fill="${fill}" stroke="#9fc5e8" stroke-width="1"/>`;
     const [lx, ly] = polar(cx, cy, R + 14, b);
     s += `<text x="${lx}" y="${ly + 3}" fill="#ccc" font-size="10" text-anchor="middle">${name}</text>`;
     const [nx, ny] = polar(cx, cy, Math.max(r - 12, 16), b);
     if (novelty !== undefined) {
-      s += `<text x="${nx}" y="${ny + 3}" fill="#fff" font-size="9" text-anchor="middle">${novelty}%</text>`;
+      s += `<text x="${nx}" y="${ny + 3}" fill="#fff" font-size="9" text-anchor="middle">${novelty === 255 ? 'new' : `${novelty}%`}</text>`;
     }
     if (door > 0) {
       const dr = Math.min((door * 8) / MAX, 1) * R;
@@ -296,7 +298,7 @@ function renderCandidates(v, series) {
   return `<div style="display:flex;gap:10px;height:100%;font:12px Helvetica Neue,Arial,sans-serif;color:#ddd;overflow:auto">
     <div style="flex:1 1 55%;min-width:220px">${header}
       <table style="width:100%;border-collapse:collapse" cellpadding="3">
-        <tr style="color:#999;text-align:left"><th>slot</th><th>kind</th><th>jev</th><th></th><th>path u</th><th>new %</th><th>threat</th></tr>
+        <tr style="color:#999;text-align:left"><th>slot</th><th>kind</th><th>jev</th><th></th><th>path u</th><th>unseen</th><th>threat</th></tr>
         ${rows || '<tr><td colspan="7" style="color:#888">no candidates offered</td></tr>'}</table>
       <div style="color:#777;font-size:10px;margin-top:6px">n/r = not in this dictionary or recording. Scores on the target head's nine-level rubric.</div></div>
     <div style="flex:1 1 45%;min-width:200px">${svg(W, H, plan)}</div></div>`;

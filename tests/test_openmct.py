@@ -57,6 +57,13 @@ class Displays(unittest.TestCase):
         missing = sorted(q for q in used if not openmct_docs.describe(q, self.params))
         self.assertEqual(missing, [], "add a meaning to GLOSSARY in tools/openmct_docs.py")
 
+    def test_cell_size_is_the_payloads(self):
+        # EXPLORED_CELLS and candidate novelty count the payload's own cells, not the charter's 128-unit ones
+        grid = re.search(r"^GRID = (\d+)", (ROOT / "payload" / "mapclasses.py").read_text(encoding="utf-8"), re.M)[1]
+        for q in (f"{openmct_docs.DOOM}/EXPLORED_CELLS", f"{openmct_docs.DOOM}/CAND0.novelty"):
+            self.assertIn(f"{grid}-unit cells", openmct_docs.describe(q, self.params), q)
+        self.assertIn(f"{grid}-unit cells", openmct_docs.NOTES["Cells seen this attempt"])
+
     def test_every_reference_is_known(self):
         for o in self.b.objects.values():
             for c in o.get("composition", []):
