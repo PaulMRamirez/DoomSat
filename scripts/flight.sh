@@ -8,7 +8,7 @@
 #   scripts/flight.sh payload                       restart only the game
 #   scripts/flight.sh stop | status | check         stop everything / processes / telemetry health
 #   scripts/flight.sh build | rebuild               after editing flight/ (incremental / full)
-#   scripts/flight.sh ut                            the flight components' unit tests (GTest; CfdpGuard)
+#   scripts/flight.sh ut                            the flight components' unit tests (GTest; CfdpGuard and Doom)
 #   scripts/flight.sh gds                           F´ on its own with the stock F´ GDS (:5000), no Yamcs
 #
 # WAD=, MAP=, GEOMETRY=, ORACLE=, FPS=, QUALITY=, SKILL=, RECORDS= pass through to the payload.

@@ -4,8 +4,9 @@ set -e
 . "$(dirname "$0")/common.sh"
 SRC=$DOOMSAT_REPO/flight
 DST=$PROJ
-mkdir -p $DST/DoomMission/Components/Doom $DST/DoomMission/Components/CfdpGuard/test/ut $DST/DoomMission/config
+mkdir -p $DST/DoomMission/Components/Doom/test/ut $DST/DoomMission/Components/CfdpGuard/test/ut $DST/DoomMission/config
 cp $SRC/Components/Doom/Doom.fpp $SRC/Components/Doom/Doom.hpp $SRC/Components/Doom/Doom.cpp $SRC/Components/Doom/WadPath.hpp $SRC/Components/Doom/CMakeLists.txt $DST/DoomMission/Components/Doom/
+cp $SRC/Components/Doom/test/ut/DoomTester.hpp $SRC/Components/Doom/test/ut/DoomTester.cpp $SRC/Components/Doom/test/ut/DoomTestMain.cpp $DST/DoomMission/Components/Doom/test/ut/
 cp $SRC/Components/CfdpGuard/CfdpGuard.fpp $SRC/Components/CfdpGuard/CfdpGuard.hpp $SRC/Components/CfdpGuard/CfdpGuard.cpp $SRC/Components/CfdpGuard/CMakeLists.txt $DST/DoomMission/Components/CfdpGuard/
 cp $SRC/Components/CfdpGuard/test/ut/CfdpGuardTester.hpp $SRC/Components/CfdpGuard/test/ut/CfdpGuardTester.cpp $SRC/Components/CfdpGuard/test/ut/CfdpGuardTestMain.cpp $DST/DoomMission/Components/CfdpGuard/test/ut/
 # The topology header goes too: the one fprime-util new wrote fits only the topology it was made with, and

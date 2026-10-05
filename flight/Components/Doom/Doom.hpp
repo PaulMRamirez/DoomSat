@@ -14,9 +14,13 @@
 
 #include "DoomMission/Components/Doom/DoomComponentAc.hpp"
 
+#include <Os/Mutex.hpp>
+
 namespace DoomMission {
 
 class Doom final : public DoomComponentBase {
+    friend class DoomTester;  //!< the unit tests (test/ut) hand it WAD reports directly
+
   public:
     Doom(const char* const compName);
     ~Doom();
@@ -46,8 +50,12 @@ class Doom final : public DoomComponentBase {
                              const Fw::CmdStringArg& pwad, const Fw::CmdStringArg& map) override;
     void COMMIT_WAD_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, const Fw::CmdStringArg& part, U32 fileSize,
                                U32 checksum) override;
-    // Rename an uplinked NAME.wad.<nonce>.part to NAME.wad; false (and no event) if it is not one
-    bool placeWad(const Fw::StringBase& path);
+    // Rename an uplinked NAME.wad.<nonce>.part to NAME.wad (WadUplinked); false if it is not one (no event) or the
+    // rename fails (WadUplinkFailed, unless logFailure is false)
+    bool placeWad(const Fw::StringBase& path, bool logFailure = true);
+    // Whether the uplinked NAME.wad.<nonce>.part `path` is the upload last put in place as NAME.wad (since start, while
+    // the record still holds NAME.wad), and NAME.wad still has this size and CFDP checksum; `dest` is NAME.wad's path
+    bool placedFrom(const Fw::StringBase& path, U32 fileSize, U32 checksum, Fw::String& dest);
     // Size and CFDP modular checksum of a file on board; false if it cannot be read
     static bool fileSum(const char* path, FwSizeType& size, U32& checksum);
 
@@ -81,6 +89,21 @@ class Doom final : public DoomComponentBase {
     DoomMission::WadName m_wadIwad;  //!< the level file the payload last reported running
     DoomMission::WadName m_wadPwad;
     U16 m_wadLoads;
+
+    //! Which upload each NAME.wad was last put in place from, so that a COMMIT_WAD sent again is answered for that
+    //! upload only (a size and checksum alone would also match an older NAME.wad with its words in another order).
+    //! placeWad runs on cfdpManager's thread for cfdpGuard's commits and on this component's for COMMIT_WAD.
+    //! It holds PLACED_MAX names: a new name takes the next slot in turn (m_placedNext), so a repeat for a name whose
+    //! record it displaced answers WadUplinkFailed, as after a restart.
+    static constexpr FwSizeType PLACED_MAX = 8;
+    struct Placed {
+        bool used;
+        Fw::String dest;  //!< NAME.wad's path
+        Fw::String part;  //!< the NAME.wad.<nonce>.part path it was renamed from
+    };
+    Os::Mutex m_placedLock;
+    Placed m_placed[PLACED_MAX];
+    FwSizeType m_placedNext;
 };
 
 }  // namespace DoomMission

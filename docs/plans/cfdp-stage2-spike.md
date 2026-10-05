@@ -257,7 +257,9 @@ frame links to 51000/51001 and the relay forwards to the comm bridge's 50000/500
   reached the ground, so the demo sent it again, and the retry found no `.part` and said `WadUplinkFailed` [ran].
   The first time (`cig.wad`, before `--tries` handled that case) the demo stopped there with FAIL, and `LOAD_WAD`
   went up from a second run, which had to resend it once. The second time the demo carried on, and `LOAD_WAD`
-  showed the file was in place [ran].
+  showed the file was in place [ran]. (Since then a repeated `COMMIT_WAD` finds that this upload is in place as
+  `NAME.wad` and answers `WadUplinked`, and a repeated `LOAD_WAD` changes nothing:
+  `docs/plans/idempotent-wad-commands.md`.)
 - **CFDP Class 1** at the same loss: 0 of 4 whole (see "What ran"). The demo refused to commit [ran].
 
 Commands are single unprotected TC frames: there is no COP-1 here. That is why the demo resends them, and it is
@@ -269,8 +271,11 @@ Restricted [ran]:
 
 - `COMMIT_WAD(part, fileSize, checksum)` renames only a bare `NAME.wad[.<nonce>].part` inside
   `$DOOMSAT_HOME/wads/uplink`, and only when the file's size and CFDP modular checksum are the ones the ground
-  sent (`flight/Components/Doom/Doom.cpp:115-180`): any `/` is a VALIDATION_ERROR, a missing file an
-  EXECUTION_ERROR with `WadUplinkFailed`, and a file that differs an EXECUTION_ERROR with `WadCommitRefused`.
+  sent (`Doom::COMMIT_WAD_cmdHandler`, `fileSum`, `placeWad` and, for a repeat, `placedFrom`, in
+  `flight/Components/Doom/Doom.cpp`): any `/` is a VALIDATION_ERROR, a missing file an EXECUTION_ERROR with
+  `WadUplinkFailed`, and a file that differs an EXECUTION_ERROR with `WadCommitRefused`.
+  (Since then a missing `.part` that this upload was put in place from, its `NAME.wad` still with that size and
+  checksum, is OK with `WadUplinked`, so the command is safe to repeat.)
 - `LOAD_WAD` names only bare `.wad` files in `wads/uplink` and `wads/`, refuses `.part` names, and proves the
   file in a child process before the game switches (Stage 1).
 
@@ -395,7 +400,11 @@ fixes that changed behaviour:
   Ctrl-C included, and the bucket object is deleted; `--service cfdp` alone means class 2; `--tries` and `--pdu-delay` are
   checked; no `PRM_SET`; a `COMMIT_WAD` with no answer at all fails (`LOAD_WAD` could otherwise fly an older
   file of the same name), as does an unconfirmed one under `--no-load`; the telemetry stand-in for a lost
-  `WadLoaded` must show this load.
+  `WadLoaded` must show this load. (Since then there is no unconfirmed case: a repeated `COMMIT_WAD` of an upload
+  put in place since the flight software started answers as the first did while the record still holds its name,
+  so `WadUplinkFailed` means this upload is not known to be in place: no `.part`, a rename that failed, or, since
+  the commit, a flight restart, eight newer names taking its record's place, or an older flight build. The demo
+  fails on it.)
 - **`DOOMSAT_RELAY=0`** now means off.
 
 The rest were comments that no longer matched the code (the dedicated pool, the buffer count, `fileAnnounce`) and

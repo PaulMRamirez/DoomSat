@@ -61,7 +61,10 @@ cfdpGuard.fileAnnounceOut -> doom.fileAnnounce
   RETAINED. The first such FIN commits and ends the record, so F´'s repeats (sent until the ground ACKs) commit
   nothing. `UPLOADS_COMMITTED` counts these announcements; Doom's `WadUplinked` or `WadUplinkFailed` says how the
   rename went. Class 1 has no FIN, so the guard lets it into the uplink directory but never commits it.
-  `COMMIT_WAD`, with its size and checksum check, stays for class 1 and for commits by hand.
+  `COMMIT_WAD`, with its size and checksum check, stays for class 1 and for commits by hand. It is also the
+  ground's fallback when the guard's `WadUplinked` is lost on the way down: with the `.part` gone, it finds that
+  this upload was put in place as `NAME.wad`, still with the size and checksum it names, and answers `WadUplinked`
+  again (`docs/plans/idempotent-wad-commands.md`).
 - **Report a refusal once per transaction.** The sender resends a Metadata each time the receiver NAKs for it,
   about ten times for a refused upload. `UploadRefused`, or `MetadataUnreadable` for a Metadata `cfdpManager`
   cannot read either, comes once per (source entity, sequence number), and `UPLOADS_REFUSED` counts uploads, not

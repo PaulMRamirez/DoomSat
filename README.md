@@ -184,12 +184,16 @@ ground/.venv/bin/python tools/wad_uplink_demo.py --iwad freedoom1.wad --map E1M1
    the Doom component checks the size and CFDP checksum against the file on board and only then renames it
    (`WadCommitRefused` otherwise). `tools/wad_uplink_demo.py --checksum FILE` prints the two numbers. The tool
    falls back to it when this upload's own `UploadCommitted` and then `WadUplinked` do not come within a few
-   seconds of the FIN.
+   seconds of the FIN. It is safe to send again: a repeat for an upload already put in place (by the guard or an
+   earlier commit) answers `WadUplinked` as the first commit did. The Doom component remembers which upload each
+   `NAME.wad` came from (eight names, until a restart), and checks that `NAME.wad` still has that size and checksum.
 3. **`LOAD_WAD(iwad, pwad, map)`.** It names bare `.wad` files in the uplink directory or `~/doom/wads`. The
    payload first proves the game starts on them in a separate process, because a damaged WAD kills ViZDoom
    rather than raising an error. Only then does it rebuild its game and start a fresh episode
    (`WadLoaded`, `EPISODE` steps). If anything is wrong, it reports `WadLoadFailed` with the reason and
-   carries on with the WAD it had.
+   carries on with the WAD it had. It is safe to send again too: for the files and map already flying it changes
+   nothing and answers `WadAlreadyFlying` (`RESET_GAME` restarts the level), and a repeat
+   that arrives while the same load is being proven gets that load's answer.
 
 This is the CFDP build (`docs/plans/cfdp-stage2-spike.md`). The tool sees which transfer the running Yamcs
 offers, so on the native build (F´ file packets, branch `feature/wad-uplink`) the same commands send file
@@ -198,7 +202,8 @@ packets instead, which are not retransmitted: there one lost packet fails the fi
 **A lossy link.** `DOOMSAT_RELAY=1 scripts/flight.sh start` puts Yamcs's frame links behind
 `python3 tools/lossy_relay.py --loss 5`, which drops that share of frames each way (`--seed` repeats a run).
 Add `--tries 3` to the demo there: a command is one frame, and the tool resends `LOAD_WAD` (and `COMMIT_WAD`,
-when it needs one) when no answer comes back. Keep `--pdu-delay` at 5 ms or more (the tool refuses less): faster, the uplinked
+when it needs one) when no answer comes back. Both are safe to repeat, so a resend after a lost answer does not
+do anything twice (`docs/plans/idempotent-wad-commands.md`). Keep `--pdu-delay` at 5 ms or more (the tool refuses less): faster, the uplinked
 PDUs can use up the buffers the downlink also needs.
 
 **What is and is not restricted.** An upload may land only as `NAME.wad[.<nonce>].part` directly in the uplink
@@ -252,7 +257,7 @@ scripts/flight.sh payload      # (another terminal) add the game, so the Doom ch
 
 The components are in `flight/Components/` (`Doom/`, and `CfdpGuard/`, which confines CFDP uploads and commits
 them on board) and the topology in `flight/DoomSat/Top/`. After an edit, run `scripts/flight.sh build`;
-`scripts/flight.sh ut` runs the guard's unit tests.
+`scripts/flight.sh ut` runs the guard's and the Doom component's unit tests.
 
 </details>
 

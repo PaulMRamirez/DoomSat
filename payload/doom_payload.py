@@ -703,6 +703,9 @@ class Payload:
         # LOAD_WAD: switches made, the request being proven in a child process, and reports for the flight
         # software that wait for the main loop (which holds the link).
         self.wad_loads, self.wad_job, self.outbox = 0, None, []
+        # The files the game was built on, as they were then (wad_uplink.files_key): what "already flying" compares
+        # against. Not looked up again from the path, which a new uplink of the same name may have taken over.
+        self.wad_files = wu.files_key(self.wad, self.pwad)
         self.wad_serial, self.wad_pinned = 0, None   # LOAD_WAD's pinned links (wad_uplink.pin): the request, the one flying
         # The ground's science data system can ask for a record of each episode (payload/episode_record.py).
         # None unless --records on; nothing on board reads it.
@@ -1276,6 +1279,10 @@ class Payload:
         Proven elsewhere first because a damaged WAD does not raise in ViZDoom: it kills the process (a
         truncated doom1.wad segfaults in init), and this process holds the flight link. The game here keeps
         running until the child has flown a second on the new file; only then does it switch.
+
+        Safe to send again, which the ground does when no answer comes on a lossy link: a request for the files
+        and map already flying changes nothing and is answered ALREADY (WadAlreadyFlying on the ground, WAD_LOADS
+        unmoved), and one that repeats the request being proven waits for that request's answer.
         """
         try:
             iwad, pwad, map_name = wu.decode_load_wad(body)
@@ -1283,13 +1290,23 @@ class Payload:
             self.outbox.append(self.wad_report(wu.FAILED, "?", "malformed LOAD_WAD record"))
             return
         name, map_name = wu.display_name(iwad, pwad), map_name.upper()   # next_map() reads upper case
-        ipath = ppath = None
-        if self.wad_job is not None:
-            why = "another LOAD_WAD is still being checked"
-        elif self.oracle != "off":
+        ipath = ppath = key = None
+        if self.oracle != "off":
             why = "the diagnostic ladder (--oracle) only knows the level it was launched on"
         else:
             ipath, ppath, why = wu.resolve(iwad, pwad, map_name)
+        if not why:
+            key = wu.load_key(ipath, ppath, map_name)
+            if self.wad_job is not None:
+                if key is not None and key == self.wad_job[2]["key"]:
+                    print(f"[payload] LOAD_WAD {name} on {map_name}: sent again while it is being proven; its "
+                          "answer will serve both", flush=True)
+                    return
+                why = "another LOAD_WAD is still being checked"
+            elif key is not None and self.wad_files is not None and key == (*self.wad_files, self.map.upper()):
+                print(f"[payload] LOAD_WAD {name} on {map_name}: already flying it; nothing to do", flush=True)
+                self.outbox.append(self.wad_report(wu.ALREADY, name))
+                return
         if why:
             print(f"[payload] LOAD_WAD {name}: {why}", flush=True)
             self.outbox.append(self.wad_report(wu.FAILED, name, why))
@@ -1303,6 +1320,7 @@ class Payload:
         else:
             wu.unpin(self.wad_serial)
         ident = (wu.identity(ipath), wu.identity(ppath) if ppath else None)
+        key = wu.load_key(ipath, ppath, map_name)   # the files being proven, as pinned: what flies if they pass
         cmd = [sys.executable, os.path.abspath(__file__), "--probe", "--wad", ipath, "--map", map_name,
                "--skill", str(self.args.skill), "--seed", str(self.args.seed), "--geometry", self.geometry]
         if ppath:
@@ -1312,7 +1330,7 @@ class Payload:
         # orphan, still loading, still growing), so it is the group that gets killed.
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                                 start_new_session=True)
-        request = dict(name=name, map=map_name, ipath=ipath, ppath=ppath, serial=self.wad_serial, ident=ident)
+        request = dict(name=name, map=map_name, ipath=ipath, ppath=ppath, serial=self.wad_serial, ident=ident, key=key)
         self.wad_job = (proc, out, request, time.time())
         print(f"[payload] LOAD_WAD {name} on {map_name}: proving the game starts on it", flush=True)
 
@@ -1349,6 +1367,7 @@ class Payload:
             if self.wad_pinned is not None:
                 wu.unpin(self.wad_pinned)               # the links of the WAD that just stopped flying
             self.wad_pinned = request["serial"]
+            self.wad_files = request["key"][:2] if request["key"] else wu.files_key(self.wad, self.pwad)
             self.wad_loads += 1
             self.outbox.append(self.wad_report(wu.LOADED, request["name"]))
             print(f"[payload] LOAD_WAD {request['name']}: now flying it on {self.map}", flush=True)

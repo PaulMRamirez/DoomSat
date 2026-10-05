@@ -178,7 +178,9 @@ module DoomMission {
         @ installed). Names are bare file names ending in .wad, found in the uplink directory or the installed
         @ WAD directory. The payload proves the game starts on them in a separate process before it rebuilds
         @ its own game and starts a fresh episode; the outcome comes back as WadLoaded or WadLoadFailed, and on
-        @ failure the game carries on with the WAD it had.
+        @ failure the game carries on with the WAD it had. Safe to send again: one for the files and map already
+        @ flying changes nothing and answers WadAlreadyFlying (RESET_GAME restarts the level), and one that repeats
+        @ the load being proven gets that load's answer.
         async command LOAD_WAD(
             iwad: string size 40  @< the IWAD (freedoom2.wad, doom1.wad, ...)
             pwad: string size 40  @< a PWAD to load over it; empty for none
@@ -189,9 +191,12 @@ module DoomMission {
         @ $DOOMSAT_HOME/wads/uplink. fileAnnounce does this by itself for a Class 2 upload (cfdpGuard) or a native
         @ one; this command is for the rest (a Class 1 upload, or a commit by hand), once the transfer has finished.
         @ The file is renamed only if its size and CFDP checksum are the ones the ground sent: a commit sent before
-        @ the whole file is on board, or after a damaged Class 1 upload, leaves it a .part (WadCommitRefused;
-        @ WadUplinkFailed if no .part exists yet) and LOAD_WAD cannot use it. Wait for the FIN: a commit between the
-        @ last byte and cfdpManager's CRC pass renames the whole file, but the transfer then ends with a file-size error.
+        @ the whole file is on board, or after a damaged Class 1 upload, leaves it a .part (WadCommitRefused) and
+        @ LOAD_WAD cannot use it. Safe to send again: with no .part, a commit of an upload already put in place as
+        @ NAME.wad (since start, by this command or cfdpGuard; the record holds eight names), NAME.wad still with that
+        @ size and checksum, answers WadUplinked as the first commit did; anything else is WadUplinkFailed. Wait for
+        @ the FIN: a commit between the last byte and cfdpManager's CRC pass renames the whole file, but the transfer
+        @ then ends with a file-size error.
         async command COMMIT_WAD(
             part: string size 40  @< the bare name it was uplinked under: NAME.wad.<nonce>.part
             fileSize: U32  @< the size the ground sent, in bytes
@@ -324,6 +329,7 @@ module DoomMission {
         event WadUplinked(fileName: string size 120) severity activity high id 14 format "Uplinked WAD ready to load: {}"
         event WadUplinkFailed(fileName: string size 120) severity warning high id 15 format "Uplinked WAD could not be renamed into place: {}"
         event WadCommitRefused(fileName: string size 120, haveSize: U64, haveChecksum: U32, wantSize: U32, wantChecksum: U32) severity warning high id 16 format "Uplinked WAD not committed, it is not the file the ground sent: {} has {} bytes, checksum 0x{x}; expected {} bytes, checksum 0x{x}"
+        event WadAlreadyFlying(name: string size 90, $map: string size 8) severity activity high id 17 format "Already flying {} on {}: LOAD_WAD changed nothing"
 
         # ----------------------------------------------------------------------
         # Standard ports

@@ -108,9 +108,41 @@ class TestTheFlightSoftwareAgrees(unittest.TestCase):
         self.assertIn("const U8 result = rdU8(p);\n    const U16 loads = rdU16(p);", CPP)
 
     def test_the_result_codes(self):
-        codes = dict(re.findall(r"WAD_(REPORT|LOADED|FAILED) = (\d)", CPP))
+        codes = dict(re.findall(r"WAD_(REPORT|LOADED|FAILED|ALREADY) = (\d)", CPP))
         self.assertEqual({k: int(v) for k, v in codes.items()},
-                         {"REPORT": wu.REPORT, "LOADED": wu.LOADED, "FAILED": wu.FAILED})
+                         {"REPORT": wu.REPORT, "LOADED": wu.LOADED, "FAILED": wu.FAILED, "ALREADY": wu.ALREADY})
+
+    def test_a_load_of_what_is_flying_has_its_own_answer_and_restarts_nothing(self):
+        # Its behaviour is in the Doom GTest suite (scripts/flight.sh ut); this pins the branch from here. Not
+        # WadLoaded: the SDS takes a WadLoaded just before an EpisodeStarted for a switch that ended the episode
+        handler = CPP[CPP.index("void Doom ::handleWad"):]
+        handler = handler[:handler.index("\n}\n")]
+        already = re.search(r"result == WAD_ALREADY\) \{(.*?)\} else if", handler, re.S)
+        self.assertIsNotNone(already)
+        self.assertIn("log_ACTIVITY_HI_WadAlreadyFlying(Fw::String(text[NAME]), Fw::String(text[MAP]))", already.group(1))
+        self.assertNotIn("WadLoaded(", already.group(1))
+        self.assertNotIn("m_lastLevel", already.group(1), "the level goes on: nothing to announce again")
+        self.assertRegex(FPP, r"event WadAlreadyFlying\(name: string size 90, \$map: string size 8\)")
+
+    def test_the_payload_answers_a_repeat_without_a_second_switch(self):
+        # Its behaviour is in tests/test_payload_load_wad.py, which needs the payload venv; this runs anywhere
+        handler = PAYLOAD[PAYLOAD.index("    def request_wad(self, body):"):PAYLOAD.index("    def poll_wad(self):")]
+        start = handler.index("self.wad_serial += 1")   # where a new load begins
+        for step in ('key == self.wad_job[2]["key"]', 'why = "another LOAD_WAD is still being checked"',
+                     "key == (*self.wad_files, self.map.upper())", "self.wad_report(wu.ALREADY, name)"):
+            self.assertLess(handler.index(step), start, step)
+        self.assertLess(handler.index("wu.resolve(iwad, pwad, map_name)"), handler.index("wu.load_key(ipath"))
+        self.assertIn("key=key)", handler, "the request being proven keeps its key")
+        # what flies is remembered from the load, not looked up again from a path a new uplink may have taken over
+        poll = PAYLOAD[PAYLOAD.index("    def poll_wad(self):"):PAYLOAD.index("    def switch_wad(")]
+        self.assertIn('self.wad_files = request["key"][:2]', poll)
+        self.assertIn("self.wad_files = wu.files_key(self.wad, self.pwad)", PAYLOAD[:PAYLOAD.index("    def _find_wad(")])
+        self.assertNotIn("wad_loads", handler, "only a switch counts")
+        self.assertLess(handler.index("if self.wad_job is not None:"), handler.index("key == (*self.wad_files"),
+                        "a repeat of the load being proven is caught before the flying check")
+        absorbed = handler[handler.index('key == self.wad_job[2]["key"]'):
+                           handler.index('why = "another LOAD_WAD is still being checked"')]
+        self.assertNotIn("outbox", absorbed, "the proof's answer serves the repeat too")
 
     def test_the_sizes(self):
         command = FPP[FPP.index("async command LOAD_WAD("):]
@@ -288,6 +320,54 @@ class TestPinningTheProvenFile(unittest.TestCase):
     def test_a_pin_that_cannot_be_made_says_so(self):
         self.assertIsNone(wu.pin(os.path.join(wu.uplink_dir(), "nothere.wad"), 3))
         self.assertIsNone(wu.identity(os.path.join(wu.uplink_dir(), "nothere.wad")))
+
+
+class TestTheSameLoad(unittest.TestCase):
+    """load_key: a LOAD_WAD sent again (its answer lost on a lossy link) asks for the game already flying, or for the
+    one being proven, and must not switch twice; a new uplink of the same name is a new file and must."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.env = mock.patch.dict(os.environ, {"DOOMSAT_HOME": self.tmp.name})
+        self.env.start()
+        os.makedirs(wu.uplink_dir())
+        self.iwad = os.path.join(wu.wads_dir(), "freedoom2.wad")
+        self.pwad = os.path.join(wu.uplink_dir(), "level.wad")
+        for path in (self.iwad, self.pwad):
+            with open(path, "wb") as f:
+                f.write(b"\0" * 64)
+
+    def tearDown(self):
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def test_the_same_files_and_map_are_the_same_load(self):
+        self.assertEqual(wu.load_key(self.iwad, self.pwad, "map01"), wu.load_key(self.iwad, self.pwad, "MAP01"))
+        self.assertEqual(wu.load_key(self.iwad, None, "E1M1"), wu.load_key(self.iwad, "", "E1M1"))
+
+    def test_a_pinned_link_is_the_file_it_pins(self):
+        # What the payload flies after a load is the pin, and a resend names the file in the uplink directory
+        pinned = wu.pin(self.pwad, 1)
+        self.assertEqual(wu.load_key(self.iwad, pinned, "MAP01"), wu.load_key(self.iwad, self.pwad, "MAP01"))
+
+    def test_another_map_or_other_files_are_another_load(self):
+        key = wu.load_key(self.iwad, self.pwad, "MAP01")
+        self.assertNotEqual(wu.load_key(self.iwad, self.pwad, "MAP02"), key)
+        self.assertNotEqual(wu.load_key(self.iwad, None, "MAP01"), key)
+        self.assertNotEqual(wu.load_key(self.pwad, self.iwad, "MAP01"), key)
+
+    def test_a_new_uplink_of_the_same_name_is_another_load(self):
+        pinned = wu.pin(self.pwad, 1)
+        newer = self.pwad + ".123.part"
+        with open(newer, "wb") as f:
+            f.write(b"\0" * 64)                          # the same size and bytes, and still a new file
+        os.replace(newer, self.pwad)                      # what the Doom component does when it commits one
+        self.assertNotEqual(wu.load_key(self.iwad, self.pwad, "MAP01"), wu.load_key(self.iwad, pinned, "MAP01"))
+
+    def test_a_file_that_is_not_there_has_no_key(self):
+        gone = os.path.join(wu.uplink_dir(), "gone.wad")
+        self.assertIsNone(wu.load_key(gone, None, "E1M1"))
+        self.assertIsNone(wu.load_key(self.iwad, gone, "E1M1"))
 
 
 class TestTheUplinkCodeKeepsTheCharter(unittest.TestCase):
