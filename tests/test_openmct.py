@@ -25,6 +25,10 @@ sys.path.insert(0, str(ROOT / "ground"))
 import build_openmct_displays as bod   # noqa: E402
 import openmct_docs                     # noqa: E402
 import ops_telemetry                    # noqa: E402
+try:
+    import set_yamcs_alarms             # noqa: E402  yamcs-client: ground/.venv
+except ImportError:
+    set_yamcs_alarms = None
 
 WEB = ROOT / "ground" / "openmct"
 LIVE_SCREENS = ("00 ", "10 ", "20 ", "30 ", "40 ", "60 ")
@@ -178,6 +182,50 @@ class Displays(unittest.TestCase):
         # carries it and the reference does not offer it
         self.assertEqual([o["name"] for o in self.b.objects.values() if o["type"] == "doomsat.command"], [])
         self.assertNotIn("commanding", openmct_docs.render(self.b, self.root, self.params, self.drift))
+
+
+@unittest.skipIf(set_yamcs_alarms is None, "yamcs-client is not installed (run with ground/.venv/bin/python)")
+class AlarmTool(unittest.TestCase):
+    """tools/set_yamcs_alarms.py sends what alarm-ranges.json says, as the replay and the indicators read it."""
+    RANGES = json.loads((ROOT / "ground" / "yamcs" / "alarm-ranges.json").read_text(encoding="utf-8"))
+
+    @staticmethod
+    def allowed(req):
+        # Yamcs 5.12 reads the deprecated staticAlarmRange field on this request, not staticAlarmRanges
+        out = {}
+        for ar in req.defaultAlarm.staticAlarmRange:
+            assert not (ar.HasField("minExclusive") or ar.HasField("maxExclusive")), ar
+            out[set_yamcs_alarms.mdb_pb2.AlarmLevelType.Name(ar.level).lower()] = [
+                ar.minInclusive if ar.HasField("minInclusive") else None,
+                ar.maxInclusive if ar.HasField("maxInclusive") else None]
+        return out
+
+    def test_bounds_are_inclusive_and_zero_is_a_bound(self):
+        # yamcs-client's set_default_alarm_ranges sends both ends exclusive and drops a 0: HEALTH 50 and one
+        # enemy would be watch alarms live, and WATCHDOG_TRIPS would never alarm
+        self.assertEqual(self.allowed(set_yamcs_alarms.alarm_request({"watch": [50, None], "warning": [None, 0]})),
+                         {"watch": [50, None], "warning": [None, 0]})
+        for q, r in self.RANGES.items():
+            if q.startswith("/") and "enum" not in r:
+                self.assertEqual(self.allowed(set_yamcs_alarms.alarm_request(r)), r, q)
+
+    def test_one_override_per_parameter(self):
+        sent = []
+        proc = types.SimpleNamespace(ctx=types.SimpleNamespace(patch_proto=lambda url, data: sent.append((url, data))))
+        client = mock.Mock()
+        client.return_value.get_processor.return_value = proc
+        with mock.patch.object(set_yamcs_alarms, "YamcsClient", client), contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(sys, "argv", ["set_yamcs_alarms.py"]):
+            set_yamcs_alarms.main()
+        client.return_value.get_processor.assert_called_once_with("fprime-project", "realtime")
+        numeric = {q: r for q, r in self.RANGES.items() if q.startswith("/") and "enum" not in r}
+        got = {url.split("/parameters", 1)[1]: set_yamcs_alarms.mdb_override_service_pb2.UpdateParameterRequest
+               .FromString(data) for url, data in sent}
+        self.assertEqual(sorted(got), sorted(numeric))
+        self.assertTrue(all(url.startswith("/mdb-overrides/fprime-project/realtime/parameters/") for url, _ in sent))
+        health = got[f"{openmct_docs.DOOM}/HEALTH"]
+        self.assertEqual(health.action, health.SET_DEFAULT_ALARMS)
+        self.assertEqual(self.allowed(health), numeric[f"{openmct_docs.DOOM}/HEALTH"])
 
 
 class FakeYamcs:
