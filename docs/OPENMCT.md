@@ -119,7 +119,7 @@ The decision loop on the ground: how long a decision takes against the 900 ms bu
 | Panel | Type | What it shows | Inputs |
 |---|---|---|---|
 | Decision timing (ms): jev round trip, decision age | telemetry.plot.overlay | jev's round trip and the approximate decision age, with their alarm limits (decision age critical past the 900 ms budget). | SystemOneLatencyMs, DecisionAgeMs |
-| jev share and fallback rate (rolling) | telemetry.plot.overlay | Share of the last 40 intent changes that a jev answer decided, against the charter's 0.70 floor; and share of the last 40 decisions settled by the unsure band, a hold, the cache or a rule. | JevShare, FallbackRate |
+| jev share and fallback rate (rolling) | telemetry.plot.overlay | Share of the last 40 intent changes that a jev answer decided, against the charter's 0.70 floor; and share of the last 40 decisions settled by the unsure band, a hold, the cache or a rule, or with no jev answer. | JevShare, FallbackRate |
 | Candidate board | doomsat.candidates | The world model's candidate targets, jev's score for each, the pick and why, beside a plan view of the traverse. See Custom views. | - |
 | Pick gap and confidence | telemetry.plot.overlay | How far the chosen candidate's score was clear of the next one, and jev's confidence in it. Small gaps are what the unsure band exists for. | PickGap, PickConfidence |
 | Ground brain (latest) | LadTable | The latest of everything the ground decided: the Controls line, the engage answer, Sonnet's plan and hint, why the last pick came out as it did, gap, confidence, timing, jev share and graph version. | Controls, EngageAnswer, Plan, SystemTwoHint, DecisionSource, PickKind, PickGap, PickConfidence, SystemOneLatencyMs, DecisionAgeMs, JevShare, GraphVersion |
@@ -398,18 +398,18 @@ Every parameter a display or custom view reads. Alarm ranges for flight paramete
 | `/DoomGround/ControlCommands` | integer | Commands the pilot has issued this run. |
 | `/DoomGround/Controls` | string | One line: the mode, what was picked, and how many candidates were on offer. |
 | `/DoomGround/DecisionAgeMs` | float (ms) | Telemetry age at decision + jev round trip + command issue time, ms: an approximation of the charter's observation-to-effect decision age until the payload reports the effect tic. Watch over 750, warning over 850, critical over 900. |
-| `/DoomGround/DecisionSource` | enumeration | Why the last decision came out as it did: JEV (asked and used), UNSURE_BAND (the gap was too small, a named fallback decided), HELD (commitment kept the previous pick), CACHED (same state as before, same answer), RULE (a rule gave up and chose), UNAVAILABLE (no answer). |
+| `/DoomGround/DecisionSource` | enumeration | Why the last decision came out as it did: JEV (jev was asked and its answer used), UNSURE_BAND (the gap was too small, a named fallback decided), HELD (commitment kept the previous pick), CACHED (same state as before, same answer), RULE (a rule chose: it gave up on a target that stopped getting closer, or the System One is the code rules, as under `scripts/play.sh --autopilot`), UNAVAILABLE (no jev answer: jev could not be reached in time and a rule stood in, or there was nothing to ask). |
 | `/DoomGround/DoomFrame` | string | URL of the last reassembled JPEG in the Yamcs bucket doomframes (Open MCT shows it as imagery). |
 | `/DoomGround/DoomMap` | string | URL of the last map product (the payload's own map, downlinked every 5 s). |
 | `/DoomGround/EngageAnswer` | string | The engage head's last answer (fight where I stand, fight while moving, break off, retreat), when an enemy was met. |
-| `/DoomGround/FallbackRate` | float | Share of the last 40 decisions not decided by a jev answer. |
+| `/DoomGround/FallbackRate` | float | Share of the last 40 decisions whose DecisionSource is not JEV. |
 | `/DoomGround/FrameSeq` | integer | Sequence number of the last frame the ground reassembled. |
 | `/DoomGround/FramesComplete` | integer | Frames reassembled with every chunk present. |
 | `/DoomGround/FramesIncomplete` | integer | Frames given up on with chunks missing. |
 | `/DoomGround/GraphVersion` | integer | Decision graph version in use (ground/graph/graph_v<N>.json). |
 | `/DoomGround/HonestyStatus` | enumeration | Result of the honesty suite at preflight: UNKNOWN, PASS or FAIL. FAIL is critical and voids the attempt. |
 | `/DoomGround/IntentMode` | enumeration | Mode of the last INTENT: EXPLORE, APPROACH, OPERATE, FIGHT, RETREAT, RECOVER. |
-| `/DoomGround/JevShare` | float | Share of the last 40 intent changes decided by a jev answer. Warning under the charter's 0.70 floor. |
+| `/DoomGround/JevShare` | float | Share of the last 40 intent changes (a new mode or a new pick) that a jev answer caused, by charter 7's rule. A rule's answer never counts, so it reads a little under summary.json's jev_share when jev could not be reached. Warning under the charter's 0.70 floor; blank until the first change. |
 | `/DoomGround/PickConfidence` | float | jev's confidence in the picked candidate's score, 0 to 1. |
 | `/DoomGround/PickGap` | float | How far the pick's score was clear of the runner-up, in rubric levels. |
 | `/DoomGround/PickKind` | enumeration | Kind of the picked candidate: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY or NONE. |

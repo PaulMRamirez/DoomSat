@@ -31,27 +31,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ground"))
 import openmct_dict as doomdict  # noqa: E402
+from ops_telemetry import Rolling  # noqa: E402  the live feed's own rules, so a replay reads what the flight showed
 
 DOOM = doomdict.DOOM
 GROUND = "/DoomGround"
 CAND_KIND = {"frontier": "FRONTIER", "door": "DOOR", "exit": "EXIT", "key": "KEY", "item": "ITEM",
              "switch": "SWITCH", "enemy": "ENEMY"}
-
-
-def source_of(row):
-    sel = row.get("select") or {}
-    if row.get("cached"):
-        return "CACHED"
-    if sel.get("gave_up"):
-        return "RULE"
-    if sel.get("fallback"):
-        return "UNSURE_BAND"
-    if sel.get("held"):
-        return "HELD"
-    if not row.get("answers"):
-        return "UNAVAILABLE"
-    return "JEV"
 
 
 def main():
@@ -90,9 +77,7 @@ def main():
 
     events, commands = [], []
     prev = {}
-    changes = []                      # (was_jev) per intent change, for the rolling share
-    last_intent_key = None
-    sources = []
+    rolling = Rolling(40)
     for i, r in enumerate(rows):
         t = int(r["t"] * 1000)
         raw = r.get("raw") or {}
@@ -121,8 +106,7 @@ def main():
 
         # ---- ground: the autonomy block
         sel = r.get("select") or {}
-        src = source_of(r)
-        sources.append(src)
+        src = rolling.add(r)
         put(f"{GROUND}/SystemOneLatencyMs", t, float(r.get("latency_ms") or 0))
         age = (r.get("tel_age_ms") or 0) + (r.get("latency_ms") or 0) + (r.get("cmd_ms") or 0)
         put(f"{GROUND}/DecisionAgeMs", t, float(age))
@@ -145,14 +129,9 @@ def main():
         target = f"{(cands[pk]['kind'] if pk is not None and pk < len(cands) else '-')}"
         put(f"{GROUND}/Controls", t, f"{r.get('mode')} -> {target} ({len(cands)} candidates) [{src.lower()}]")
 
-        key = (c.get("mode"), c.get("target_x"), c.get("target_y"))
-        if key != last_intent_key:
-            changes.append(src == "JEV")
-            last_intent_key = key
-        window = changes[-40:]
-        put(f"{GROUND}/JevShare", t, round(sum(window) / len(window), 3))
-        recent = sources[-40:]
-        put(f"{GROUND}/FallbackRate", t, round(sum(s != "JEV" for s in recent) / len(recent), 3))
+        if rolling.jev_share() is not None:          # none before the first intent change
+            put(f"{GROUND}/JevShare", t, round(rolling.jev_share(), 3))
+        put(f"{GROUND}/FallbackRate", t, round(rolling.fallback_rate(), 3))
 
         # the INTENT that went up is a recorded command
         if c:

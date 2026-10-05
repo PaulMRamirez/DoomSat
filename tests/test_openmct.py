@@ -100,43 +100,93 @@ class FakeProcessor:
         self.values[name] = value
 
 
-def row(mode="EXPLORE", tx=1.0, pick=0, **select):
+def feed(yamcs=None, **kw):
+    return ops_telemetry.OpsTelemetry(yamcs if yamcs is not None else FakeProcessor(), every_s=0, **kw)
+
+
+def row(mode="EXPLORE", tx=1.0, pick=0, model="jev-1.13.0", **select):
     return {"t": 1.0, "kind": "control", "mode": mode, "pick": pick, "select": {"gap": 0.5, "confidence": 0.7, **select},
             "answers": {"g_t0": "4.00", "g_t1": "2.00"}, "control": {"mode": mode, "target_x": tx, "target_y": 0.0},
-            "latency_ms": 450, "tel_age_ms": 60, "cmd_ms": 40, "graph_version": 3, "episode": 1}
+            "model": model, "latency_ms": 450, "tel_age_ms": 60, "cmd_ms": 40, "graph_version": 3, "episode": 1}
 
 
 class GroundFeed(unittest.TestCase):
     def test_decision_sources(self):
-        self.assertEqual(ops_telemetry.decision_source(row()), "JEV")
-        self.assertEqual(ops_telemetry.decision_source(row(fallback="unsure gap")), "UNSURE_BAND")
-        self.assertEqual(ops_telemetry.decision_source(row(held=True)), "HELD")
-        self.assertEqual(ops_telemetry.decision_source(dict(row(), cached=True)), "CACHED")
-        self.assertEqual(ops_telemetry.decision_source(dict(row(), answers={})), "UNAVAILABLE")
+        src = ops_telemetry.decision_source
+        self.assertEqual(src(row()), "JEV")
+        self.assertEqual(src(row(fallback="unsure gap")), "UNSURE_BAND")
+        self.assertEqual(src(row(held=True)), "HELD")
+        self.assertEqual(src(dict(row(), cached=True)), "CACHED")
+        self.assertEqual(src(dict(row(), answers={})), "UNAVAILABLE")
+        self.assertEqual(src(row(gave_up=True)), "RULE")
+        # decision_reasons' order: the band and a hold before a give-up or the cache
+        self.assertEqual(src(dict(row(fallback="unsure gap"), cached=True)), "UNSURE_BAND")
+        self.assertEqual(src(row(held=True, gave_up=True)), "HELD")
+        self.assertEqual(src(row(fallback="no answers")), "UNAVAILABLE")
+
+    def test_a_rule_answer_is_never_jev(self):
+        src = ops_telemetry.decision_source
+        # jev timed out: targeting.decide logs the rules' answers under model "code (fallback)"
+        self.assertEqual(src(row(model="code (fallback)")), "UNAVAILABLE")
+        self.assertEqual(src(dict(row(), unavailable="ReadTimeout: read timed out")), "UNAVAILABLE")
+        # --system-one code (scripts/play.sh --autopilot): the rules answer every head, cached or not
+        self.assertEqual(src(row(model="code")), "RULE")
+        self.assertEqual(src(dict(row(model="code"), cached=True)), "RULE")
+
+    def test_a_jev_outage_and_the_code_autopilot_read_zero_jev_share(self):
+        for model, label in (("code (fallback)", "UNAVAILABLE"), ("code", "RULE")):
+            yamcs = FakeProcessor()
+            ops = feed(yamcs)
+            for i in range(6):
+                ops.update(dict(row(pick=i % 2, model=model), latency_ms=0), [{"kind": "frontier"}, {"kind": "door"}])
+            self.assertEqual(yamcs.values["/DoomGround/DecisionSource"], label, model)
+            self.assertEqual(yamcs.values["/DoomGround/JevShare"], 0.0, model)
+            self.assertEqual(yamcs.values["/DoomGround/FallbackRate"], 1.0, model)
 
     def test_jev_share_counts_intent_changes_not_decisions(self):
-        proc = FakeProcessor()
-        ops = ops_telemetry.OpsTelemetry(proc, every_s=0)
+        yamcs = FakeProcessor()
+        ops = feed(yamcs)
+        cands = [{"kind": "frontier"}, {"kind": "door"}]
         for _ in range(5):
-            ops.update(row(tx=1.0), [{"kind": "frontier"}])                    # one intent, held by jev
-        ops.update(row(tx=2.0, fallback="unsure gap"), [{"kind": "door"}])      # a second, by the fallback
-        self.assertAlmostEqual(proc.values["/DoomGround/JevShare"], 0.5)
-        self.assertAlmostEqual(proc.values["/DoomGround/FallbackRate"], 1 / 6)
-        self.assertEqual(proc.values["/DoomGround/PickKind"], "DOOR")
-        self.assertEqual(proc.values["/DoomGround/DecisionAgeMs"], 550.0)
+            ops.update(row(pick=0), cands)                   # one intent: not a change until it changes
+        self.assertNotIn("/DoomGround/JevShare", yamcs.values)
+        ops.update(row(pick=1), cands)                       # a change, jev's
+        ops.update(row(pick=0, fallback="unsure gap"), cands)  # a change, the band's
+        self.assertAlmostEqual(yamcs.values["/DoomGround/JevShare"], 0.5)
+        self.assertAlmostEqual(yamcs.values["/DoomGround/FallbackRate"], 1 / 7)
+        self.assertEqual(yamcs.values["/DoomGround/PickKind"], "FRONTIER")
+        self.assertEqual(yamcs.values["/DoomGround/DecisionAgeMs"], 550.0)
+
+    def test_jev_share_is_the_charter_metric_less_rule_answers(self):
+        sys.path.insert(0, str(ROOT / "research"))
+        import frozen_metrics as fm
+        flags = [{}, {"held": True}, {"fallback": "unsure gap"}, {"gave_up": True}, {}, {}]
+        rows = [dict(row(mode=("EXPLORE", "FIGHT")[i % 7 == 3], pick=(i * 5) % 3, **flags[i % 6]), cached=i % 4 == 1)
+                for i in range(60)]
+        whole = ops_telemetry.Rolling(window=1000)
+        for r in rows:
+            whole.add(r)
+        self.assertAlmostEqual(whole.jev_share(), fm.jev_share(rows))
+        rows[10] = dict(rows[10], model="code (fallback)")   # a change jev did not make: charter 7 still credits it
+        whole = ops_telemetry.Rolling(window=1000)
+        for r in rows:
+            whole.add(r)
+        self.assertLess(whole.jev_share(), fm.jev_share(rows))
 
     def test_the_sector_pilot_word_is_not_a_slot(self):
-        proc = FakeProcessor()
-        ops_telemetry.OpsTelemetry(proc, every_s=0).update(row(pick="ahead"), [])
-        self.assertEqual(proc.values["/DoomGround/PickSlot"], 255)
-        self.assertEqual(proc.values["/DoomGround/PickKind"], "NONE")
+        yamcs = FakeProcessor()
+        feed(yamcs).update(row(pick="ahead"), [])
+        self.assertEqual(yamcs.values["/DoomGround/PickSlot"], 255)
+        self.assertEqual(yamcs.values["/DoomGround/PickKind"], "NONE")
 
     def test_everything_published_is_in_the_ground_xtce(self):
-        proc = FakeProcessor()
-        ops_telemetry.OpsTelemetry(proc, every_s=0).update(dict(row(), answers={"g_t0": "1", "engage": "x"}),
-                                                           [{"kind": "exit"}])
+        yamcs = FakeProcessor()
+        ops = feed(yamcs)
+        ops.update(row(pick=1), [])
+        ops.update(dict(row(), answers={"g_t0": "1", "engage": "x"}), [{"kind": "exit"}])
         params, _ = bod.doomdict.load()
-        self.assertEqual(sorted(n for n in proc.values if n not in params), [])
+        self.assertIn("/DoomGround/JevShare", yamcs.values)
+        self.assertEqual(sorted(n for n in yamcs.values if n not in params), [])
 
 
 class Replay(unittest.TestCase):
@@ -145,7 +195,7 @@ class Replay(unittest.TestCase):
             log = Path(tmp) / "decisions.jsonl"
             rows = []
             for i, (hp, mode) in enumerate([(100, "EXPLORE"), (40, "FIGHT"), (20, "FIGHT")]):
-                r = row(mode=mode, tx=float(i))
+                r = row(mode=mode, tx=float(i), model="code (fallback)" if i == 2 else "jev-1.13.0")
                 r.update(t=1790000000 + i, tic=400 + 35 * i, kills=i, goal="EXPLORE", candidates=1,
                          cand_xy=[{"kind": "frontier", "x": 1.0, "y": 2.0}],
                          raw={"HEALTH": hp, "STUCK": False, "POS_X": float(i), "POS_Y": 0.0, "WEAPON": "PISTOL"})
@@ -163,6 +213,9 @@ class Replay(unittest.TestCase):
         self.assertTrue(all(e[3].startswith("[derived]") for e in pack["events"]))
         self.assertTrue(any("HEALTH fell through 25" in e[3] for e in pack["events"]))
         self.assertEqual(len(pack["commands"]), 3)
+        # the live feed's rules: jev made the one intent change, then jev was unreachable
+        self.assertEqual([v for _, v in pack["series"]["/DoomGround/DecisionSource"]], ["JEV", "UNAVAILABLE"])
+        self.assertEqual([v for _, v in pack["series"]["/DoomGround/JevShare"]], [1.0])
 
 
 if __name__ == "__main__":
