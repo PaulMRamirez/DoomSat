@@ -14,10 +14,11 @@ cfdpManager.dataOut[n] -> cfdpGuard.downlinkIn[n]        cfdpGuard.downlinkOut[n
 cfdpGuard.fileAnnounceOut -> doom.fileAnnounce
 ```
 
-- **Up.** Every Metadata PDU's destination must be `NAME.wad.<nonce>.part`, directly in
-  `$DOOMSAT_HOME/wads/uplink`, using only letters, digits and `_ . + -`. This is the rule in
-  `flight/Components/Doom/WadPath.hpp`, which the Doom component uses as well. A Metadata that fails the check never
-  reaches `cfdpManager` as a PDU. Everything else passes through untouched.
+- **Up.** Every Metadata PDU's destination must be `NAME.wad[.<nonce>].part`, directly in
+  `$DOOMSAT_HOME/wads/uplink`, using only letters, digits and `_ . + -`. The demo always adds a nonce; the rule
+  does not require one. This is the rule in `flight/Components/Doom/WadPath.hpp`, which the Doom component uses as
+  well. A Metadata that fails the check never reaches `cfdpManager` as a PDU. Everything else passes through
+  untouched.
 - **Down.** When `cfdpManager`'s own FIN for an upload the guard let through says no error, delivery complete and
   file retained, the guard announces the file to the Doom component, which renames it to `NAME.wad`. It does this
   before the FIN leaves, so the file is in place by the time the ground hears of it. The receiver sends that FIN
@@ -36,14 +37,15 @@ cfdpGuard.fileAnnounceOut -> doom.fileAnnounce
   (`PTHREAD_MUTEX_ERRORCHECK`), so the relock returns `EDEADLK` and `Os::Mutex` asserts. `cfdpManager` instead hands
   back any buffer whose descriptor is not `FW_PACKET_FILE`, unread, on its own thread, through the return path the
   router already has. `tests/test_cfdp_guard.py` reads that branch from F´ when the install is there.
-- **Drop the Metadata, not the transaction.** The file data and EOF still reach `cfdpManager`. With no Metadata,
-  it writes them to `<tmp_dir>/<eid>:<seq>.tmp` (`<uplink>/.cfdp-tmp` from the parameter file), asks for the
-  Metadata nine times (with `nack_limit` 10, the tenth count sends the FIN instead of a NAK), and ends with a FIN
-  carrying `NAK_LIMIT_REACHED`. The ground then shows FAILED for class 2; class 1 never hears back and shows
-  COMPLETED. If the guard dropped every PDU instead, Yamcs would end PAUSED with no reason given. With the
-  parameter file the bytes stay inside the uplink directory, and `scripts/wsl_run_flight.sh` clears `.cfdp-tmp` at
-  each start. A start that flies without the parameter file (`DOOMSAT_PRM_DEFAULTS=1`) stages them in F´'s default
-  `/tmp`, which nothing clears; the name is two numbers and `.tmp`, never one the ground chooses.
+- **Drop the Metadata, not the transaction.** The file data and EOF still reach `cfdpManager`. For class 2, with
+  no Metadata, it writes them to `<tmp_dir>/<eid>:<seq>.tmp` (`<uplink>/.cfdp-tmp` from the parameter file), asks
+  for the Metadata nine times (with `nack_limit` 10, the tenth count sends the FIN instead of a NAK), and ends with
+  a FIN carrying `NAK_LIMIT_REACHED`, so the ground shows FAILED. Class 1 file data with no Metadata is dropped
+  unwritten (`Engine::recvInit`), and class 1 never hears back, so the ground shows COMPLETED. If the guard dropped
+  every PDU instead, Yamcs would end PAUSED with no reason given. With the parameter file the staged bytes stay
+  inside the uplink directory, and `scripts/wsl_run_flight.sh` clears `.cfdp-tmp` at each start. A start that
+  flies without the parameter file (`DOOMSAT_PRM_DEFAULTS=1`) stages them in F´'s default `/tmp`, which nothing
+  clears; the name is two numbers and `.tmp`, never one the ground chooses.
 - **Remember every transaction let through, and keep it after it ends.** `cfdpManager` routes a Metadata by
   (source entity, sequence number) alone, whatever its class bit, and keeps the first destination it takes for a
   transaction (`r2RecvMd` runs once; after the FIN it drops Metadata). So the guard records every Metadata it lets
@@ -63,14 +65,18 @@ cfdpGuard.fileAnnounceOut -> doom.fileAnnounce
   ground's fallback when the guard's `WadUplinked` is lost on the way down: with the `.part` gone, it finds that
   this upload was put in place as `NAME.wad`, still with the size and checksum it names, and answers `WadUplinked`
   again (`docs/plans/idempotent-wad-commands.md`).
+- **Report a refusal once per transaction.** The sender resends a Metadata each time the receiver NAKs for it,
+  about ten times for a refused upload. `UploadRefused`, or `MetadataUnreadable` for a Metadata `cfdpManager`
+  cannot read either, comes once per (source entity, sequence number), and `UPLOADS_REFUSED` counts uploads, not
+  copies. Every copy is still refused.
 - **Belt and braces.** `Doom::fileAnnounce_handler` now refuses any path outside the uplink directory as well.
 
 ## What ran (4 October 2026, this VM)
 
 | Check | Result |
 |---|---|
-| Unit tests: `scripts/flight.sh ut` (GTest, 18) | All pass. They cover every refused shape of destination (the directory's name as a bare prefix included), an embedded NUL both ways, Yamcs-width ids, a truncated FIN, seven failed or partial FINs, class 1 (and a class 2 Metadata naming another file for its transaction), resends, a second source with the same sequence number, a late Metadata after the FIN with the FIN repeated, a cancel, Metadata addressed to another entity, and a full table emptied in the right order. Eight one-line mutants of the table logic (forgetting at the FIN, no eviction order, ignoring a cancel, following only class 2, committing class 1, any destination entity, the source left out of either match) each fail at least one test |
-| Python suite | Passes, with `tests/test_cfdp_guard.py` (wiring, parser reuse, the shared name rule, the F´ branch the refusal relies on) and three demo tests with an on-board stand-in for the guard |
+| Unit tests: `scripts/flight.sh ut` (GTest, 18) | All pass. They cover every refused shape of destination (the directory's name as a bare prefix included), a name with no nonce let through, an embedded NUL both ways, Yamcs-width ids, the file announced before its FIN is passed on, a truncated FIN, seven failed or partial FINs, class 1 (and a class 2 Metadata naming another file for its transaction), resends, an unreadable Metadata reported once per transaction, a second source with the same sequence number, a late Metadata after the FIN with the FIN repeated, a cancel, Metadata addressed to another entity, and a full table emptied in the right order. Eight one-line mutants of the table logic (forgetting at the FIN, no eviction order, ignoring a cancel, following only class 2, committing class 1, any destination entity, the source left out of either match) each fail at least one test. Three more, run on 5 October after a second review, fail too: the FIN passed on before the announce, and an unreadable Metadata reported on every copy or only once ever |
+| Python suite | Passes, with `tests/test_cfdp_guard.py` (wiring, parser reuse, the shared name rule, the F´ branch the refusal relies on) and five demo tests with an on-board stand-in for the guard: the commit at the FIN, a lost `WadUplinked`, another upload of the same name (with this upload's rename at the FIN failing too), a failed rename at the FIN, and class 1 left to `COMMIT_WAD` |
 | Class 2 upload, no loss | `MetadataReceived`, then `UploadCommitted`, then `WadUplinked`, then `RxFileTransferCompleted`. No `COMMIT_WAD` was sent; `LOAD_WAD` flew it |
 | Uploads to `/tmp/…`, `<uplink>/../…`, `<uplink>/notawad.bin`, `<uplink>/.cfdp-tmp/x.wad.1.part` | Each was refused on board (`UploadRefused`, once per transaction although its Metadata came about ten times). The ground showed FAILED `NAK_LIMIT_REACHED` after 28.0 s. No file at any target; the bytes sat in `.cfdp-tmp` until the next start cleared them |
 | Class 1 upload to `/tmp/…` | Refused on board, nothing written. The ground showed COMPLETED, because class 1 never hears back |
@@ -103,8 +109,8 @@ POSIX keeps the descriptor valid, and no error followed: `RxFileTransferComplete
   destination, for example by pushing a live upload out of the table with eight others and then naming another
   file for it. Every destination it can reach still passed the confinement, and such a sender could as well send
   `COMMIT_WAD` or `SendFile`.
-- **The temp files of refused uploads** stay until the next start (in `/tmp`, and never cleared, when flying
-  without the parameter file).
+- **The temp files of refused class 2 uploads** stay until the next start (in `/tmp`, and never cleared, when
+  flying without the parameter file).
 - **Read, not run.** If a file-data PDU's body fails to decode before any Metadata, F´ ends the transaction with
   no error status and could send a NO_ERROR FIN for the temp file. The guard has no Metadata for it, so it commits
   nothing. If a Metadata did arrive and the file is short, `r2CalcCrcChunk` would loop. Yamcs never sends such a

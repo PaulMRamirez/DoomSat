@@ -2,9 +2,10 @@ module DoomMission {
 
     @ The CFDP uplink's gatekeeper, on both of cfdpManager's paths.
     @ Up (router -> cfdpManager): a Metadata PDU whose destination is not an uplinked WAD in the uplink directory
-    @ (NAME.wad.<nonce>.part, see Doom/WadPath.hpp) never reaches cfdpManager, so it opens no destination anywhere
-    @ else. File data that comes without an admitted Metadata is still staged in cfdpManager's tmp_dir as
-    @ <eid>:<seq>.tmp, which the repo's parameters put in the uplink directory (.cfdp-tmp).
+    @ (NAME.wad[.<nonce>].part, see Doom/WadPath.hpp) never reaches cfdpManager, so it opens no destination anywhere
+    @ else. Class 2 file data that comes without an admitted Metadata is still staged in cfdpManager's tmp_dir as
+    @ <eid>:<seq>.tmp, which the repo's parameters put in the uplink directory (.cfdp-tmp); class 1 file data with
+    @ no Metadata is dropped unwritten.
     @ Down (cfdpManager -> com queue): when cfdpManager's own FIN for an upload the guard let through says the file
     @ arrived whole (no error, retained), the guard announces the file to the Doom component, which renames it to
     @ NAME.wad. The commit happens on board, with no ground command.
@@ -39,7 +40,7 @@ module DoomMission {
         event UploadRefused(dest: string size 120, srcEid: U32, seq: U32) \
             severity warning high \
             id 0 \
-            format "CFDP upload to {} refused (transaction {}:{}): only NAME.wad.<nonce>.part in the uplink directory"
+            format "CFDP upload to {} refused (transaction {}:{}): only NAME.wad[.<nonce>].part in the uplink directory"
 
         event MetadataUnreadable(status: I32) \
             severity warning low \

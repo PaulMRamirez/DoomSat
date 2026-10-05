@@ -106,9 +106,16 @@ bool CfdpGuard ::admitMetadata(const Fw::Buffer& pdu) {
     Fw::SerialBuffer sb = serialOver(pdu);
     const Fw::SerializeStatus status = md.deserializeFrom(sb);
     if (status != Fw::FW_SERIALIZE_OK) {
-        // cfdpManager could not read it either (FailMetadataPduDeserialization) and would open nothing
-        this->log_WARNING_LO_MetadataUnreadable(static_cast<I32>(status));
-        this->tlmWrite_UPLOADS_REFUSED(++this->m_refusedCount);
+        // cfdpManager could not read it either (FailMetadataPduDeserialization) and would open nothing. Reported
+        // once per transaction when its header still decodes, like a refused destination; a header that does not
+        // decode is reported each time, within the event's throttle
+        PduHeader header;
+        Fw::SerialBuffer hb = serialOver(pdu);
+        if (header.fromSerialBuffer(hb) != Fw::FW_SERIALIZE_OK ||
+            this->firstRefusal(header.getSourceEid(), header.getTransactionSeq())) {
+            this->log_WARNING_LO_MetadataUnreadable(static_cast<I32>(status));
+            this->tlmWrite_UPLOADS_REFUSED(++this->m_refusedCount);
+        }
         return false;
     }
     const EntityId src = md.getSourceEid();
@@ -149,22 +156,8 @@ bool CfdpGuard ::admitMetadata(const Fw::Buffer& pdu) {
     }
 
     if (!admit) {
-        bool told = false;
-        {
-            Os::ScopeLock lock(this->m_lock);
-            for (FwSizeType i = 0; i < MAX_UPLOADS; i++) {
-                const Refused& r = this->m_refused[i];
-                told = told || (r.used && r.srcEid == src && r.seq == seq);
-            }
-            if (!told) {
-                Refused& r = this->m_refused[this->m_refusedNext];
-                this->m_refusedNext = (this->m_refusedNext + 1) % MAX_UPLOADS;
-                r.used = true;
-                r.srcEid = src;
-                r.seq = seq;
-            }
-        }
-        if (!told) {  // once per transaction: the sender resends a Metadata each time the receiver asks for it
+        // Once per transaction: the sender resends a Metadata each time the receiver asks for it
+        if (this->firstRefusal(src, seq)) {
             this->log_WARNING_HI_UploadRefused(dest, src, seq);
             this->tlmWrite_UPLOADS_REFUSED(++this->m_refusedCount);
         }
@@ -177,6 +170,22 @@ bool CfdpGuard ::admitMetadata(const Fw::Buffer& pdu) {
         this->log_WARNING_LO_UploadForgotten(old.dest, old.srcEid, old.seq);
     }
     this->tlmWrite_UPLOADS_ACCEPTED(++this->m_accepted);
+    return true;
+}
+
+bool CfdpGuard ::firstRefusal(EntityId src, TransactionSeq seq) {
+    Os::ScopeLock lock(this->m_lock);
+    for (FwSizeType i = 0; i < MAX_UPLOADS; i++) {
+        const Refused& r = this->m_refused[i];
+        if (r.used && r.srcEid == src && r.seq == seq) {
+            return false;
+        }
+    }
+    Refused& r = this->m_refused[this->m_refusedNext];
+    this->m_refusedNext = (this->m_refusedNext + 1) % MAX_UPLOADS;
+    r.used = true;
+    r.srcEid = src;
+    r.seq = seq;
     return true;
 }
 

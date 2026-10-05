@@ -64,6 +64,8 @@ class CfdpGuard final : public CfdpGuardComponentBase {
         Svc::Ccsds::Cfdp::EntityId srcEid;
         Svc::Ccsds::Cfdp::TransactionSeq seq;
     };
+    //! Record a refused transaction (takes m_lock); true the first time, false for a resend of its Metadata
+    bool firstRefusal(Svc::Ccsds::Cfdp::EntityId src, Svc::Ccsds::Cfdp::TransactionSeq seq);
 
     Os::Mutex m_lock;  //!< the tables: uplinkIn runs on the radio's receive thread, downlinkIn on cfdpManager's
     Upload m_uploads[MAX_UPLOADS];

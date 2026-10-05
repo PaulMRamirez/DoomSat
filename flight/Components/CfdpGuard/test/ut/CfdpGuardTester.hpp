@@ -74,9 +74,11 @@ class CfdpGuardTester final : public CfdpGuardGTestBase {
     bool lastUplinkReadable();
     std::string path(const char* name) const;
 
-    //! The port each buffer left on (the generated history keeps only the buffer)
+    //! The port each buffer left on (the generated history keeps only the buffer), and how many files had been
+    //! announced by then
     void from_downlinkOut_handler(FwIndexType portNum, Fw::Buffer& fwBuffer) override;
     std::vector<FwIndexType> m_downlinkPorts;
+    std::vector<U32> m_announcedAtDownlink;
 
     CfdpGuard component;
     U8 m_up[600];

@@ -715,18 +715,20 @@ class TestTheDemo(unittest.TestCase):
         # WadUplinked lost: COMMIT_WAD finds no .part but the file the guard put in place, and says WadUplinked
         for extra, names in (((), ["COMMIT_WAD", "LOAD_WAD"]), (("--no-load", "--cfdp", "2"), ["COMMIT_WAD"])):
             with self.subTest(extra=extra):
-                stack = FakeStack(cfdp=True, guard=True, lose=["[WadUplinked]"])
+                stack, said = FakeStack(cfdp=True, guard=True, lose=["[WadUplinked]"]), []
                 with mock.patch.object(demo, "COMMIT_ANSWER_S", 0.3):
                     self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--iwad", "freedoom2.wad", "--map",
-                                                   "MAP01", *extra), 0)
+                                                   "MAP01", *extra, said=said), 0)
                 self.assertEqual(self.names(stack), names)
+                self.assertTrue([m for m in said if m.startswith("this upload's UploadCommitted came")], said)
 
     def test_only_this_uploads_commit_counts(self):
         # Another upload of basic.wad is put in place while this one is under way (a same-name WadUplinked after t0).
-        # Without this upload's own UploadCommitted, the tool still commits its own .part
-        for guard in (False, True):
-            with self.subTest(guard=guard):
-                stack = FakeStack(cfdp=True, guard=guard)
+        # Without this upload's own UploadCommitted, the tool still commits its own .part. With it, only what comes
+        # after it counts: the other upload's WadUplinked does not stand in for this one's failed rename at the FIN
+        for guard, rename_fails in ((False, False), (True, False), (True, True)):
+            with self.subTest(guard=guard, rename_fails=rename_fails):
+                stack = FakeStack(cfdp=True, guard=guard, rename_fails=rename_fails)
                 real = stack.upload
 
                 def upload(*a, s=stack, real=real, **k):
@@ -739,10 +741,16 @@ class TestTheDemo(unittest.TestCase):
                                                        "MAP01"), 0)
                     self.assertEqual(self.names(stack), ["COMMIT_WAD", "LOAD_WAD"])
                     self.assertEqual(stack.parts, {}, "its own .part was committed")
-                else:
+                elif not rename_fails:
                     self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--iwad", "freedoom2.wad", "--map",
                                                    "MAP01"), 0)
                     self.assertEqual(self.names(stack), ["LOAD_WAD"])
+                else:
+                    stack.placed.add("basic.wad")   # the other upload's file, which LOAD_WAD would fly
+                    with mock.patch.object(demo, "COMMIT_ANSWER_S", 0.3):
+                        self.assertEqual(self.run_demo(stack, "--wad", self.wad, "--iwad", "freedoom2.wad", "--map",
+                                                       "MAP01"), 1)
+                    self.assertEqual(self.names(stack), ["COMMIT_WAD"])
 
     def test_a_failed_rename_at_the_fin_is_not_taken_for_a_commit(self):
         # cfdpGuard announced the file but the rename failed (WadUplinkFailed naming this .part at the FIN), and fails
