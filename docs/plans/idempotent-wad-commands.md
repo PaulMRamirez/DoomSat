@@ -63,7 +63,7 @@ a flight restart, after which it fails closed; see Limits), and a `LOAD_WAD` for
 | `scripts/flight.sh ut`: Doom GTest suite, 11 tests, new (`flight/Components/Doom/test/ut`) | `COMMIT_WAD` against real files in a scratch `$DOOMSAT_HOME`: a commit; a repeat, twice; a repeat after the guard's `fileAnnounce`; an older `NAME.wad` with other bytes, another size with the same checksum, or its words reordered (same size and checksum); a repeat naming another upload of the same bytes; a repeat with the same size and another checksum; a repeat after `NAME.wad` changed, or after another upload replaced it; nothing on board; a wrong `.part` (other bytes, or another size with the same checksum) with and without a matching `NAME.wad`; a rename that fails; names that are not bare. Also: `fileAnnounce` outside the uplink directory, and every WAD report result, including `ALREADY` keeping the level. Eight mutants (any upload taken for this one, no record, a rename not recorded, no size check on either path, a doubled failure event, no repeat answer, `ALREADY` restarting the level) each failed a test. A ninth, no checksum check on the repeat, fails the repeat with the same size and another checksum, a step added in review |
 | `scripts/flight.sh ut`: the guard's 18 | Still pass (`docs/plans/cfdp-guard.md`). Both suites run under the address, undefined-behaviour and leak sanitizers |
 | `tests/test_payload_load_wad.py`, 11 tests, new | The payload's own `request_wad` and `poll_wad`, with the game and the probe child stood in for: a repeat after the switch, a repeat during the proof, another request during the proof, a new upload of the same name (with and without a pin), the game as launched (and under a linked name), another map, and a refusal, a failed proof and a failed switch, none of them remembered as flying. They run in both venvs: in the ground venv the payload is imported with empty stand-ins for ViZDoom and Pillow |
-| `tests/test_wad_uplink.py` | `load_key` (5 tests), the result codes against `Doom.cpp`, and the payload and flight branches pinned as text: their order, that a repeat during the proof sends nothing of its own, that `poll_wad` remembers what flies (that it does so only at a switch is the two failure tests above) |
+| `tests/test_wad_uplink.py` | `load_key` (5 tests), the result codes against `Doom.cpp`, and the payload and flight branches pinned as text: their order, that a repeat during the proof sends nothing of its own, that `poll_wad` remembers what flies (the two failure tests above pin that it does so only at a switch) |
 | `tests/test_wad_uplink_demo.py` | The stand-in stack now does what the flight software and payload do. New tests: a repeat commit answers as the first did; an older file of the same name is never taken; a load of what is flying; a load resent after its answer was lost takes the repeat's answer; an answer naming other files fails even with the count unmoved; a `WadAlreadyFlying` whose count comes down late is still a switch, and a `WadLoaded` is never called "already flying" |
 
 ## What ran live
@@ -101,8 +101,9 @@ signal 11. The payload refused the load and kept flying what it had, which is wh
 ## Limits
 
 - **Older flight builds.** One built before this change answers a repeat `COMMIT_WAD` with `WadUplinkFailed`, and
-  the demo now fails on that. That errs on the safe side. Check `NAME.wad` on board against the file sent
-  (`--checksum FILE` prints the size and checksum of either) and send `LOAD_WAD`; commit by hand only if the
+  the demo now fails on that. That errs on the safe side. Compare `NAME.wad` on board with the file sent byte
+  for byte (`cmp` on the flight machine; a matching `--checksum FILE` alone is not proof, see below) and send
+  `LOAD_WAD`; commit by hand only if the
   `.part` is still there. The other way round, this payload with an older flight build, a load of what is already
   flying gets no answer at all: the old Doom component has no `ALREADY` and logs nothing for it. The flight
   software and the payload come from the same checkout; rebuild with `scripts/flight.sh build`.

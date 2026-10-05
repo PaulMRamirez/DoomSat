@@ -401,9 +401,10 @@ fixes that changed behaviour:
   checked; no `PRM_SET`; a `COMMIT_WAD` with no answer at all fails (`LOAD_WAD` could otherwise fly an older
   file of the same name), as does an unconfirmed one under `--no-load`; the telemetry stand-in for a lost
   `WadLoaded` must show this load. (Since then there is no unconfirmed case: a repeated `COMMIT_WAD` of an upload
-  put in place since the flight software started answers as the first did, so `WadUplinkFailed` means this upload
-  is not known to be in place: no `.part`, a rename that failed, or a flight restart or an older flight build
-  since the commit. The demo fails on it.)
+  put in place since the flight software started answers as the first did while the record still holds its name,
+  so `WadUplinkFailed` means this upload is not known to be in place: no `.part`, a rename that failed, or, since
+  the commit, a flight restart, eight newer names taking its record's place, or an older flight build. The demo
+  fails on it.)
 - **`DOOMSAT_RELAY=0`** now means off.
 
 The rest were comments that no longer matched the code (the dedicated pool, the buffer count, `fileAnnounce`) and

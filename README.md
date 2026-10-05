@@ -257,7 +257,7 @@ scripts/flight.sh payload      # (another terminal) add the game, so the Doom ch
 
 The components are in `flight/Components/` (`Doom/`, and `CfdpGuard/`, which confines CFDP uploads and commits
 them on board) and the topology in `flight/DoomSat/Top/`. After an edit, run `scripts/flight.sh build`;
-`scripts/flight.sh ut` runs the guard's unit tests.
+`scripts/flight.sh ut` runs the guard's and the Doom component's unit tests.
 
 </details>
 
