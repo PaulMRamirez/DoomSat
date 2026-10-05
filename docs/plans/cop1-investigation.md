@@ -68,7 +68,9 @@ Three things make a DoomSat-built COP-1 more than a component:
 - **`bdAbsolutePriority` works only from the YAML.** Set through the API it has no effect, and `GET /config`
   reports the wrong value. Without it, a bypass command waits behind a full AD window.
 - **Other FOP behaviour found in scratch runs** (scratch Yamcs instance; not re-run for this report):
-  - An AD command sent to an uninitialised FOP queues with no NACK.
+  - An AD command sent to an uninitialised FOP queues with no NACK. The source agrees: `sendCommand` passes it to
+    `queueTC`, which adds it to the wait queue in any state (`Cop1TcPacketHandler.java:215-221, 624-631`). The
+    server manual says it is rejected with a NACK (`ccsds-frame-processing.rst:425`); on 5.12.8 it is not.
   - Initialising purges the queue without failing those commands in command history.
   - Commands queued during initialisation are not sent on sync until another command arrives.
   - `cop1TxLimit` counts all transmissions, not retransmissions.
