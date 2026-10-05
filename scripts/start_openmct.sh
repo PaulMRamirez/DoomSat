@@ -6,10 +6,15 @@ cd "$(dirname "$0")/../external/openmct-yamcs" || { echo "run scripts/setup_grou
 cp ../../ground/openmct/index.html ../../ground/openmct/index.js example/
 rm -rf example/doomsat example/displays && cp -r ../../ground/openmct/doomsat ../../ground/openmct/displays example/
 # A campaign build (build_openmct_displays.py --plan-start, git-ignored) is served in place of the committed
-# displays while it is the newer of the two, so the plan runs on the flight's clock.
+# displays while it is the newer of the two and under a day old, so the plan runs on the flight's clock. An
+# older one is a past campaign's, anchored in the past: it is left alone.
 campaign=../../ground/openmct/displays/doomsat-displays.campaign.json
 if [ "$campaign" -nt ../../ground/openmct/displays/doomsat-displays.json ]; then
-  cp "$campaign" example/displays/doomsat-displays.json && echo "serving the campaign displays (--plan-start)"
+  if [ -n "$(find "$campaign" -mmin -1440)" ]; then
+    cp "$campaign" example/displays/doomsat-displays.json && echo "serving the campaign displays (--plan-start)"
+  else
+    echo "not serving the campaign displays: over a day old (delete $campaign, or rebuild with --plan-start)"
+  fi
 fi
 mkdir -p example/aar && cp ../../docs/results/e1m1-progress.html example/aar/
 # The stock dev config proxies to 0.0.0.0 (not dialable on Windows) and shows an error overlay for the

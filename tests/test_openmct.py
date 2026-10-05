@@ -8,11 +8,13 @@ import contextlib
 import copy
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -228,6 +230,43 @@ class AlarmTool(unittest.TestCase):
         health = got[f"{openmct_docs.DOOM}/HEALTH"]
         self.assertEqual(health.action, health.SET_DEFAULT_ALARMS)
         self.assertEqual(self.allowed(health), numeric[f"{openmct_docs.DOOM}/HEALTH"])
+
+
+@unittest.skipIf(os.name == "nt" or shutil.which("bash") is None, "runs scripts/start_openmct.sh under bash")
+class StartScript(unittest.TestCase):
+    def served(self, campaign_age_h):
+        """start_openmct.sh in a made-up checkout, node and npx stubbed: the displays it would serve, and what it said."""
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            (t / "scripts").mkdir()
+            shutil.copy(ROOT / "scripts" / "start_openmct.sh", t / "scripts")
+            web = t / "ground" / "openmct"
+            for d in ("doomsat", "displays"):
+                (web / d).mkdir(parents=True)
+            for f in ("index.html", "index.js"):
+                (web / f).write_text("")
+            (t / "external" / "openmct-yamcs" / "example").mkdir(parents=True)
+            (t / "docs" / "results").mkdir(parents=True)
+            (t / "docs" / "results" / "e1m1-progress.html").write_text("")
+            stubs = t / "bin"
+            stubs.mkdir()
+            for tool in ("node", "npx"):
+                (stubs / tool).write_text("#!/bin/sh\nexit 0\n")
+                (stubs / tool).chmod(0o755)
+            now = time.time()
+            for name, age_h in (("doomsat-displays.json", 72), ("doomsat-displays.campaign.json", campaign_age_h)):
+                (web / "displays" / name).write_text(name)
+                os.utime(web / "displays" / name, (now - age_h * 3600,) * 2)
+            out = subprocess.run(["bash", str(t / "scripts" / "start_openmct.sh")], capture_output=True, text=True,
+                                 env=dict(os.environ, PATH=f"{stubs}{os.pathsep}{os.environ['PATH']}"), timeout=30)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            return (t / "external" / "openmct-yamcs" / "example" / "displays" / "doomsat-displays.json").read_text(), out.stdout
+
+    def test_a_campaign_build_is_served_for_a_day(self):
+        self.assertEqual(self.served(1)[0], "doomsat-displays.campaign.json")
+        shown, said = self.served(48)              # newer than the committed file, but a past campaign's
+        self.assertEqual(shown, "doomsat-displays.json")
+        self.assertIn("over a day old", said)
 
 
 class FakeYamcs:

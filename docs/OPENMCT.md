@@ -155,7 +155,7 @@ The attempt on one time axis: the campaign plan, the camera, hull and consumable
 
 | Panel | Type | What it shows | Inputs |
 |---|---|---|---|
-| E1 campaign plan | plan | The charter's mission as a plan: E1M1 to E1M8 back to back at the 180 s budget each, with Sonnet's 60 s checkpoints on a second lane. At the start of a campaign flight, build with --plan-start (a git-ignored copy, which start_openmct.sh serves) so planned and actual share a clock. | - |
+| E1 campaign plan | plan | The charter's mission as a plan: E1M1 to E1M8 back to back at the 180 s budget each, with Sonnet's 60 s checkpoints on a second lane. At the start of a campaign flight, build with --plan-start (a git-ignored copy, which start_openmct.sh serves for a day) so planned and actual share a clock. | - |
 | DoomFrame | telemetry (imagery) | URL of the last reassembled JPEG in the Yamcs bucket doomframes (Open MCT shows it as imagery). | DoomFrame |
 | Hull and consumables | telemetry.plot.overlay | HEALTH, ARMOR and SHELLS on one axis, for the time strip. | HEALTH, ARMOR, SHELLS |
 | Decision timing (ms): jev round trip, decision age | telemetry.plot.overlay | jev's round trip and the approximate decision age, with their alarm limits (decision age critical past the 900 ms budget). | SystemOneLatencyMs, DecisionAgeMs |
