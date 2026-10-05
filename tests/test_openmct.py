@@ -9,6 +9,7 @@ import copy
 import io
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -304,6 +305,122 @@ class GroundFeed(unittest.TestCase):
         self.assertEqual([ops_telemetry.json_value(v) for v in (True, 7, 2.5, "JEV")],
                          [{"type": "BOOLEAN", "booleanValue": True}, {"type": "SINT32", "sint32Value": 7},
                           {"type": "DOUBLE", "doubleValue": 2.5}, {"type": "STRING", "stringValue": "JEV"}])
+
+
+VIEW_HARNESS = r"""
+globalThis.requestAnimationFrame = (f) => setTimeout(f, 0);
+globalThis.cancelAnimationFrame = (h) => clearTimeout(h);
+const settle = (n = 60) => new Promise((r) => setTimeout(r, n));
+const X = `${DOOM}/POS_X`; const Y = `${DOOM}/POS_Y`; const A = `${DOOM}/ANGLE`;
+// Open MCT as the views see it: a conductor the test moves, and a telemetry source that stamps its data with ISO
+// strings, as openmct-yamcs does. slow: an answer for bounds starting there comes late.
+function fake(data, mode, bounds, slow = {}) {
+  const on = {}; const subs = new Map();
+  const iso = (t) => new Date(t).toISOString();
+  const time = {
+    mode, bounds,
+    on: (e, f) => { (on[e] = on[e] || []).push(f); },
+    off: (e, f) => { on[e] = (on[e] || []).filter((g) => g !== f); },
+    getBounds: () => ({ ...time.bounds }),
+    isRealTime: () => time.mode === 'realtime',
+    setBounds(b, tick = false) { time.bounds = b; (on.boundsChanged || []).forEach((f) => f({ ...b }, tick)); },
+    setMode(m) { time.mode = m; (on.modeChanged || []).forEach((f) => f(m)); }   // the mode menu: no bounds
+  };
+  return {
+    time,
+    subscribers: () => [...subs.values()].reduce((n, s) => n + s.length, 0),
+    live(q, t, value) { (subs.get(q) || []).forEach((cb) => cb({ timestamp: iso(t), value })); },
+    objects: { get: async (i) => ({ identifier: i, q: i.key.replace(/~/g, '/') }) },
+    telemetry: {
+      isTelemetryObject: () => true,
+      subscribe(o, cb) {
+        subs.set(o.q, [...(subs.get(o.q) || []), cb]);
+        return () => subs.set(o.q, subs.get(o.q).filter((c) => c !== cb));
+      },
+      async request(o, { start, end, strategy }) {
+        if (slow[start]) await settle(slow[start]);
+        const r = (data[o.q] || []).filter(([t]) => t >= start && t <= end).map(([t, value]) => ({ timestamp: iso(t), value }));
+        return strategy === 'latest' ? r.slice(-1) : r;
+      }
+    }
+  };
+}
+let seen;
+const watch = (openmct) => new Latest(openmct, [A, X, Y], (v, s) => { seen = JSON.parse(JSON.stringify({ v, s })); },
+  { history: [X, Y] });
+const report = (o) => console.log(JSON.stringify(o));
+"""
+
+
+@unittest.skipIf(shutil.which("node") is None, "node is not installed")
+class CustomViews(unittest.TestCase):
+    """plugin.js as it is, under node, against a fake Open MCT whose time conductor the test moves."""
+
+    def run_view(self, scenario):
+        src = (WEB / "doomsat" / "plugin.js").read_text(encoding="utf-8")
+        out = subprocess.run(["node", "--input-type=module", "-e", src + VIEW_HARNESS + scenario],
+                             capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_traverse_pairs_x_and_y_by_time(self):
+        # the replay drops a value that repeats, so POS_X and POS_Y need not have the same number of samples
+        html = self.run_view("report(renderCandidates({}, {[X]: [[0, 0], [20, 100]], [Y]: [[0, 0], [10, 50], [20, 60]]}));")
+        pts = [tuple(map(float, p.split(","))) for p in re.search(r'<polyline points="([^"]*)"', html).group(1).split()]
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        plan = [(round((x - min(xs)) / (max(xs) - min(xs)), 3), round((max(ys) - y) / (max(ys) - min(ys)), 3))
+                for x, y in pts]
+        self.assertEqual(plan, [(0, 0), (0, round(50 / 60, 3)), (1, 1)])   # x held at 0 while y went to 50
+
+    def test_a_fixed_review_is_not_overwritten_by_live_data(self):
+        got = self.run_view("""
+const m = fake({[A]: [[1500, 90]], [X]: [[1500, 5]], [Y]: [[1500, 7]]}, 'fixed', {start: 1000, end: 2000});
+watch(m); await settle();
+const fixed = m.subscribers();
+m.live(A, 5000, 270); m.live(X, 5000, 99); await settle();
+const after = seen;
+m.time.setMode('realtime'); await settle();
+const realtime = m.subscribers();
+m.time.setMode('fixed'); await settle();
+report({fixed, after, realtime, back: m.subscribers()});
+""")
+        self.assertEqual(got["fixed"], 0, "Fixed mode must not subscribe")
+        self.assertEqual(got["after"]["v"][f"{openmct_docs.DOOM}/ANGLE"], 90)
+        self.assertEqual([v for _, v in got["after"]["s"][f"{openmct_docs.DOOM}/POS_X"]], [5])
+        self.assertGreater(got["realtime"], 0)
+        self.assertEqual(got["back"], 0)
+
+    def test_real_time_keeps_the_traverse_to_the_window(self):
+        got = self.run_view("""
+const m = fake({[X]: [[1000, 1], [2000, 2]], [Y]: [[1000, 1], [2000, 2]]}, 'realtime', {start: 0, end: 10000});
+watch(m); await settle();
+m.time.setBounds({start: 1500, end: 11500}, true); m.live(X, 11000, 3); m.live(Y, 11000, 4); await settle();
+const first = seen.s;
+m.time.setBounds({start: 5000, end: 15000}, true); await settle();
+report({first, then: seen.s});
+""")
+        X, Y = f"{openmct_docs.DOOM}/POS_X", f"{openmct_docs.DOOM}/POS_Y"
+        self.assertEqual(got["first"][X], [[2000, 2], [11000, 3]])    # ms, whatever the source's time format
+        self.assertEqual(got["first"][Y], [[2000, 2], [11000, 4]])
+        self.assertEqual(got["then"][X], [[11000, 3]])
+
+    def test_a_bounds_change_clears_and_asks_again(self):
+        got = self.run_view("""
+const m = fake({[A]: [[1500, 90]], [X]: [[1500, 5]], [Y]: [[1500, 7]]}, 'fixed', {start: 1000, end: 2000},
+               {3000: 80});
+watch(m); await settle();
+const before = seen;
+m.time.setBounds({start: 3000, end: 4000}); m.time.setBounds({start: 1400, end: 1600}); await settle(300);
+const back = seen;
+m.time.setBounds({start: 3000, end: 4000}); await settle(300);
+report({before, back, empty: seen});
+""")
+        A, X = f"{openmct_docs.DOOM}/ANGLE", f"{openmct_docs.DOOM}/POS_X"
+        self.assertEqual(got["before"]["v"][A], 90)
+        self.assertEqual(got["back"]["v"].get(A), 90, "a slow answer for older bounds came in last and won")
+        self.assertEqual(got["back"]["s"][X], [[1500, 5]])
+        self.assertNotIn(A, got["empty"]["v"])
+        self.assertEqual(got["empty"]["s"].get(X, []), [])
 
 
 class Replay(unittest.TestCase):

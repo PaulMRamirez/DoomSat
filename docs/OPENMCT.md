@@ -220,13 +220,15 @@ Computed in the browser by Open MCT's Derived Telemetry plugin (Open MCT 4.3 or 
 
 ## Custom views
 
+Both DoomSat views follow the time conductor. In real time they update live, and the plan view's traverse keeps to the conductor's window. In Fixed mode they show the last values inside the bounds and take no live data, so a review holds still while the flight goes on.
+
 ### Sector Radar
 
 Forward is up and left is left, as the player sees it. Each of the eight wedges is one direction the payload senses (FWD, AL, LEFT, BL, BACK, BR, RIGHT, AR). A wedge's **length** is the map ray's open way in that direction, up to 400 map units (the dotted rings are 100, 200, 300 and 400). Its **fill** is how much of the ground that way has never been walked: pale is walked, bright green is new, and the percentage is printed inside. An **orange bar** across a wedge is a door at that distance. Markers: a **red dot** is the nearest enemy in view (with the count and range), a **green triangle** the exit once recognised, a **yellow triangle** a remembered key, and small dots the nearest health (+HP), ammunition (AMMO) and armor (ARM) pickups. A **dashed magenta line** is Sonnet's exploration hint while it is in force. The top line gives the heading and whether the executor reports STUCK; the bottom line what is at arm's length.
 
 ### Candidate Board
 
-Left: the candidates the onboard world model is offering this decision, one row per slot (t0 to t7): kind, jev's score on the nine-level rubric with a bar, path units along the seen floor, percent new ground behind it, and live things near it. The picked row is highlighted. The header gives the intent mode, the picked slot, the gap to the runner-up, jev's confidence, and **by**: who decided (JEV in green, anything else in orange; see DecisionSource). `n/r` means the value is not in the dictionary or not in the recording. Right: a north-up plan view of the attempt so far. The pale line is the player's traverse within the time conductor's bounds, circles are the candidates coloured by kind and sized by score, the dashed white line runs from the player to the pick, and the white tick is the heading.
+Left: the candidates the onboard world model is offering this decision, one row per slot (t0 to t7): kind, jev's score on the nine-level rubric with a bar, path units along the seen floor, percent new ground behind it, and live things near it. The picked row is highlighted. The header gives the intent mode, the picked slot, the gap to the runner-up, jev's confidence, and **by**: who decided (JEV in green, anything else in orange; see DecisionSource). `n/r` means the value is not in the dictionary or not in the recording. Right: a north-up plan view. The pale line is the player's traverse within the time conductor's bounds (POS_X and POS_Y paired by time), circles are the candidates coloured by kind and sized by score, the dashed white line runs from the player to the pick, and the white tick is the heading.
 
 ### HOLD (safe mode)
 

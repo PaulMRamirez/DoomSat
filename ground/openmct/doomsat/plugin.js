@@ -33,8 +33,14 @@ const KIND_COLOR = { FRONTIER: '#6fa8dc', DOOR: '#e69138', EXIT: '#6aa84f', KEY:
 const MODE_COLOR = { EXPLORE: '#3d85c6', APPROACH: '#45818e', OPERATE: '#8e7cc3', FIGHT: '#cc0000',
   RETREAT: '#e69138', RECOVER: '#bf9000' };
 
-/* Latest value of a set of parameters, honouring the time conductor: fixed mode re-requests on every bounds
- * change, real-time mode subscribes. onChange gets {qualifiedName: value}. */
+// A datum's time in ms. openmct-yamcs gives Yamcs' generationTime as an ISO string, the replay a number.
+const ms = (d) => { const t = d.timestamp ?? d.utc; return typeof t === 'number' ? t : Date.parse(t); };
+
+/* Latest value of a set of parameters, and the series of a few, honouring the time conductor. A bounds change
+ * the user makes, and a switch of mode, clears both and asks again within the new bounds. Only real time
+ * subscribes: in Fixed mode nothing live reaches the view, so a review keeps showing its moment. In real time
+ * each tick drops the samples older than the start bound, so the traverse keeps to the conductor's window.
+ * onChange gets ({qualifiedName: value}, {qualifiedName: [[ms, value], ...]}). */
 class Latest {
   constructor(openmct, names, onChange, { history = [] } = {}) {
     this.openmct = openmct;
@@ -45,8 +51,19 @@ class Latest {
     this.series = {};
     this.unsubs = [];
     this.objects = {};
-    this.boundsListener = (bounds, tick) => { if (!tick) this.refresh(); };
+    this.asked = 0; // which refresh is current: an older one that answers late is dropped
+    this.boundsListener = (bounds, tick) => {
+      if (tick && !this.askOnTick) { this.trim(bounds.start); return; }
+      this.askOnTick = false;
+      this.refresh();
+    };
+    // The conductor's mode menu sets no bounds: Fixed keeps the last window, real time has its own at the next tick
+    this.modeListener = () => {
+      this.follow();
+      if (this.openmct.time.isRealTime()) this.askOnTick = true; else this.refresh();
+    };
     openmct.time.on('boundsChanged', this.boundsListener);
+    openmct.time.on('modeChanged', this.modeListener);
     this.load();
   }
   async load() {
@@ -55,40 +72,75 @@ class Latest {
         this.objects[q] = await this.openmct.objects.get(id(q));
       } catch (e) { /* unknown to this dictionary: shows as blank */ }
     }));
+    this.follow();
+    this.refresh();
+  }
+  follow() {
+    const live = this.openmct.time.isRealTime() && !this.destroyed;
+    if (!live) {
+      this.unsubs.forEach((u) => u());
+      this.unsubs = [];
+      return;
+    }
+    if (this.unsubs.length) return;
     Object.entries(this.objects).forEach(([q, o]) => {
       if (!o || !this.openmct.telemetry.isTelemetryObject(o)) return;
       this.unsubs.push(this.openmct.telemetry.subscribe(o, (d) => {
+        if (!this.openmct.time.isRealTime()) return; // a late delivery after the switch to Fixed
+        const t = ms(d);
         this.values[q] = d.value;
-        if (this.history.includes(q)) (this.series[q] = this.series[q] || []).push([d.timestamp ?? d.utc, d.value]);
+        if (this.history.includes(q) && Number.isFinite(t)) {
+          (this.series[q] = this.series[q] || []).push([t, d.value]);
+          this.trim(this.openmct.time.getBounds().start, false);
+        }
         this.emit();
       }));
     });
-    this.refresh();
   }
   async refresh() {
+    const asked = ++this.asked;
     const { start, end } = this.openmct.time.getBounds();
+    this.values = {}; // nothing from the old bounds survives; what arrives live while asking is kept
+    this.series = {};
     await Promise.all(Object.entries(this.objects).map(async ([q, o]) => {
       if (!o || !this.openmct.telemetry.isTelemetryObject(o)) return;
-      if (this.names.includes(q)) {
-        // openmct-yamcs answers 'latest' with [undefined] for a parameter that has never had a value
-        const r = (await this.openmct.telemetry.request(o, { start, end, strategy: 'latest', size: 1 })).filter(Boolean);
-        this.values[q] = r.length ? r[r.length - 1].value : undefined;
-      }
-      if (this.history.includes(q)) {
-        const r = (await this.openmct.telemetry.request(o, { start, end })).filter(Boolean);
-        this.series[q] = r.map((d) => [d.timestamp ?? d.utc, d.value]);
-      }
+      try {
+        if (this.names.includes(q)) {
+          // openmct-yamcs answers 'latest' with [undefined] for a parameter that has never had a value
+          const r = (await this.openmct.telemetry.request(o, { start, end, strategy: 'latest', size: 1 })).filter(Boolean);
+          if (asked === this.asked && r.length && !(q in this.values)) this.values[q] = r[r.length - 1].value;
+        }
+        if (this.history.includes(q)) {
+          const r = (await this.openmct.telemetry.request(o, { start, end })).filter(Boolean)
+            .map((d) => [ms(d), d.value]).filter((p) => Number.isFinite(p[0]));
+          if (asked !== this.asked) return;
+          const last = r.length ? r[r.length - 1][0] : -Infinity;
+          this.series[q] = r.concat((this.series[q] || []).filter((p) => p[0] > last));
+        }
+      } catch (e) { /* no answer (Yamcs down): shows as blank until the next bounds change */ }
     }));
-    this.emit();
+    if (asked === this.asked) this.emit();
+  }
+  trim(start, emit = true) {
+    let cut = false;
+    Object.values(this.series).forEach((s) => {
+      let k = 0;
+      while (k < s.length && s[k][0] < start) k++;
+      if (k) { s.splice(0, k); cut = true; }
+    });
+    if (cut && emit) this.emit();
   }
   emit() {
-    if (!this.pending) {
+    if (!this.pending && !this.destroyed) {
       this.pending = requestAnimationFrame(() => { this.pending = null; this.onChange(this.values, this.series); });
     }
   }
   destroy() {
-    this.unsubs.forEach((u) => u());
+    this.destroyed = true;
+    this.follow();
     this.openmct.time.off('boundsChanged', this.boundsListener);
+    this.openmct.time.off('modeChanged', this.modeListener);
+    if (this.pending) cancelAnimationFrame(this.pending);
   }
 }
 
@@ -99,6 +151,21 @@ const polar = (cx, cy, r, bearing) => {
   return [cx - r * Math.sin(a), cy - r * Math.cos(a)];
 };
 const num = (v) => (v === undefined || v === null || Number.isNaN(Number(v)) ? undefined : Number(v));
+
+/* POS_X and POS_Y as one traverse, paired by time: each sample moves one coordinate and the other holds its last
+ * value. The two series need not be the same length (the replay drops a value that repeats). */
+function pairByTime(xs, ys) {
+  const out = [];
+  let i = 0; let j = 0; let x; let y;
+  while (i < xs.length || j < ys.length) {
+    const t = Math.min(xs[i]?.[0] ?? Infinity, ys[j]?.[0] ?? Infinity);
+    if (!Number.isFinite(t)) break;
+    while (i < xs.length && xs[i][0] === t) x = num(xs[i++][1]) ?? x;
+    while (j < ys.length && ys[j][0] === t) y = num(ys[j++][1]) ?? y;
+    if (x !== undefined && y !== undefined) out.push([x, y]);
+  }
+  return out;
+}
 
 function renderSectors(v) {
   const W = 320; const H = 320; const cx = 160; const cy = 170; const R = 120; const MAX = 400;
@@ -180,8 +247,7 @@ function renderCandidates(v, series) {
 
   // ---- plan view: traverse, candidates, pick
   const W = 360; const H = 300; const pad = 16;
-  const trail = (series[`${DOOM}/POS_X`] || []).map((p, i) => [p[1], (series[`${DOOM}/POS_Y`] || [])[i]?.[1]])
-    .filter((p) => p[0] !== undefined && p[1] !== undefined);
+  const trail = pairByTime(series[`${DOOM}/POS_X`] || [], series[`${DOOM}/POS_Y`] || []);
   const pts = [...trail, ...slots.filter((c) => c.x !== undefined).map((c) => [c.x, c.y])];
   if (px !== undefined) pts.push([px, py]);
   let plan = '';
@@ -213,7 +279,7 @@ function renderCandidates(v, series) {
   } else {
     plan = `<text x="${W / 2}" y="${H / 2}" fill="#888" text-anchor="middle" font-size="12">no position in bounds</text>`;
   }
-  plan += `<text x="6" y="12" fill="#888" font-size="9">traverse (seen this attempt), candidates sized by jev score</text>`;
+  plan += `<text x="6" y="12" fill="#888" font-size="9">traverse within the conductor's bounds, candidates sized by jev score</text>`;
 
   const rows = slots.map((c) => `<tr style="${c.n === pick ? 'background:rgba(255,255,255,.12);font-weight:bold' : ''}">
     <td>t${c.n}</td><td><span style="display:inline-block;width:8px;height:8px;border-radius:4px;background:${KIND_COLOR[c.kind] || '#aaa'}"></span> ${c.kind}</td>
