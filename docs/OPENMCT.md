@@ -8,11 +8,11 @@ DoomSat's Open MCT displays treat Doom's player as the spacecraft, the F´ deplo
 
 ## Running
 
-**Live**, with the flight stack up (`scripts/flight.sh start`): `python tools/set_yamcs_alarms.py`, then `scripts/start_openmct.sh`, then http://localhost:9000 and open **DoomSat Displays** in the tree. `?theme=snow` or `?theme=darkmatter` changes the theme.
+**Live**, with the flight stack up (`scripts/flight.sh start`): `ground/.venv/bin/python tools/set_yamcs_alarms.py` once Yamcs answers (again after every Yamcs restart; nothing runs it for you), then `scripts/start_openmct.sh`, then http://localhost:9000 and open **DoomSat Displays** in the tree. `?theme=snow` or `?theme=darkmatter` changes the theme.
 
-**Replay**, no Yamcs: `python tools/build_openmct_replay.py` (from `research/out/flight-32`), then `python tools/openmct_serve.py` and open http://localhost:8071/replay.html. Add `?anchor=0` to serve the recorded timestamps (set the time conductor to Fixed), or leave it off to play the flight as if live. `python tools/openmct_snapshots.py` renders every screen to `out/openmct-shots/` and logs page errors.
+**Replay**, no Yamcs: `python3 tools/build_openmct_replay.py` (from `research/out/flight-32`), then `python3 tools/openmct_serve.py` and open http://localhost:8071/replay.html. Add `?anchor=0` to serve the recorded timestamps (set the time conductor to Fixed), or leave it off to play the flight as if live. `python tools/openmct_snapshots.py` renders every screen to `out/openmct-shots/` and logs page errors.
 
-**Changing a display**: edit `tools/build_openmct_displays.py` (and the note for any new panel in `tools/openmct_docs.py`), then `python tools/build_openmct_displays.py --doc`. `tests/test_openmct.py` fails if the committed displays or this page are out of date, if a display names a parameter no dictionary defines, or if a panel or parameter has no description.
+**Changing a display**: edit `tools/build_openmct_displays.py` (and the note for any new panel in `tools/openmct_docs.py`), then `python3 tools/build_openmct_displays.py --doc`. `tests/test_openmct.py` fails if the committed displays or this page are out of date, if a display names a parameter no dictionary defines, or if a panel or parameter has no description.
 
 ## The tree
 
@@ -232,7 +232,7 @@ Left: the candidates the onboard world model is offering this decision, one row 
 
 ## Parameters
 
-Every parameter a display or custom view reads. Alarm ranges for flight parameters are applied at runtime by `tools/set_yamcs_alarms.py` from `ground/yamcs/alarm-ranges.json`; ground ones are in the XTCE. Types come from the XTCE, and from `Doom.fpp` where the committed `fprime.xtce.xml` lacks a channel (marked **snapshot lag**). That file is a reference snapshot: Yamcs never loads it, because `scripts/wsl_run_flight.sh` starts fprime-yamcs with the deployment, and fprime-yamcs regenerates the XTCE from the deployment's F´ dictionary at every launch. A snapshot-lag channel is live as soon as the deployment is built from the current `Doom.fpp`.
+Every parameter a display or custom view reads. Alarm ranges for flight parameters are applied at runtime by `tools/set_yamcs_alarms.py` from `ground/yamcs/alarm-ranges.json` (see Running); ground ones are in the XTCE. Types come from the XTCE, and from `Doom.fpp` where the committed `fprime.xtce.xml` lacks a channel (marked **snapshot lag**). That file is a reference snapshot: Yamcs never loads it, because `scripts/wsl_run_flight.sh` starts fprime-yamcs with the deployment, and fprime-yamcs regenerates the XTCE from the deployment's F´ dictionary at every launch. A snapshot-lag channel is live as soon as the deployment is built from the current `Doom.fpp`.
 
 ### Flight: the Doom payload component
 

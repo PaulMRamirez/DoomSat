@@ -24,3 +24,6 @@ research/worktrees/
 # tools/build_openmct_replay.py, so never committed twice
 ground/openmct/replay/
 ground/openmct/displays/*.replay.json
+# What npm writes beside node_modules/ when the README's replay step installs Open MCT into ground/openmct
+ground/openmct/package.json
+ground/openmct/package-lock.json

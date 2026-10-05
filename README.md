@@ -285,6 +285,7 @@ Open MCT reads everything from Yamcs, so start Yamcs first. You don't need the g
 
 ```bash
 scripts/flight.sh yamcs        # or `start` for live Doom telemetry and video
+ground/.venv/bin/python tools/set_yamcs_alarms.py   # once Yamcs is up: flight alarm ranges (again after each restart)
 scripts/start_openmct.sh       # → http://localhost:9000
 ```
 
@@ -302,9 +303,8 @@ The same displays run offline against any recorded flight in `research/out`, wit
 
 ```bash
 python3 tools/build_openmct_replay.py          # replay pack from research/out/flight-32 (git-ignored)
-(cd ground/openmct && npm install openmct@^4.3)
+(cd ground/openmct && npm install openmct@^4.3) # only if scripts/setup_ground.sh openmct has not run
 python3 tools/openmct_serve.py                 # → http://localhost:8071/replay.html
-python3 tools/set_yamcs_alarms.py              # live: alarm ranges for flight parameters, after flight.sh start
 python3 tools/build_openmct_displays.py --doc  # after changing a display: regenerates the JSON and docs/OPENMCT.md
 ```
 

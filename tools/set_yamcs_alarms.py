@@ -4,13 +4,15 @@
 # ///
 """Apply the flight-parameter alarm ranges in ground/yamcs/alarm-ranges.json to a running Yamcs.
 
-    python tools/set_yamcs_alarms.py                 # localhost:8090, fprime-project, realtime
-    python tools/set_yamcs_alarms.py --dry-run
+    ground/.venv/bin/python tools/set_yamcs_alarms.py            # localhost:8090, fprime-project, realtime
+    ground/.venv/bin/python tools/set_yamcs_alarms.py --dry-run
+
+yamcs-client is in ground/.venv (scripts/setup_ground.sh), not in the system python3.
 
 fprime-xtce emits no alarms, so without this Open MCT has no limit lines, no coloured values and nothing in
 Fault Management for flight telemetry. These are MDB overrides on one processor: they do not survive a Yamcs
-restart, so scripts/flight.sh start should call this after Yamcs is up. openmct-yamcs subscribes to MDB
-changes, so an open Open MCT picks them up without a reload.
+restart. Nothing runs this for you, so run it by hand once Yamcs is up, after every scripts/flight.sh start (or
+yamcs). openmct-yamcs subscribes to MDB changes, so an open Open MCT picks them up without a reload.
 
 Enumerated alarms (DEAD, STUCK, PAYLOAD_LINK) cannot be set through this API; the Open MCT condition sets
 cover them live. The durable fix is FPP limits on the channels plus fprime-xtce support for them.
