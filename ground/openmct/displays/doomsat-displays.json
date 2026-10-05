@@ -445,9 +445,9 @@
           "key": "~DoomSat_DoomSat~DoomSat~doom~HEALTH",
           "namespace": "taxonomy"
          },
-         "operation": "lessThanOrEq",
+         "operation": "lessThan",
          "input": [
-          25
+          11
          ],
          "metadata": "value"
         }
@@ -458,8 +458,8 @@
      {
       "id": "ea59bb53-bce8-5d54-a525-19a2ee455484",
       "configuration": {
-       "name": "Low",
-       "output": "HULL LOW",
+       "name": "Warning",
+       "output": "HULL DAMAGED",
        "trigger": "any",
        "criteria": [
         {
@@ -468,7 +468,30 @@
           "key": "~DoomSat_DoomSat~DoomSat~doom~HEALTH",
           "namespace": "taxonomy"
          },
-         "operation": "lessThanOrEq",
+         "operation": "lessThan",
+         "input": [
+          25
+         ],
+         "metadata": "value"
+        }
+       ]
+      },
+      "summary": "Warning"
+     },
+     {
+      "id": "e1a8d5f7-9190-56db-b576-8ddab3c35d68",
+      "configuration": {
+       "name": "Watch",
+       "output": "HULL LOW",
+       "trigger": "any",
+       "criteria": [
+        {
+         "id": "fd95e630-d997-5c45-ae88-76f326fdeace",
+         "telemetry": {
+          "key": "~DoomSat_DoomSat~DoomSat~doom~HEALTH",
+          "namespace": "taxonomy"
+         },
+         "operation": "lessThan",
          "input": [
           50
          ],
@@ -476,7 +499,7 @@
         }
        ]
       },
-      "summary": "Low"
+      "summary": "Watch"
      },
      {
       "isDefault": true,
@@ -628,12 +651,35 @@
      {
       "id": "d3e3c609-a609-56f8-b054-e5de6c8901c8",
       "configuration": {
-       "name": "Watch",
+       "name": "Warning",
        "output": "DECISION SLOW",
        "trigger": "any",
        "criteria": [
         {
          "id": "1c1c768f-fe4b-5745-b270-3e0b5c9c1187",
+         "telemetry": {
+          "key": "~DoomGround~DecisionAgeMs",
+          "namespace": "taxonomy"
+         },
+         "operation": "greaterThan",
+         "input": [
+          850
+         ],
+         "metadata": "value"
+        }
+       ]
+      },
+      "summary": "Warning"
+     },
+     {
+      "id": "e666dc15-2cf2-5a37-9ae8-5b03cf9f2111",
+      "configuration": {
+       "name": "Watch",
+       "output": "DECISION SLOWING",
+       "trigger": "any",
+       "criteria": [
+        {
+         "id": "79b76adf-1a93-58bc-8660-1ae687647b91",
          "telemetry": {
           "key": "~DoomGround~DecisionAgeMs",
           "namespace": "taxonomy"
@@ -649,14 +695,14 @@
       "summary": "Watch"
      },
      {
-      "id": "e666dc15-2cf2-5a37-9ae8-5b03cf9f2111",
+      "id": "5a7496ac-a6d7-5089-9b35-81fd53bf19ad",
       "configuration": {
        "name": "In budget",
        "output": "DECISIONS GO",
        "trigger": "any",
        "criteria": [
         {
-         "id": "79b76adf-1a93-58bc-8660-1ae687647b91",
+         "id": "3f2cd102-0771-507d-93c1-51b645d40d45",
          "telemetry": {
           "key": "~DoomGround~DecisionAgeMs",
           "namespace": "taxonomy"
@@ -1325,9 +1371,9 @@
           "key": "~DoomSat_DoomSat~DoomSat~doom~ENEMY_COUNT",
           "namespace": "taxonomy"
          },
-         "operation": "greaterThanOrEq",
+         "operation": "greaterThan",
          "input": [
-          4
+          3
          ],
          "metadata": "value"
         }
@@ -1338,12 +1384,35 @@
      {
       "id": "dc2edde9-34a5-5698-8343-6a33e2b24714",
       "configuration": {
+       "name": "Several",
+       "output": "HAZARDS 2+",
+       "trigger": "any",
+       "criteria": [
+        {
+         "id": "28d8376a-3f9b-54e3-89fe-c63c2cf97c30",
+         "telemetry": {
+          "key": "~DoomSat_DoomSat~DoomSat~doom~ENEMY_COUNT",
+          "namespace": "taxonomy"
+         },
+         "operation": "greaterThan",
+         "input": [
+          1
+         ],
+         "metadata": "value"
+        }
+       ]
+      },
+      "summary": "Several"
+     },
+     {
+      "id": "97ed2f3e-cc9a-50a6-af02-fd3c284e250b",
+      "configuration": {
        "name": "Contact",
        "output": "HAZARD CONTACT",
        "trigger": "any",
        "criteria": [
         {
-         "id": "28d8376a-3f9b-54e3-89fe-c63c2cf97c30",
+         "id": "04012dfd-852a-59ed-99e3-783ccd2e6509",
          "telemetry": {
           "key": "~DoomSat_DoomSat~DoomSat~doom~ENEMY_COUNT",
           "namespace": "taxonomy"
@@ -1413,6 +1482,16 @@
       },
       {
        "conditionId": "ea59bb53-bce8-5d54-a525-19a2ee455484",
+       "style": {
+        "backgroundColor": "#b45f06",
+        "color": "#fff",
+        "border": "",
+        "isStyleInvisible": "",
+        "output": ""
+       }
+      },
+      {
+       "conditionId": "e1a8d5f7-9190-56db-b576-8ddab3c35d68",
        "style": {
         "backgroundColor": "#bf9000",
         "color": "#000",
@@ -1548,6 +1627,16 @@
       {
        "conditionId": "d3e3c609-a609-56f8-b054-e5de6c8901c8",
        "style": {
+        "backgroundColor": "#b45f06",
+        "color": "#fff",
+        "border": "",
+        "isStyleInvisible": "",
+        "output": ""
+       }
+      },
+      {
+       "conditionId": "e666dc15-2cf2-5a37-9ae8-5b03cf9f2111",
+       "style": {
         "backgroundColor": "#bf9000",
         "color": "#000",
         "border": "",
@@ -1556,7 +1645,7 @@
        }
       },
       {
-       "conditionId": "e666dc15-2cf2-5a37-9ae8-5b03cf9f2111",
+       "conditionId": "5a7496ac-a6d7-5089-9b35-81fd53bf19ad",
        "style": {
         "backgroundColor": "#38761d",
         "color": "#fff",
@@ -1856,7 +1945,7 @@
       {
        "conditionId": "bfbf17ac-4eee-53f8-bb94-697ccc73536b",
        "style": {
-        "backgroundColor": "#990000",
+        "backgroundColor": "#b45f06",
         "color": "#fff",
         "border": "",
         "isStyleInvisible": "",
@@ -1866,7 +1955,17 @@
       {
        "conditionId": "dc2edde9-34a5-5698-8343-6a33e2b24714",
        "style": {
-        "backgroundColor": "#b45f06",
+        "backgroundColor": "#bf9000",
+        "color": "#000",
+        "border": "",
+        "isStyleInvisible": "",
+        "output": ""
+       }
+      },
+      {
+       "conditionId": "97ed2f3e-cc9a-50a6-af02-fd3c284e250b",
+       "style": {
+        "backgroundColor": "#38761d",
         "color": "#fff",
         "border": "",
         "isStyleInvisible": "",

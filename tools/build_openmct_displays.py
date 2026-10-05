@@ -262,20 +262,24 @@ def build(b, plan_start, aar_url, grader_url):
     traverse = b.scatter("Traverse (built-in scatter)", track_src)
 
     # ============================================================ condition sets: one meaning per colour
+    # On a parameter with alarm ranges (alarm-ranges.json, doom-ground.xtce.xml) a rule's colour is the alarm
+    # level of the values it catches, so the strip, the limit lines and Fault Management agree.
     cs_vitals = b.condset("CS Vitals", [D("HEALTH"), D("DEAD")], [
         ("Dead", "DEAD", "any", [(D("DEAD"), "enumValueIs", ["255"])]),
-        ("Critical", "HULL CRITICAL", "any", [(D("HEALTH"), "lessThanOrEq", [25])]),
-        ("Low", "HULL LOW", "any", [(D("HEALTH"), "lessThanOrEq", [50])])], "HULL OK")
-    vit_colors = [(BAD, "#fff"), (BAD, "#fff"), (WATCH, "#000"), (OK, "#fff")]
+        ("Critical", "HULL CRITICAL", "any", [(D("HEALTH"), "lessThan", [11])]),
+        ("Warning", "HULL DAMAGED", "any", [(D("HEALTH"), "lessThan", [25])]),
+        ("Watch", "HULL LOW", "any", [(D("HEALTH"), "lessThan", [50])])], "HULL OK")
+    vit_colors = [(BAD, "#fff"), (BAD, "#fff"), (WARN, "#fff"), (WATCH, "#000"), (OK, "#fff")]
     cs_link = b.condset("CS Payload link", [D("PAYLOAD_LINK")], [
         ("Lost", "LINK NO GO", "any", [(D("PAYLOAD_LINK"), "enumValueIs", ["0"])]),
         ("Up", "LINK GO", "any", [(D("PAYLOAD_LINK"), "enumValueIs", ["255"])])], "LINK ?")
     link_colors = [(BAD, "#fff"), (OK, "#fff"), (OFF, "#ccc")]
     cs_auto = b.condset("CS Autonomy timing", [GR("DecisionAgeMs"), GR("SystemOneLatencyMs")], [
         ("Over budget", "DECISION LATE", "any", [(GR("DecisionAgeMs"), "greaterThan", [900])]),
-        ("Watch", "DECISION SLOW", "any", [(GR("DecisionAgeMs"), "greaterThan", [750])]),
+        ("Warning", "DECISION SLOW", "any", [(GR("DecisionAgeMs"), "greaterThan", [850])]),
+        ("Watch", "DECISION SLOWING", "any", [(GR("DecisionAgeMs"), "greaterThan", [750])]),
         ("In budget", "DECISIONS GO", "any", [(GR("DecisionAgeMs"), "lessThanOrEq", [750])])], "DECISIONS ?")
-    auto_colors = [(BAD, "#fff"), (WATCH, "#000"), (OK, "#fff"), (OFF, "#ccc")]
+    auto_colors = [(BAD, "#fff"), (WARN, "#fff"), (WATCH, "#000"), (OK, "#fff"), (OFF, "#ccc")]
     cs_share = b.condset("CS jev share", [GR("JevShare")], [
         ("Below floor", "JEV SHARE < 0.70", "any", [(GR("JevShare"), "lessThan", [0.7])]),
         ("At floor", "JEV SHARE OK", "any", [(GR("JevShare"), "greaterThanOrEq", [0.7])])], "JEV SHARE ?")
@@ -298,9 +302,10 @@ def build(b, plan_start, aar_url, grader_url):
         keys_cs[colour] = (b.condset(f"CS Key {colour.lower()}", [D("KEYS")], [
             ("Held", f"{colour} KEY", "any", [(D("KEYS"), "isOneOf", [bits])])], "-"), hexc)
     cs_threat = b.condset("CS Threat", [D("ENEMY_COUNT")], [
-        ("Swarm", "HAZARDS 4+", "any", [(D("ENEMY_COUNT"), "greaterThanOrEq", [4])]),
+        ("Swarm", "HAZARDS 4+", "any", [(D("ENEMY_COUNT"), "greaterThan", [3])]),
+        ("Several", "HAZARDS 2+", "any", [(D("ENEMY_COUNT"), "greaterThan", [1])]),
         ("Contact", "HAZARD CONTACT", "any", [(D("ENEMY_COUNT"), "greaterThanOrEq", [1])])], "NO HAZARDS")
-    threat_colors = [(BAD, "#fff"), (WARN, "#fff"), (OK, "#fff")]
+    threat_colors = [(WARN, "#fff"), (WATCH, "#000"), (OK, "#fff"), (OK, "#fff")]
 
     w_vitals = b.widget("Vitals", cs_vitals, vit_colors)
     w_link = b.widget("Payload link", cs_link, link_colors)

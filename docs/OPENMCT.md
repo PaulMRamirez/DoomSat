@@ -193,9 +193,9 @@ Each indicator is a condition set (the rules) shown through a condition widget o
 
 | Condition set | Inputs | Rules, in order | Otherwise |
 |---|---|---|---|
-| Vitals | HEALTH, DEAD | DEAD is True → **DEAD**; HEALTH <= 25 → **HULL CRITICAL**; HEALTH <= 50 → **HULL LOW** | HULL OK |
+| Vitals | HEALTH, DEAD | DEAD is True → **DEAD**; HEALTH < 11 → **HULL CRITICAL**; HEALTH < 25 → **HULL DAMAGED**; HEALTH < 50 → **HULL LOW** | HULL OK |
 | Payload link | PAYLOAD_LINK | PAYLOAD_LINK is False → **LINK NO GO**; PAYLOAD_LINK is True → **LINK GO** | LINK ? |
-| Autonomy timing | DecisionAgeMs, SystemOneLatencyMs | DecisionAgeMs > 900 → **DECISION LATE**; DecisionAgeMs > 750 → **DECISION SLOW**; DecisionAgeMs <= 750 → **DECISIONS GO** | DECISIONS ? |
+| Autonomy timing | DecisionAgeMs, SystemOneLatencyMs | DecisionAgeMs > 900 → **DECISION LATE**; DecisionAgeMs > 850 → **DECISION SLOW**; DecisionAgeMs > 750 → **DECISION SLOWING**; DecisionAgeMs <= 750 → **DECISIONS GO** | DECISIONS ? |
 | jev share | JevShare | JevShare < 0.7 → **JEV SHARE < 0.70**; JevShare >= 0.7 → **JEV SHARE OK** | JEV SHARE ? |
 | Honesty | HonestyStatus | HonestyStatus is FAIL → **HONESTY FAIL: VOID**; HonestyStatus is PASS → **HONESTY PASS** | HONESTY UNKNOWN |
 | Intent mode | IntentMode | IntentMode is EXPLORE → **EXPLORE**; IntentMode is APPROACH → **APPROACH**; IntentMode is OPERATE → **OPERATE**; IntentMode is FIGHT → **FIGHT**; IntentMode is RETREAT → **RETREAT**; IntentMode is RECOVER → **RECOVER** | NO INTENT |
@@ -203,7 +203,7 @@ Each indicator is a condition set (the rules) shown through a condition widget o
 | Key red | KEYS | KEYS is one of 1,3,5,7 → **RED KEY** | - |
 | Key blue | KEYS | KEYS is one of 2,3,6,7 → **BLUE KEY** | - |
 | Key yellow | KEYS | KEYS is one of 4,5,6,7 → **YELLOW KEY** | - |
-| Threat | ENEMY_COUNT | ENEMY_COUNT >= 4 → **HAZARDS 4+**; ENEMY_COUNT >= 1 → **HAZARD CONTACT** | NO HAZARDS |
+| Threat | ENEMY_COUNT | ENEMY_COUNT > 3 → **HAZARDS 4+**; ENEMY_COUNT > 1 → **HAZARDS 2+**; ENEMY_COUNT >= 1 → **HAZARD CONTACT** | NO HAZARDS |
 
 ## Derived telemetry
 

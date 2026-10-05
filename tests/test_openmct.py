@@ -64,6 +64,47 @@ class Displays(unittest.TestCase):
             self.assertIn(f"{grid}-unit cells", openmct_docs.describe(q, self.params), q)
         self.assertIn(f"{grid}-unit cells", openmct_docs.NOTES["Cells seen this attempt"])
 
+    def test_indicator_colours_follow_the_alarm_ranges(self):
+        # "Colours mean the same thing everywhere": for a value of a parameter with alarm ranges, the colour the
+        # indicator shows is the alarm level the value is in (ranges are the allowed values, inclusive)
+        objs = self.b.objects
+        colour_of_level = {"critical": bod.BAD, "warning": bod.WARN, "watch": bod.WATCH, None: bod.OK}
+        compare = {"lessThan": lambda v, t: v < t, "lessThanOrEq": lambda v, t: v <= t,
+                   "greaterThan": lambda v, t: v > t, "greaterThanOrEq": lambda v, t: v >= t}
+        widgets = {o["configuration"]["objectStyles"]["conditionSetIdentifier"]["key"]: o for o in objs.values()
+                   if o["type"] == "conditionWidget"}
+
+        def level(alarms, v):
+            for lvl in ("severe", "distress", "critical", "warning", "watch"):
+                lo, hi = alarms.get(lvl, (None, None))
+                if (lo is not None and v < lo) or (hi is not None and v > hi):
+                    return lvl
+            return None
+        checked = set()
+        for key, cs in objs.items():
+            if cs["type"] != "conditionSet" or key not in widgets:
+                continue
+            colour = {s["conditionId"]: s["style"]["backgroundColor"]
+                      for s in widgets[key]["configuration"]["objectStyles"]["styles"]}
+            coll = cs["configuration"]["conditionCollection"]
+            for q in {cr["telemetry"]["key"].replace("~", "/") for c in coll for cr in c["configuration"]["criteria"]}:
+                alarms = self.params[q].get("alarms", {})
+                if not alarms or "enum" in alarms:
+                    continue
+                bounds = {b for lo_hi in alarms.values() for b in lo_hi if b is not None}
+                bounds |= {cr["input"][0] for c in coll for cr in c["configuration"]["criteria"]
+                           if cr["telemetry"]["key"].replace("~", "/") == q}
+                for v in sorted({0} | {b + d for b in bounds for d in (-1, -0.5, 0, 0.5, 1)}):
+                    def hit(cr):
+                        return (cr["telemetry"]["key"].replace("~", "/") == q and cr["operation"] in compare
+                                and compare[cr["operation"]](v, cr["input"][0]))
+                    first = next(c for c in coll if c.get("isDefault") or (any if c["configuration"]["trigger"]
+                                 == "any" else all)(hit(cr) for cr in c["configuration"]["criteria"]))
+                    self.assertEqual(colour[first["id"]], colour_of_level[level(alarms, v)],
+                                     f"{cs['name']}: {q.rsplit('/', 1)[1]} = {v} shows {first['configuration']['output']}")
+                checked.add(q.rsplit("/", 1)[1])
+        self.assertTrue({"HEALTH", "ENEMY_COUNT", "DecisionAgeMs", "JevShare"} <= checked, checked)
+
     def test_every_reference_is_known(self):
         for o in self.b.objects.values():
             for c in o.get("composition", []):
