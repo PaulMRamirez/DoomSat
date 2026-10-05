@@ -111,8 +111,8 @@ to 0.74 % (`cop1/fop_variants.py`).
 delays of 20 ms up and 50 ms down, and one command per frame (DoomSat sets `multiplePacketsPerFrame: false`;
 Yamcs's default is true). It also assumes an operator who re-initialises the AD service (with Set V(R)) 10 s after
 each suspend. COP-1's undelivered share in the table is exactly the commands those re-initialisations purge.
-Re-initialising at once delivers 99.7 % at 5 % loss and 96.6 % at 10 %. Real TM cadence depends on `ComQueue`
-traffic. Quote it as an indication.
+Re-initialising at once delivers 99.7 % at 5 % loss and 96.6 % at 10 % for the pilot at 0.25 s (`op_delay=0` in
+`fop_model.py`'s `base`). Real TM cadence depends on `ComQueue` traffic. Quote it as an indication.
 
 ## Where commands are actually lost
 
