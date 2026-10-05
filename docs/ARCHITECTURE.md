@@ -124,16 +124,19 @@ is built and what the numbers actually say, including where they say it is not f
   without the game (`tools/replay.py`).
 - File uplink and `LOAD_WAD` (3 October 2026, see the README's "Uplink a new level" and
   `docs/plans/wad-uplink-stage1.md`): a WAD goes up as F´ file packets (fprime-yamcs `FprimeFilePacketService`,
-  APID 3, 512-byte chunks, about 25 KB/s) to `NAME.<nonce>.part`. FileUplink verifies the checksum and announces
-  the file on `fileAnnounce`, and the Doom component renames it to `NAME`. `LOAD_WAD` then has the payload prove
-  the game in a child process and rebuild its `DoomGame` in place. The F´ binary, Yamcs and the flight link stay
-  up throughout. Command round trips stay around 100 ms during an uplink.
+  APID 3, 512-byte chunks, about 25 KB/s) to `NAME.wad.<nonce>.part`. FileUplink verifies the checksum and
+  announces the file on `fileAnnounce`, and the Doom component renames it to `NAME.wad`. `LOAD_WAD` then has the
+  payload prove the game in a child process and rebuild its `DoomGame` in place. The F´ binary, Yamcs and the
+  flight link stay up throughout. Command round trips stay around 100 ms during an uplink.
 - CFDP (4 October 2026, `docs/plans/cfdp-stage2-spike.md`): the same uplink as CCSDS CFDP class 2, Yamcs
   `CfdpService` to F´ `Svc/Ccsds/CfdpManager` in place of FileUplink/FileDownlink, PDUs on APID 3 behind the
   F´ file descriptor, wrapped and unwrapped by stream SQL (`ground/yamcs/etc/cfdp_streams.sql`). At 5 % frame
-  loss each way the native file packets failed 3 of 3 and CFDP class 2 delivered every file whole; `COMMIT_WAD`
-  takes the place of `fileAnnounce`. 25 KB/s at Yamcs's 40 ms PDU pacing, 180 KB/s at 5 ms; downlink about
-  63 KB/s (64 PDUs a second). Commands ride TC virtual channel 1 ahead of the file's channel 2.
+  loss each way the native file packets failed 3 of 3 and CFDP class 2 delivered every file whole. 25 KB/s at
+  Yamcs's 40 ms PDU pacing, 180 KB/s at 5 ms; downlink about 63 KB/s (64 PDUs a second). Commands ride TC virtual
+  channel 1 ahead of the file's channel 2. `cfdpGuard` (`docs/plans/cfdp-guard.md`) sits on both of cfdpManager's
+  paths: it refuses any upload outside the uplink directory, and at the receiver's FIN it hands a class 2 WAD to
+  the Doom component's `fileAnnounce`, so the commit happens on board. `COMMIT_WAD`, with a size and checksum
+  check, covers class 1 and commits by hand.
 - Claude Sonnet 5 via the `claude` CLI as the after-action reviewer: one tool-free schema call per episode,
   returning the revised graph. The CLI runs with `DISABLE_NON_ESSENTIAL_MODEL_CALLS=1`, so no helper-model calls;
   `--system-two anthropic` uses the API directly.
@@ -178,6 +181,7 @@ Integration findings worth keeping:
 | Path | What |
 |---|---|
 | `flight/Components/Doom/` | F´ component: commands, 64 telemetry channels, events, FrameChunk downlink (frames and the map product) (FPP + C++) |
+| `flight/Components/CfdpGuard/` | F´ component on both of cfdpManager's paths: refuses uploads outside the uplink directory and commits a class 2 WAD at the FIN (`docs/plans/cfdp-guard.md`); GTests via `scripts/flight.sh ut` |
 | `flight/DoomSat/Top/`, `flight/config/` | topology/instances/rate groups, com-buffer override (copied into the WSL project) |
 | `payload/doom_payload.py` | the game as an instrument: automap (seen lines) + range camera + labels, local sensing in eight directions, level progression |
 | `payload/world_model.py` | the world model for one attempt: frontiers, the object table, A* with commitment, and the candidate targets the ground scores |

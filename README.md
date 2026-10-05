@@ -171,16 +171,20 @@ ground/.venv/bin/python tools/wad_uplink_demo.py --iwad freedoom1.wad --map E1M1
 
 1. **Up the command link.** The file goes into a Yamcs bucket, then up as CCSDS CFDP class 2 (Yamcs's
    `CfdpService`, the same one behind the File Transfer page in the Yamcs web UI, to F´'s `cfdpManager`) to
-   `~/doom/wads/uplink/NAME.<nonce>.part`. Yamcs sends a PDU every 40 ms, about 25 KB/s; `--pdu-delay 5` gives
-   about 180 KB/s. The spacecraft asks again for anything lost on the way (NAK), so a lossy link costs time, not
-   the file. Commands go up on their own virtual channel ahead of the file, so they keep flowing alongside it.
-2. **Into place.** When the spacecraft has the whole file it says so (the class 2 FIN), and the tool sends
-   `COMMIT_WAD(NAME.<nonce>.part, fileSize, checksum)` with the size and CFDP checksum of what it sent. The Doom
-   component checks both against the file on board and only then renames it to `NAME` in the uplink directory
-   (`WadUplinked`), and nowhere else. A file that is still arriving, or never arrived whole, stays a `.part`
-   (`WadCommitRefused`) and can't be loaded. From the Yamcs web UI, send `COMMIT_WAD` yourself once a **class 2**
-   transfer shows completed (Yamcs calls a class 1 transfer completed even when the file arrived damaged), with
-   the numbers `tools/wad_uplink_demo.py --checksum FILE` prints.
+   `~/doom/wads/uplink/NAME.wad.<nonce>.part`. Yamcs sends a PDU every 40 ms, about 25 KB/s; `--pdu-delay 5`
+   gives about 180 KB/s. The spacecraft asks again for anything lost on the way (NAK), so a lossy link costs time,
+   not the file. Commands go up on their own virtual channel ahead of the file, so they keep flowing alongside it.
+2. **Into place.** When the spacecraft has the whole file it says so (the class 2 FIN), and at that moment it
+   renames the file to `NAME.wad` in the uplink directory itself (`cfdpGuard`, then `WadUplinked`): no command
+   needed. So a reliable (class 2, the default) upload from the Yamcs web UI lands in place too, if its
+   destination is the absolute `$DOOMSAT_HOME/wads/uplink/NAME.wad[.<nonce>].part` on the flight machine, for
+   example `/home/you/doom/wads/uplink/mylevel.wad.1.part`: no `~`, only letters, digits and `_ . + -`, and a
+   lower-case `.wad`. A file that is still arriving, or never arrived whole, stays a `.part` and can't be loaded.
+   `COMMIT_WAD(NAME.wad.<nonce>.part, fileSize, checksum)` is for the rest (a class 1 upload, a commit by hand):
+   the Doom component checks the size and CFDP checksum against the file on board and only then renames it
+   (`WadCommitRefused` otherwise). `tools/wad_uplink_demo.py --checksum FILE` prints the two numbers. The tool
+   falls back to it when this upload's own `UploadCommitted` and then `WadUplinked` do not come within a few
+   seconds of the FIN.
 3. **`LOAD_WAD(iwad, pwad, map)`.** It names bare `.wad` files in the uplink directory or `~/doom/wads`. The
    payload first proves the game starts on them in a separate process, because a damaged WAD kills ViZDoom
    rather than raising an error. Only then does it rebuild its game and start a fresh episode
@@ -193,15 +197,23 @@ packets instead, which are not retransmitted: there one lost packet fails the fi
 
 **A lossy link.** `DOOMSAT_RELAY=1 scripts/flight.sh start` puts Yamcs's frame links behind
 `python3 tools/lossy_relay.py --loss 5`, which drops that share of frames each way (`--seed` repeats a run).
-Add `--tries 3` to the demo there: a command is one frame, and the tool resends `COMMIT_WAD` and `LOAD_WAD`
-when no answer comes back. Keep `--pdu-delay` at 5 ms or more (the tool refuses less): faster, the uplinked
+Add `--tries 3` to the demo there: a command is one frame, and the tool resends `LOAD_WAD` (and `COMMIT_WAD`,
+when it needs one) when no answer comes back. Keep `--pdu-delay` at 5 ms or more (the tool refuses less): faster, the uplinked
 PDUs can use up the buffers the downlink also needs.
 
-**What the transfer does not restrict.** CFDP writes wherever the ground's destination path points (F´ file
-packets did too on the native build, which never set FileUplink's write directory): anyone who can command the spacecraft through Yamcs can write (or overwrite) any file the flight
-process can, and its `cfdpManager.SendFile` command can downlink any file it can read, deleting it if asked
-(`keep` DELETE). Only `COMMIT_WAD` and `LOAD_WAD` are confined to the WAD directories. Run the flight side as
-an ordinary user, never as root, on anything that matters.
+**What is and is not restricted.** An upload may land only as `NAME.wad[.<nonce>].part` directly in the uplink
+directory: `cfdpGuard` refuses any other destination on board (`UploadRefused` and `UPLOADS_REFUSED`; a class 2
+transfer then fails on the ground with `NAK_LIMIT_REACHED`, while a class 1 transfer still shows COMPLETED there,
+because class 1 never hears back), so no other destination can be written or overwritten through CFDP
+(`docs/plans/cfdp-guard.md`). The bytes of a refused class 2 upload are still staged in `cfdpManager`'s `tmp_dir`,
+which the parameter file puts in `wads/uplink/.cfdp-tmp` (F´'s own default, `/tmp`, applies only to a start that
+flies without the parameter file, which `DOOMSAT_PRM_DEFAULTS=1` allows). The file data of a refused class 1 upload
+has no Metadata and is dropped unwritten. On the native build F´ file packets still write wherever they are sent,
+since it never set FileUplink's write directory. Commands are another matter: anyone who can command the spacecraft
+can still write over or delete any file the flight process can. `fileManager.MoveFile`, `AppendFile` and
+`RemoveFile` take any path (moving an uplinked WAD over another file, for example), `cfdpManager.SendFile` can
+downlink any file the flight process can read, deleting it if asked (`keep` DELETE), and its `ChannelConfig`
+parameter names directories. Run the flight side as an ordinary user, never as root, on anything that matters.
 
 The demo takes the uplink directory from `DOOMSAT_HOME` (the environment, then `.env`), as the scripts do. With
 the ground on Windows and the flight side in WSL, pass the WSL path explicitly, for example
@@ -238,8 +250,9 @@ scripts/flight.sh gds          # the DoomSat deployment + F´ GDS → http://loc
 scripts/flight.sh payload      # (another terminal) add the game, so the Doom channels move
 ```
 
-The component is in `flight/Components/Doom/` and the topology in `flight/DoomSat/Top/`. After an edit, run
-`scripts/flight.sh build`.
+The components are in `flight/Components/` (`Doom/`, and `CfdpGuard/`, which confines CFDP uploads and commits
+them on board) and the topology in `flight/DoomSat/Top/`. After an edit, run `scripts/flight.sh build`;
+`scripts/flight.sh ut` runs the guard's unit tests.
 
 </details>
 

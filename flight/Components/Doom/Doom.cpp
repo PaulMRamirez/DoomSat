@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include "CFDP/Checksum/Checksum.hpp"
+#include "DoomMission/Components/Doom/WadPath.hpp"
 #include "Fw/Com/ComPacket.hpp"
 #include "Fw/Types/String.hpp"
 #include "Os/File.hpp"
@@ -45,28 +46,6 @@ constexpr U8 WAD_TEXT_MAX = 120;      // longest WAD report text kept (the reaso
 // The payload's WAD report (kind 3): what it did with a LOAD_WAD, or, with result REPORT, what it is
 // running when the link comes up.
 enum WadResult : U8 { WAD_REPORT = 0, WAD_LOADED = 1, WAD_FAILED = 2 };
-// An uplinked WAD arrives as NAME.wad.<nonce>.part (or NAME.wad.part). The length of NAME.wad's path, or 0 for
-// any other file. The nonce is the last dot-free segment, so a NAME that itself contains ".wad." survives.
-FwSizeType wadDestLength(const char* path, FwSizeType len) {
-    constexpr FwSizeType PART_LEN = 5;  // ".part"
-    if (len <= PART_LEN || std::strcmp(path + len - PART_LEN, ".part") != 0) {
-        return 0;
-    }
-    const char* const slash = std::strrchr(path, '/');
-    const FwSizeType base = (slash != nullptr) ? static_cast<FwSizeType>(slash + 1 - path) : 0;
-    auto isWad = [&](FwSizeType end) { return end >= base + 5 && std::strncmp(path + end - 4, ".wad", 4) == 0; };
-    FwSizeType end = len - PART_LEN;
-    if (!isWad(end)) {
-        while (end > base && path[end - 1] != '.') {
-            end--;
-        }
-        if (end == base) {
-            return 0;
-        }
-        end--;  // the '.' before the nonce
-    }
-    return isWad(end) ? end : 0;
-}
 }  // namespace
 
 Doom ::Doom(const char* const compName)
@@ -104,32 +83,36 @@ void Doom ::run_handler(FwIndexType portNum, U32 context) {
 }
 
 // ----------------------------------------------------------------------
-// Uplinked WADs: NAME.wad.<anything>.part becomes NAME.wad once its checksum is verified: by FileUplink
-// (fileAnnounce, native build) or by COMMIT_WAD against the size and checksum the ground sent (CFDP build)
+// Uplinked WADs: NAME.wad.<anything>.part becomes NAME.wad once it is known whole: on fileAnnounce (cfdpGuard on
+// the receiver's FIN, or FileUplink after its checksum), or by COMMIT_WAD against the size and checksum the
+// ground sent (a Class 1 upload, or a commit by hand)
 // ----------------------------------------------------------------------
 
 void Doom ::fileAnnounce_handler(FwIndexType portNum, Fw::StringBase& file_name) {
-    (void)this->placeWad(file_name);  // anything else FileUplink receives (a sequence, a parameter file) is left alone
+    // From CfdpGuard at the receiver's FIN (CFDP build) or from FileUplink (native build). Only an uplinked WAD in
+    // the uplink directory is put in place; anything else an uplink service announces (a sequence, a parameter
+    // file) is left alone, and a WAD anywhere else is refused.
+    if (WadPath::isUplinkPart(file_name.toChar())) {
+        (void)this->placeWad(file_name);
+    } else if (WadPath::destLength(file_name.toChar(), file_name.length()) > 0) {
+        this->log_WARNING_HI_WadUplinkFailed(file_name);
+    }
 }
 
 void Doom ::COMMIT_WAD_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, const Fw::CmdStringArg& part, U32 fileSize,
                                   U32 checksum) {
     this->m_cmdsReceived++;
     // A bare name: the directory is always the uplink directory, never one the command names
-    if (std::strchr(part.toChar(), '/') != nullptr || wadDestLength(part.toChar(), part.length()) == 0) {
+    if (std::strchr(part.toChar(), '/') != nullptr || WadPath::destLength(part.toChar(), part.length()) == 0) {
         this->log_WARNING_HI_WadUplinkFailed(part);
         this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::VALIDATION_ERROR);
         return;
     }
     // $DOOMSAT_HOME/wads/uplink, as the run script creates it and the payload looks in it
-    const char* const home = std::getenv("DOOMSAT_HOME");
-    const char* const user = std::getenv("HOME");
+    Fw::String dir;
+    WadPath::uplinkDir(dir);
     Fw::String path;
-    if (home != nullptr && home[0] != '\0') {
-        path.format("%s/wads/uplink/%s", home, part.toChar());
-    } else {
-        path.format("%s/doom/wads/uplink/%s", (user != nullptr) ? user : "", part.toChar());
-    }
+    path.format("%s/%s", dir.toChar(), part.toChar());
     // cfdpManager writes the file in place and announces nothing, so check here that it is the whole file the
     // ground sent before it gets its real name: a commit before the last byte has landed, or after a damaged
     // Class 1 upload, leaves a .part that LOAD_WAD will not use. A file that is not there at all (already
@@ -185,7 +168,7 @@ bool Doom ::fileSum(const char* path, FwSizeType& size, U32& checksum) {
 
 bool Doom ::placeWad(const Fw::StringBase& file_name) {
     const char* const path = file_name.toChar();
-    const FwSizeType destLen = wadDestLength(path, file_name.length());
+    const FwSizeType destLen = WadPath::destLength(path, file_name.length());
     if (destLen == 0) {
         return false;
     }

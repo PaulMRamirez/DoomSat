@@ -1,11 +1,12 @@
 """LOAD_WAD on the payload side: the two link records, and which file names the game may be pointed at.
 
 The operator uplinks a WAD to NAME.<nonce>.part in the uplink directory (F' file packets on the native build,
-CFDP class 2 on the CFDP build). The Doom component renames it to NAME only once it is verified: on FileUplink's
-fileAnnounce after its checksum matches (native), or on a COMMIT_WAD whose size and CFDP checksum match the
-file on board (CFDP). The operator then commands LOAD_WAD; the Doom component forwards the three
-names as record kind 0x16, and the payload answers with a WAD report, kind 3. The payload also sends a
-report when the link comes up, so the ground always knows which file the game is running.
+CFDP class 2 on the CFDP build). The Doom component renames it to NAME only once it is verified: on fileAnnounce,
+which FileUplink sends after its checksum matches (native) and cfdpGuard sends with a clean class 2 FIN (CFDP), or
+on a COMMIT_WAD whose size and CFDP checksum match the file on board (class 1, or a commit by hand). The operator
+then commands LOAD_WAD; the Doom component forwards the three names as record kind 0x16, and the payload answers
+with a WAD report, kind 3. The payload also sends a report when the link comes up, so the ground always knows which
+file the game is running.
 
 Pure Python with no ViZDoom, so the unit tests import it from the ground venv. Nothing here reads a WAD:
 names are checked as text and looked up with os.path, and the game is the only thing that ever opens one
