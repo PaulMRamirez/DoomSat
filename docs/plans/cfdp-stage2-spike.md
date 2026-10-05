@@ -330,7 +330,7 @@ order:
    `SendFile`, `PlaybackDirectory`, `PollDirectory` and `ChannelConfig` still name any path.
 2. **Class 1 is unsafe for WADs** (above). The demo defaults to Class 2 on this build.
 3. **Commands have no retransmission.** A lost `COMMIT_WAD` or `LOAD_WAD` needs a resend; the demo's `--tries`
-   does it, and the dashboard's `LOAD_WAD` button does not. The commit itself need not be a ground command: a
+   does it, and so does the dashboard's `LOAD_WAD` form (it waits 25 s for an answer, up to 3 tries). The commit itself need not be a ground command: a
    guard component spliced into both `fprimeRouter.fileOut -> cfdpManager.dataIn` and `cfdpManager.dataOut` could
    do it with no upstream work. On the way up it records each Metadata PDU's destination against (source entity,
    sequence number), because a FIN carries no file name. On the way down, at the receiver's own FIN for a recorded
@@ -634,7 +634,10 @@ Written for you to file. Each says what ran and what was only read.
 
 - Running the flight side as a confined user. (The guard component is built: `docs/plans/cfdp-guard.md`.)
 - Downlink pacing above 64 PDUs a tick, and its effect on game frames, measured.
-- The dashboard's `LOAD_WAD` button does not resend on a lossy link, and the dashboard has no upload.
+- The dashboard has no upload. (Its `LOAD_WAD` form now resends when no answer comes. Live, a first `LOAD_WAD`
+  the page was told Yamcs took but that never reached it, standing in for a lost TC frame, was sent again and
+  answered on try 2, and with the answer events hidden the WAD channels stood in. A command Yamcs refuses, or
+  cannot be reached for, is reported once and not resent.)
 - COP-1 for commands.
 - Data products through `dpCat.fileOut` → `cfdpManager.fileIn`: wired, but none was downlinked (DoomSat makes
   none).
