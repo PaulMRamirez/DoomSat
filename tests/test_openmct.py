@@ -4,11 +4,15 @@ No network, no game, no browser: the displays and the operator reference are reb
 with what is committed, the custom views are checked against the reference, and the ground feed and the replay
 builder are run on made-up rows.
 """
+import contextlib
+import copy
+import io
 import json
 import re
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -92,16 +96,30 @@ class Displays(unittest.TestCase):
         self.assertIn("commanding: false", (WEB / "replay.js").read_text(encoding="utf-8"))
 
 
-class FakeProcessor:
-    def __init__(self):
-        self.values = {}
+class FakeYamcs:
+    """Stands in for the parameters:batchSet request, no network. Like Yamcs, it takes a batch whole or not at
+    all: a name it lacks or a label it cannot convert refuses the lot, with Yamcs's own wording."""
+    def __init__(self, lacks=(), bad_labels=()):
+        self.lacks, self.bad_labels = set(lacks), set(bad_labels)
+        self.values, self.bodies = {}, []
 
-    def set_parameter_value(self, name, value, expires_in=None):
-        self.values[name] = value
+    def __call__(self, body):
+        self.bodies.append(body)
+        reqs = body["request"]
+        unknown = [r["id"]["name"] for r in reqs if r["id"]["name"].rsplit("/", 1)[1] in self.lacks]
+        if unknown:
+            return 400, "InvalidIdentification: " + ", ".join(f'name: "{n}"\n' for n in unknown)
+        for r in reqs:
+            if r["value"].get("stringValue") in self.bad_labels:
+                return 400, f"Cannot convert {r['value']['stringValue']} to intent_mode_t; it is not a valid label"
+        for r in reqs:
+            v = r["value"]
+            self.values[r["id"]["name"]] = next(v[k] for k in v if k != "type")
+        return 200, ""
 
 
 def feed(yamcs=None, **kw):
-    return ops_telemetry.OpsTelemetry(yamcs if yamcs is not None else FakeProcessor(), every_s=0, **kw)
+    return ops_telemetry.OpsTelemetry(None, every_s=0, post=yamcs if yamcs is not None else FakeYamcs(), **kw)
 
 
 def row(mode="EXPLORE", tx=1.0, pick=0, model="jev-1.13.0", **select):
@@ -135,7 +153,7 @@ class GroundFeed(unittest.TestCase):
 
     def test_a_jev_outage_and_the_code_autopilot_read_zero_jev_share(self):
         for model, label in (("code (fallback)", "UNAVAILABLE"), ("code", "RULE")):
-            yamcs = FakeProcessor()
+            yamcs = FakeYamcs()
             ops = feed(yamcs)
             for i in range(6):
                 ops.update(dict(row(pick=i % 2, model=model), latency_ms=0), [{"kind": "frontier"}, {"kind": "door"}])
@@ -144,7 +162,7 @@ class GroundFeed(unittest.TestCase):
             self.assertEqual(yamcs.values["/DoomGround/FallbackRate"], 1.0, model)
 
     def test_jev_share_counts_intent_changes_not_decisions(self):
-        yamcs = FakeProcessor()
+        yamcs = FakeYamcs()
         ops = feed(yamcs)
         cands = [{"kind": "frontier"}, {"kind": "door"}]
         for _ in range(5):
@@ -174,19 +192,118 @@ class GroundFeed(unittest.TestCase):
         self.assertLess(whole.jev_share(), fm.jev_share(rows))
 
     def test_the_sector_pilot_word_is_not_a_slot(self):
-        yamcs = FakeProcessor()
+        yamcs = FakeYamcs()
         feed(yamcs).update(row(pick="ahead"), [])
         self.assertEqual(yamcs.values["/DoomGround/PickSlot"], 255)
         self.assertEqual(yamcs.values["/DoomGround/PickKind"], "NONE")
 
     def test_everything_published_is_in_the_ground_xtce(self):
-        yamcs = FakeProcessor()
+        yamcs = FakeYamcs()
         ops = feed(yamcs)
         ops.update(row(pick=1), [])
         ops.update(dict(row(), answers={"g_t0": "1", "engage": "x"}), [{"kind": "exit"}])
         params, _ = bod.doomdict.load()
         self.assertIn("/DoomGround/JevShare", yamcs.values)
         self.assertEqual(sorted(n for n in yamcs.values if n not in params), [])
+
+    def test_one_request_per_publish(self):
+        yamcs = FakeYamcs()
+        ops = ops_telemetry.OpsTelemetry(None, post=yamcs)          # every_s = 1: once a second at most
+        ops.update(dict(row(), answers={"g_t0": "1", "engage": "x"}), [{"kind": "exit"}])
+        ops.update(row(pick=1), [])
+        self.assertEqual(len(yamcs.bodies), 1)
+        reqs = yamcs.bodies[0]["request"]
+        self.assertGreaterEqual(len(reqs), 19)
+        self.assertTrue(all(r["expiresIn"] == 3000 for r in reqs))
+
+    def test_an_older_ground_database_is_reported_once(self):
+        block = ("DecisionAgeMs", "IntentMode", "DecisionSource", "PickSlot", "PickKind", "PickGap", "PickConfidence",
+                 "JevShare", "FallbackRate", "GraphVersion", "Attempt", "EngageAnswer") + tuple(f"Score{n}" for n in range(8))
+        for lacks in (block, ("EngageAnswer",)):           # main's ground database; one name short
+            yamcs, err = FakeYamcs(lacks=lacks), io.StringIO()
+            ops = feed(yamcs)
+            with contextlib.redirect_stderr(err):
+                for i in range(12):
+                    ops.update(dict(row(pick=i), answers={"g_t0": "1", "engage": "x"}), [])
+                    if i == 1:                   # JevShare first comes up at the first intent change
+                        settled = len(yamcs.bodies)
+            said = err.getvalue()
+            self.assertTrue(all(said.count(n) == 1 for n in lacks), said)
+            self.assertIn("restart Yamcs", said)
+            self.assertLessEqual(len(said.splitlines()), 2, said)
+            late = yamcs.bodies[settled:]               # then one batch a publish, without what it lacks
+            self.assertEqual(len(late), 0 if lacks == block else 10, lacks)
+            self.assertTrue(all(len(b["request"]) == 19 for b in late))
+        self.assertEqual(yamcs.values["/DoomGround/DecisionSource"], "JEV")
+
+    def test_a_label_yamcs_cannot_take_is_left_out_while_it_lasts(self):
+        yamcs, err = FakeYamcs(bad_labels={"DONE"}), io.StringIO()   # --control legacy at a level change
+        ops = feed(yamcs)
+        with contextlib.redirect_stderr(err):
+            ops.update(row(mode="DONE"), [])
+            self.assertEqual(yamcs.values["/DoomGround/DecisionSource"], "JEV")
+            self.assertNotIn("/DoomGround/IntentMode", yamcs.values)
+            n = len(yamcs.bodies)
+            ops.update(row(mode="DONE"), [])
+            self.assertEqual(len(yamcs.bodies), n + 1)
+            ops.update(row(mode="EXPLORE"), [])
+        self.assertEqual(yamcs.values["/DoomGround/IntentMode"], "EXPLORE")
+        self.assertEqual(len(err.getvalue().splitlines()), 1, err.getvalue())
+
+    def test_no_answer_is_reported_once_and_backed_off(self):
+        calls = []
+
+        def down(body):
+            calls.append(body)
+            raise TimeoutError("read timed out (0.5 s)")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            ops = feed(down)                                         # retry_s = 10
+            for _ in range(5):
+                ops.update(row(), [])
+            self.assertEqual(len(calls), 1)
+            ops = feed(down, retry_s=0)
+            for _ in range(5):
+                ops.update(row(), [])
+            self.assertEqual(len(calls), 6)
+        self.assertEqual(len(err.getvalue().splitlines()), 2, err.getvalue())   # once per feed
+
+    def test_the_feed_reads_and_never_raises(self):
+        r, cands = row(pick=1), [{"kind": "frontier"}, {"kind": "door"}]
+        before = copy.deepcopy((r, cands))
+        feed().update(r, cands)
+        self.assertEqual((r, cands), before)
+        with contextlib.redirect_stderr(io.StringIO()):
+            feed().update(dict(row(), answers={"g_t0": "high"}), None)     # malformed: skipped, not raised
+
+    def test_the_request_is_a_batch_set_with_a_timeout(self):
+        sent = []
+
+        class Response:
+            def __init__(self, status, body):
+                self.status_code, self.body, self.text = status, body, json.dumps(body)
+
+            def json(self):
+                return self.body
+
+        class Session:
+            def post(self, url, json=None, timeout=None):
+                sent.append((url, json, timeout))
+                return Response(200, {}) if len(sent) == 1 else Response(400, {"msg": "Cannot convert DONE"})
+
+        class Processor:     # what yamcs-client 2.1.0's ProcessorClient carries
+            ctx = types.SimpleNamespace(api_root="http://localhost:8090/api", session=Session(), credentials=None,
+                                        auth_root="http://localhost:8090/auth")
+            _instance, _processor = "fprime-project", "realtime"
+        post = ops_telemetry.batch_set(Processor(), 0.5)
+        body = {"request": [{"id": {"name": "/DoomGround/PickGap"}, "value": ops_telemetry.json_value(0.5)}]}
+        self.assertEqual(post(body), (200, ""))
+        self.assertEqual(sent[0], ("http://localhost:8090/api/processors/fprime-project/realtime/parameters:batchSet",
+                                   body, 0.5))
+        self.assertEqual(post(body), (400, "Cannot convert DONE"))
+        self.assertEqual([ops_telemetry.json_value(v) for v in (True, 7, 2.5, "JEV")],
+                         [{"type": "BOOLEAN", "booleanValue": True}, {"type": "SINT32", "sint32Value": 7},
+                          {"type": "DOUBLE", "doubleValue": 2.5}, {"type": "STRING", "stringValue": "JEV"}])
 
 
 class Replay(unittest.TestCase):

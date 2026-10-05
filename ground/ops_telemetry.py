@@ -4,17 +4,22 @@ ground/pilot.py hands every decision row to OpsTelemetry.update (from intent_ste
 no candidates). It reads only what the pilot already logs, writes only /DoomGround parameters, and nothing in
 the loop reads them back: the displays sit downstream of the stack, never upstream of a decision.
 
-Every value is published with an expiry, so a stalled pilot shows as stale (grey) in Open MCT instead of
-freezing on its last good number.
+The block goes up at most once a second, in one batchSet request with a short timeout, so it costs the
+decision loop one round trip and never a hang. It is best effort: what Yamcs will not take is reported once
+and left out, and the pilot flies on. Every value is published with an expiry, so a stalled pilot shows as
+stale (grey) in Open MCT instead of freezing on its last good number.
 
 tools/build_openmct_replay.py derives the same values from a recorded flight with decision_source and Rolling.
 """
+import re
+import sys
 import time
 from collections import deque
 
 GROUND = "/DoomGround"
 KIND = {"frontier": "FRONTIER", "door": "DOOR", "exit": "EXIT", "key": "KEY", "item": "ITEM",
         "switch": "SWITCH", "enemy": "ENEMY"}
+UNKNOWN_NAME = re.compile(r'name: "' + GROUND + r'/([^"]+)"')   # how Yamcs lists ids its dictionary lacks
 
 
 def decision_source(row):
@@ -76,14 +81,60 @@ class Rolling:
         return sum(s != "JEV" for s in self.sources) / len(self.sources) if self.sources else None
 
 
+def json_value(v):
+    """A Python value as a Yamcs JSON Value, typed the way yamcs-client types it."""
+    if isinstance(v, bool):
+        return {"type": "BOOLEAN", "booleanValue": v}
+    if isinstance(v, int):
+        return ({"type": "SINT32", "sint32Value": v} if -2**31 <= v < 2**31
+                else {"type": "SINT64", "sint64Value": str(v)})
+    if isinstance(v, float):
+        return {"type": "DOUBLE", "doubleValue": v}
+    return {"type": "STRING", "stringValue": str(v)}
+
+
+def batch_set(processor, timeout_s):
+    """POST /api/processors/{instance}/{processor}/parameters:batchSet on the pilot's publishing client, with a
+    timeout yamcs-client does not offer. Returns (HTTP status, Yamcs's message); raises when Yamcs did not
+    answer. _instance and _processor are yamcs-client 2.1.0's (pinned in ground/requirements.txt)."""
+    ctx = processor.ctx
+    url = f"{ctx.api_root}/processors/{processor._instance}/{processor._processor}/parameters:batchSet"
+
+    def post(body):
+        if ctx.credentials:
+            ctx.credentials.before_request(ctx.session, ctx.auth_root)
+        r = ctx.session.post(url, json=body, timeout=timeout_s)
+        if r.status_code < 300:
+            return r.status_code, ""
+        try:
+            return r.status_code, str(r.json().get("msg") or r.text)
+        except ValueError:
+            return r.status_code, r.text[:300]
+    return post
+
+
 class OpsTelemetry:
-    def __init__(self, processor, window=40, every_s=1.0, expires_s=3.0):
-        self.proc = processor
+    def __init__(self, processor, window=40, every_s=1.0, expires_s=3.0, timeout_s=0.5, retry_s=10.0,
+                 post=None):
+        self.post = post or batch_set(processor, timeout_s)    # tests pass a stub: no network
         self.rolling = Rolling(window)
-        self.every_s, self.expires_s = every_s, expires_s
+        self.every_s, self.expires_s, self.retry_s = every_s, expires_s, retry_s
         self.last_pub = 0.0
+        self.dropped = set()       # names left out for the run: not in this Yamcs's ground database, or a
+                                   # number it cannot take
+        self.refused = set()       # (name, label) pairs it cannot convert, e.g. an IntentMode its enum lacks
+        self.retry_at = 0.0        # after Yamcs did not answer, nothing is sent before this
+        self.quiet = {}            # what was reported, and until when it stays quiet
 
     def update(self, row, cands):
+        """Called with every decision row; publishes at most once per every_s. Never raises: a display feed
+        must not take the loop down."""
+        try:
+            self._update(row, cands)
+        except Exception as e:          # noqa: BLE001
+            self.warn("feed", f"autonomy block skipped: {type(e).__name__}: {e}")
+
+    def _update(self, row, cands):
         src = self.rolling.add(row)
         if time.time() - self.last_pub < self.every_s:
             return
@@ -110,13 +161,63 @@ class OpsTelemetry:
             values[f"Score{n}"] = float(v) if v not in (None, "") else 0.0
         if "engage" in ans:
             values["EngageAnswer"] = str(ans["engage"])
-        for k, v in values.items():
-            if v is None:
-                continue
-            try:
-                try:
-                    self.proc.set_parameter_value(f"{GROUND}/{k}", v, expires_in=self.expires_s)
-                except TypeError:   # yamcs-client without expires_in: publish without the staleness expiry
-                    self.proc.set_parameter_value(f"{GROUND}/{k}", v)
-            except Exception as e:  # never let a display feed take the loop down
-                print(f"[ops] {k}: {e}")
+        self.publish(values)
+
+    def publish(self, values):
+        """One batchSet for the whole block. Yamcs takes a batch whole or not at all, so a refused one is
+        narrowed down: names its ground database lacks are left out for the run, and a label it cannot convert
+        is left out while it lasts (a number it cannot take, for the run)."""
+        items = {k: v for k, v in values.items()
+                 if v is not None and k not in self.dropped and (k, v) not in self.refused}
+        status, msg = self.send(items)
+        if status is None or status < 400:
+            return
+        missing = set(UNKNOWN_NAME.findall(msg)) & set(items)
+        if missing:
+            self.dropped |= missing
+            names = ", ".join(sorted(missing))
+            self.warn(f"missing {names}", f"not in this Yamcs's ground database, left out (restart Yamcs to load "
+                      f"it): {names}", every_s=None)
+            items = {k: v for k, v in items.items() if k not in missing}
+            status, msg = self.send(items)
+            if status is None or status < 400:
+                return
+        refused = {}
+        for k, v in items.items():     # a value it cannot convert: find which, once
+            status, msg = self.send({k: v})
+            if status is not None and status >= 400:
+                if isinstance(v, str):
+                    self.refused.add((k, v))
+                else:
+                    self.dropped.add(k)
+                refused[k] = f"{k}={v!r}: {msg}"
+        if refused:
+            self.warn("refused " + " ".join(sorted(refused)), "refused, left out: " + "; ".join(refused.values()))
+
+    def send(self, items):
+        """POST items as one batch. Returns (status, message), or (None, reason) when Yamcs did not answer or
+        failed; then nothing more is sent for retry_s."""
+        if not items:
+            return 200, ""
+        if time.time() < self.retry_at:
+            return None, "backing off"
+        body = {"request": [{"id": {"name": f"{GROUND}/{k}"}, "value": json_value(v),
+                             "expiresIn": int(self.expires_s * 1000)} for k, v in items.items()]}
+        try:
+            status, msg = self.post(body)
+        except Exception as e:          # noqa: BLE001  no answer in time: Yamcs down, restarting or stalled
+            status, msg = None, f"{type(e).__name__}: {e}"
+        if status is None or status >= 500:
+            self.retry_at = time.time() + self.retry_s
+            why = f"HTTP {status}: {msg}" if status else msg
+            self.warn("link", f"autonomy block not published, next try in {self.retry_s:.0f} s: {why}")
+            return None, msg
+        return status, msg
+
+    def warn(self, key, msg, every_s=60.0):
+        """Print a problem once, and again only after every_s (None: once for the run)."""
+        now = time.time()
+        if now < self.quiet.get(key, 0.0):
+            return
+        self.quiet[key] = float("inf") if every_s is None else now + every_s
+        print(f"[ops] {msg}", file=sys.stderr, flush=True)
