@@ -53,8 +53,8 @@ class Doom final : public DoomComponentBase {
     // Rename an uplinked NAME.wad.<nonce>.part to NAME.wad (WadUplinked); false if it is not one (no event) or the
     // rename fails (WadUplinkFailed, unless logFailure is false)
     bool placeWad(const Fw::StringBase& path, bool logFailure = true);
-    // Whether the uplinked NAME.wad.<nonce>.part `path` is the upload last put in place as NAME.wad (since start), and
-    // NAME.wad still has this size and CFDP checksum; `dest` is NAME.wad's path
+    // Whether the uplinked NAME.wad.<nonce>.part `path` is the upload last put in place as NAME.wad (since start, while
+    // the record still holds NAME.wad), and NAME.wad still has this size and CFDP checksum; `dest` is NAME.wad's path
     bool placedFrom(const Fw::StringBase& path, U32 fileSize, U32 checksum, Fw::String& dest);
     // Size and CFDP modular checksum of a file on board; false if it cannot be read
     static bool fileSum(const char* path, FwSizeType& size, U32& checksum);
@@ -93,6 +93,8 @@ class Doom final : public DoomComponentBase {
     //! Which upload each NAME.wad was last put in place from, so that a COMMIT_WAD sent again is answered for that
     //! upload only (a size and checksum alone would also match an older NAME.wad with its words in another order).
     //! placeWad runs on cfdpManager's thread for cfdpGuard's commits and on this component's for COMMIT_WAD.
+    //! It holds PLACED_MAX names: a new name takes the next slot in turn (m_placedNext), so a repeat for a name whose
+    //! record it displaced answers WadUplinkFailed, as after a restart.
     static constexpr FwSizeType PLACED_MAX = 8;
     struct Placed {
         bool used;

@@ -186,7 +186,7 @@ ground/.venv/bin/python tools/wad_uplink_demo.py --iwad freedoom1.wad --map E1M1
    falls back to it when this upload's own `UploadCommitted` and then `WadUplinked` do not come within a few
    seconds of the FIN. It is safe to send again: a repeat for an upload already put in place (by the guard or an
    earlier commit) answers `WadUplinked` as the first commit did. The Doom component remembers which upload each
-   `NAME.wad` came from until a restart, and checks that `NAME.wad` still has that size and checksum.
+   `NAME.wad` came from (eight names, until a restart), and checks that `NAME.wad` still has that size and checksum.
 3. **`LOAD_WAD(iwad, pwad, map)`.** It names bare `.wad` files in the uplink directory or `~/doom/wads`. The
    payload first proves the game starts on them in a separate process, because a damaged WAD kills ViZDoom
    rather than raising an error. Only then does it rebuild its game and start a fresh episode

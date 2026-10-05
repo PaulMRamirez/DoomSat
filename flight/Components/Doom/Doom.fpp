@@ -193,10 +193,10 @@ module DoomMission {
         @ The file is renamed only if its size and CFDP checksum are the ones the ground sent: a commit sent before
         @ the whole file is on board, or after a damaged Class 1 upload, leaves it a .part (WadCommitRefused) and
         @ LOAD_WAD cannot use it. Safe to send again: with no .part, a commit of an upload already put in place as
-        @ NAME.wad (since start, by this command or cfdpGuard), NAME.wad still with that size and checksum, answers
-        @ WadUplinked as the first commit did; anything else is WadUplinkFailed. Wait for the FIN: a commit between the
-        @ last byte and cfdpManager's CRC pass renames the whole file, but the transfer then ends with a file-size
-        @ error.
+        @ NAME.wad (since start, by this command or cfdpGuard; the record holds eight names), NAME.wad still with that
+        @ size and checksum, answers WadUplinked as the first commit did; anything else is WadUplinkFailed. Wait for
+        @ the FIN: a commit between the last byte and cfdpManager's CRC pass renames the whole file, but the transfer
+        @ then ends with a file-size error.
         async command COMMIT_WAD(
             part: string size 40  @< the bare name it was uplinked under: NAME.wad.<nonce>.part
             fileSize: U32  @< the size the ground sent, in bytes

@@ -1,9 +1,9 @@
 # COMMIT_WAD and LOAD_WAD, safe to send again
 
-A command goes up as one unprotected TC frame (no COP-1: `docs/plans/cop1-investigation.md` on
-`feature/cop1-investigation`), so on a lossy link the ground resends a command when no answer comes. The demo does
-this with `--tries`, and the dashboard's `LOAD_WAD` form does it on `feature/dashboard-load-resend`. Often only the
-answer was lost, and the command had already run. Before this change, a resend did one of two things:
+A command goes up as one unprotected TC frame (no COP-1: `docs/plans/cop1-investigation.md`, #10), so on a lossy
+link the ground resends a command when no answer comes. The demo does this with `--tries`, and the dashboard's
+`LOAD_WAD` form does it (#9). Often only the answer was lost, and the command had already run. Before this change, a
+resend did one of two things:
 
 - **`COMMIT_WAD`** found no `.part` and answered `WadUplinkFailed`. That is the same answer as for a file that never
   arrived. The demo then had to let `LOAD_WAD` decide, and `LOAD_WAD` would fly an older file of the same name if
@@ -11,7 +11,9 @@ answer was lost, and the command had already run. Before this change, a resend d
 - **`LOAD_WAD`** proved and switched the game a second time. Or, if it arrived during the first one's proof, it was
   refused (`WadLoadFailed`, "another LOAD_WAD is still being checked").
 
-Now a repeat answers as the first did and changes nothing.
+Now a repeat changes nothing and gets a definite answer: a repeated `COMMIT_WAD` answers `WadUplinked` again (until
+a flight restart, after which it fails closed; see Limits), and a `LOAD_WAD` for what already flies answers
+`WadAlreadyFlying`. A repeat during the proof shares the first one's answer.
 
 ## What changed
 
@@ -20,8 +22,9 @@ Now a repeat answers as the first did and changes nothing.
     refused.
   - If the `.part` is gone, the command now asks whether this upload was put in place. The Doom component keeps,
     under a lock (the guard's commit runs on `cfdpManager`'s thread), which `.part` each `NAME.wad` was last renamed
-    from since start. If it was this `.part`, and `NAME.wad` still has the size and checksum named, the answer is
-    `WadUplinked` and OK, the same answer the first commit gave, or the guard's commit at the FIN.
+    from since start, for eight names (see Limits). If it was this `.part`, and `NAME.wad` still has the size and
+    checksum named, the answer is `WadUplinked` and OK, the same answer the first commit gave, or the guard's
+    commit at the FIN.
   - Anything else is still `WadUplinkFailed` with EXECUTION_ERROR: not arrived, or a `NAME.wad` from another upload
     or changed since. A size and checksum alone would not do: the CFDP checksum is a sum of 4-byte words, and an
     older `NAME.wad` with its words in another order (lumps moved around inside a WAD) matches both.
@@ -51,23 +54,22 @@ Now a repeat answers as the first did and changes nothing.
   - It takes `WadAlreadyFlying` as an answer. When `WAD_LOADS` has moved since before the first `LOAD_WAD`, an
     earlier copy switched the game and had its answer lost, and the run goes on to the frame from after the
     switch; otherwise it reports "already flying".
-- **The dashboard** (`feature/dashboard-load-resend`) takes `WadAlreadyFlying` as an answer too, and shows it as
-  such.
+- **The dashboard** (#9) takes `WadAlreadyFlying` as an answer too, and shows it as such.
 
 ## Tests
 
 | Suite | What |
 |---|---|
-| `scripts/flight.sh ut`: Doom GTest suite, 11 tests, new (`flight/Components/Doom/test/ut`) | `COMMIT_WAD` against real files in a scratch `$DOOMSAT_HOME`: a commit; a repeat, twice; a repeat after the guard's `fileAnnounce`; an older `NAME.wad` with other bytes, another size with the same checksum, or its words reordered (same size and checksum); a repeat naming another upload of the same bytes; a repeat after `NAME.wad` changed, or after another upload replaced it; nothing on board; a wrong `.part` (other bytes, or another size with the same checksum) with and without a matching `NAME.wad`; a rename that fails; names that are not bare. Also: `fileAnnounce` outside the uplink directory, and every WAD report result, including `ALREADY` keeping the level. Nine mutants (any upload taken for this one, no record, a rename not recorded, no size check on either path, a doubled failure event, no repeat answer, `ALREADY` restarting the level) each fail a test |
+| `scripts/flight.sh ut`: Doom GTest suite, 11 tests, new (`flight/Components/Doom/test/ut`) | `COMMIT_WAD` against real files in a scratch `$DOOMSAT_HOME`: a commit; a repeat, twice; a repeat after the guard's `fileAnnounce`; an older `NAME.wad` with other bytes, another size with the same checksum, or its words reordered (same size and checksum); a repeat naming another upload of the same bytes; a repeat with the same size and another checksum; a repeat after `NAME.wad` changed, or after another upload replaced it; nothing on board; a wrong `.part` (other bytes, or another size with the same checksum) with and without a matching `NAME.wad`; a rename that fails; names that are not bare. Also: `fileAnnounce` outside the uplink directory, and every WAD report result, including `ALREADY` keeping the level. Eight mutants (any upload taken for this one, no record, a rename not recorded, no size check on either path, a doubled failure event, no repeat answer, `ALREADY` restarting the level) each failed a test. A ninth, no checksum check on the repeat, fails the repeat with the same size and another checksum, a step added in review |
 | `scripts/flight.sh ut`: the guard's 18 | Still pass (`docs/plans/cfdp-guard.md`). Both suites run under the address, undefined-behaviour and leak sanitizers |
-| `tests/test_payload_load_wad.py`, 9 tests, new | The payload's own `request_wad` and `poll_wad`, with the game and the probe child stood in for: a repeat after the switch, a repeat during the proof, another request during the proof, a new upload of the same name (with and without a pin), the game as launched (and under a linked name), another map, a refusal. They run in both venvs: in the ground venv the payload is imported with empty stand-ins for ViZDoom and Pillow |
-| `tests/test_wad_uplink.py` | `load_key` (5 tests), the result codes against `Doom.cpp`, and the payload and flight branches pinned as text: their order, that a repeat during the proof sends nothing of its own, that what flies is remembered at the switch |
-| `tests/test_wad_uplink_demo.py` | The stand-in stack now does what the flight software and payload do. New tests: a repeat commit answers as the first did; an older file of the same name is never taken; a load of what is flying; a load resent after its answer was lost takes the repeat's answer; an answer naming other files fails even with the count unmoved; a count that comes down late, or not at all, is not called "already flying" |
+| `tests/test_payload_load_wad.py`, 11 tests, new | The payload's own `request_wad` and `poll_wad`, with the game and the probe child stood in for: a repeat after the switch, a repeat during the proof, another request during the proof, a new upload of the same name (with and without a pin), the game as launched (and under a linked name), another map, and a refusal, a failed proof and a failed switch, none of them remembered as flying. They run in both venvs: in the ground venv the payload is imported with empty stand-ins for ViZDoom and Pillow |
+| `tests/test_wad_uplink.py` | `load_key` (5 tests), the result codes against `Doom.cpp`, and the payload and flight branches pinned as text: their order, that a repeat during the proof sends nothing of its own, that `poll_wad` remembers what flies (that it does so only at a switch is the two failure tests above) |
+| `tests/test_wad_uplink_demo.py` | The stand-in stack now does what the flight software and payload do. New tests: a repeat commit answers as the first did; an older file of the same name is never taken; a load of what is flying; a load resent after its answer was lost takes the repeat's answer; an answer naming other files fails even with the count unmoved; a `WadAlreadyFlying` whose count comes down late is still a switch, and a `WadLoaded` is never called "already flying" |
 
 ## What ran live
 
-The final build, on top of the reviewed guard (4 October 2026, flight `2026_10_04-18_18_35`, behind
-`tools/lossy_relay.py`):
+The build before the no-op got its own event, on top of the reviewed guard (4 October 2026, flight
+`2026_10_04-18_18_35`, behind `tools/lossy_relay.py`):
 
 | Check | Result |
 |---|---|
@@ -79,7 +81,7 @@ The final build, on top of the reviewed guard (4 October 2026, flight `2026_10_0
 | The same `LOAD_WAD` three times, 0.1 s apart (`cig.wad` over `freedoom2.wad`, MAP02) | The payload absorbed both repeats while proving. One `WadLoaded`, `WAD_LOADS` +1, `EPISODE` +1 |
 | The same `LOAD_WAD` once more | Answered (then as `WadLoaded`; `WadAlreadyFlying` since, see below). `WAD_LOADS` and `EPISODE` did not move, and frames kept coming. Payload: "already flying it; nothing to do" |
 | `doom1.wad` on E1M2, then E1M3 | Two switches, `WAD_LOADS` +1 each |
-| `LOAD_WAD doom1.wad E1M1` with the downlink blacked out, then the downlink restored and the same command resent | Nothing heard for 25 s. `WAD_LOADS` had already moved by 1. The resend got `WadLoaded`, and `WAD_LOADS` was +1 in all |
+| `LOAD_WAD doom1.wad E1M1` with the downlink blacked out, then the downlink restored and the same command resent | Nothing heard for 25 s. `WAD_LOADS` had already moved by 1. The resend was answered (then as `WadLoaded`; `WadAlreadyFlying` since), and `WAD_LOADS` was +1 in all |
 | Demo with the downlink blacked out from full size for 12 s (`cigfe.wad`) | The guard committed it on board during the blackout, and its `UploadCommitted` and `WadUplinked` were lost. The demo sent `COMMIT_WAD` 5 s after the FIN and got `WadUplinked` from the repeat, then `LOAD_WAD` flew it. Before this change, that repeat answered `WadUplinkFailed` |
 | Demo, 5 % loss each way (seed 31), `cig.wad` as `cigs1`–`cigs3` | 3 of 3 OK, each committed on board at the FIN. In one, the `WadLoaded` was lost and the WAD channels stood in for it |
 | Demo for what was already flying (`--pwad cigs3.wad --map map02`), same link | Answered, `WAD_LOADS` still 9: "OK: already flying" |
@@ -99,13 +101,18 @@ signal 11. The payload refused the load and kept flying what it had, which is wh
 ## Limits
 
 - **Older flight builds.** One built before this change answers a repeat `COMMIT_WAD` with `WadUplinkFailed`, and
-  the demo now fails on that. That errs on the safe side. Commit by hand after checking what is on board. The
-  other way round, this payload with an older flight build, a load of what is already flying gets no answer at
-  all: the old Doom component has no `ALREADY` and logs nothing for it. The flight software and the payload come
-  from the same checkout; rebuild with `scripts/flight.sh build`.
+  the demo now fails on that. That errs on the safe side. Check `NAME.wad` on board against the file sent
+  (`--checksum FILE` prints the size and checksum of either) and send `LOAD_WAD`; commit by hand only if the
+  `.part` is still there. The other way round, this payload with an older flight build, a load of what is already
+  flying gets no answer at all: the old Doom component has no `ALREADY` and logs nothing for it. The flight
+  software and the payload come from the same checkout; rebuild with `scripts/flight.sh build`.
 - **A restart between a commit and its repeat.** The record of which upload each `NAME.wad` came from is kept in
   memory, so after a restart a repeat answers `WadUplinkFailed`, and the demo fails, although the file is in place.
   That errs on the safe side: `LOAD_WAD` shows what is there.
+- **Eight names are remembered** (`PLACED_MAX`). A new name takes the next slot in turn, in the order names were
+  first put in place, so a name put in place again keeps its old slot, and as few as two new names can displace
+  its record. A repeat whose record was displaced answers `WadUplinkFailed`, although the file is in place: it
+  fails closed, as after a restart.
 - **What the checksum can tell apart.** The first commit's check of the `.part`, like CFDP's own check of the whole
   transfer, is the CFDP modular checksum, a sum of 4-byte words: two files of the same size whose aligned words are
   the same in another order pass it alike. The repeat answer does not rely on it alone; it names the upload.
@@ -114,8 +121,8 @@ signal 11. The payload refused the load and kept flying what it had, which is wh
   same size and time would count as the same file. Nothing on board does that: an upload is renamed over the old
   file.
 - **A no-op whose answer is lost.** Telemetry cannot stand in for it, because the count does not move. The ground
-  asks again, and each repeat is answered. The dashboard gives up after three unanswered tries, as it would for
-  any load.
+  asks again, and each repeat is answered. The dashboard (#9) gives up after three unanswered tries, as it would
+  for any load.
 - **Other commands.** `RESET_GAME`, `EXPLORE_HINT` and the relative turn in `CONTROL` are still not safe to
   repeat. Nothing resends them. Changing them would change the pilot's behaviour, which goes through the experiment
   ledger (`research/PROGRAM.md`).

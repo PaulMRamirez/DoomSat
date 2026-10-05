@@ -140,7 +140,7 @@ void Doom ::COMMIT_WAD_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, const Fw::Cmd
     // checksum sent, this COMMIT_WAD repeats one that worked (its WadUplinked lost on the way down), or cfdpGuard
     // committed the file: answer as that commit did, so the ground can ask again until it hears. Otherwise the
     // answer is WadUplinkFailed: not arrived, an older NAME.wad from another upload (whatever its bytes), a rename
-    // that failed, or a restart since the commit.
+    // that failed, or since the commit a restart or new names that took its slot in the record (PLACED_MAX).
     Fw::String dest;
     if (this->placedFrom(path, fileSize, checksum, dest)) {
         this->log_ACTIVITY_HI_WadUplinked(dest);
@@ -217,7 +217,7 @@ bool Doom ::placeWad(const Fw::StringBase& file_name, bool logFailure) {
         Os::ScopeLock lock(this->m_placedLock);
         renamed = (Os::FileSystem::rename(path, dest.toChar()) == Os::FileSystem::OP_OK);
         if (renamed) {
-            FwSizeType slot = this->m_placedNext;  // NAME.wad's own record if it has one, else the oldest
+            FwSizeType slot = this->m_placedNext;  // NAME.wad's own record if it has one, else the next slot in turn
             for (FwSizeType i = 0; i < PLACED_MAX; i++) {
                 if (this->m_placed[i].used && this->m_placed[i].dest == dest) {
                     slot = i;

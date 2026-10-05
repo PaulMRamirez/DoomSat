@@ -124,8 +124,11 @@ for the dev set. The shareware `doom1.wad` E1M1 is the test level.
   included, is refused on board (`UploadRefused`). `COMMIT_WAD(part, fileSize, checksum)` is for class 1 or a
   commit by hand. It takes only the bare `.part` name, at most 38 characters as Yamcs sends it (F´ command strings
   hold 40), and renames only if the size and CFDP checksum match (`wad_uplink_demo.py --checksum FILE` prints
-  both). `COMMIT_WAD` and `LOAD_WAD` are safe to send again: a repeat answers as the first did and changes nothing.
-  `scripts/flight.sh ut` runs the guard's and the Doom component's GTest suites.
+  both). `COMMIT_WAD` and `LOAD_WAD` are safe to send again: a repeat changes nothing and gets a definite answer. A
+  repeated `COMMIT_WAD` answers `WadUplinked` again (until a flight restart; after one it fails closed with
+  `WadUplinkFailed`). A `LOAD_WAD` for what already flies answers `WadAlreadyFlying`, not `WadLoaded`, and a repeat
+  during the proof shares the first one's answer. `scripts/flight.sh ut` runs the guard's and the Doom component's
+  GTest suites.
 - Yamcs starts through `ground/yamcs/launch.py`, not `fprime-yamcs` itself: fprime-yamcs writes the instance YAML
   back with sorted keys, which breaks the CFDP stream SQL. The parameter file is `$DOOMSAT_HOME/run/PrmDb.dat`,
   built at every start; if it cannot be built the start stops (`DOOMSAT_PRM_DEFAULTS=1` flies on F´'s defaults).
