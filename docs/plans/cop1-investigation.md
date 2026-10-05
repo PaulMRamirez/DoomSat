@@ -17,10 +17,11 @@ build. It was done on 4 October 2026 against the versions DoomSat pins: F´ v4.3
 
 COP-1 can be built inside DoomSat without forking F´, in about 6 to 9 days. **It is not worth building now:**
 
-- The normal link loses nothing.
+- The normal link loses nothing since `f3d2c655` (one space packet per TC frame). The loss it had before that
+  happened above the frame layer, where COP-1 would not have caught it (see below).
 - The pilot's command stream already tolerates loss, and COP-1 would make that stream worse.
 - The real exposure is two one-shot commands, `COMMIT_WAD` and `LOAD_WAD`. Fixing those directly takes about a
-  day, and two of the four parts of that fix are already built (see the recommendation).
+  day, and all four parts of that fix are now built, in #7, #8 and #9 (see the recommendation).
 
 ## Why it does not work today
 
@@ -32,7 +33,7 @@ All paths below are in the F´ tree (`$DOOMSAT_HOME/DoomSat/lib/fprime`).
 |---|---|
 | The TC frame detector accepts only Type-BD frames. Its token is `(1 << BypassFlagOffset) \| SpacecraftId`, which is 0x2044 for DoomSat, compared with the whole first 16 bits of the frame. An AD frame starts 0x0044 and a BC frame 0x3044, so neither is detected | `Svc/FrameAccumulator/FrameDetector/CcsdsTcFrameDetector.hpp:45`, `CcsdsTcFrameDetector.cpp:40-43, 88-91` |
 | A frame that is not detected is dropped silently. The accumulator moves on one byte with no event and no counter. Because the detector also checks the CRC, a corrupt frame never reaches `TcDeframer`, so its `InvalidCrc` event cannot fire on this path either | `Svc/FrameAccumulator/FrameAccumulator.cpp:177-184` (events only at 123, 153 and 164) |
-| `TcDeframer` runs no FARM. Its comment reads "F Prime uses TC Type-BD frames for now, so the FARM checks are not ran". It checks the spacecraft id, length, virtual channel and CRC, and forwards the data field only. A duplicated frame runs twice: `ApidManager` logs `UnexpectedSequenceCount` and carries on | `Svc/Ccsds/TcDeframer/TcDeframer.cpp:66-91`, `Svc/Ccsds/ApidManager/ApidManager.cpp:24-35` |
+| `TcDeframer` runs no FARM. Its comment reads "F Prime uses TC Type-BD frames for now, so the FARM checks are not ran". It checks the spacecraft id, length, virtual channel and CRC, and forwards the data field only. A duplicated frame runs twice: `ApidManager` logs `UnexpectedSequenceCount` and carries on | `Svc/Ccsds/TcDeframer/TcDeframer.cpp:66-111`, `Svc/Ccsds/ApidManager/ApidManager.cpp:24-35` |
 | No CLCW goes down. `TmFramer` writes the Operational Control Field (OCF) flag as 0 (`globalVcId \|= 0x0`) and has no port that could receive a CLCW | `Svc/Ccsds/TmFramer/TmFramer.cpp:39-41`, `TmFramer.fpp` |
 | v4.4.0 and `devel` are the same: identical detector header, the same comment, the OCF flag still 0 | `TmFramer.cpp:43` on both |
 
@@ -58,10 +59,12 @@ Three things make a DoomSat-built COP-1 more than a component:
 
 - **Yamcs 5.12.8's FOP-1 is complete** (`Cop1TcPacketHandler`): AD, BD and BC frames, the window, the timer, the
   transmission limit, and suspend and resume.
-- **It needs a `clcwStream`** on the TM link, which `Cop1TcPacketHandler.java:180-184` reads with no default.
-  `TmFrameDecoder` takes the OCF from the frame header's own flag bit, so DoomSat's three `ocfPresent: false`
-  lines in `ground/yamcs/etc/yamcs.fprime-project.yaml` do nothing for TM/TC frames: only the AOS classes read
-  that key. DoomSat has `useCop1: false` on both virtual channels and no `clcwStream`.
+- **It needs a `clcwStream` on both links.** The TM link publishes each frame's CLCW to it
+  (`MasterChannelFrameHandler.java:46`, optional), and each COP-1 TC virtual channel reads it
+  (`Cop1TcPacketHandler.java:180`, required, no default). `TmFrameDecoder` takes the OCF from the frame header's
+  own flag bit, so DoomSat's three `ocfPresent: false` lines in `ground/yamcs/etc/yamcs.fprime-project.yaml` do
+  nothing for TM/TC frames: only the AOS classes read that key. DoomSat has `useCop1: false` on both virtual
+  channels and no `clcwStream`.
 - **`bdAbsolutePriority` works only from the YAML.** Set through the API it has no effect, and `GET /config`
   reports the wrong value. Without it, a bypass command waits behind a full AD window.
 - **Other FOP behaviour found in scratch runs** (scratch Yamcs instance; not re-run for this report):
@@ -69,7 +72,9 @@ Three things make a DoomSat-built COP-1 more than a component:
   - Initialising purges the queue without failing those commands in command history.
   - Commands queued during initialisation are not sent on sync until another command arrives.
   - `cop1TxLimit` counts all transmissions, not retransmissions.
-- **The fprime-yamcs bridge would pass frames with the OCF flag set.** `tm_frame_aggregator.py:37-47` checks the
+- **The fprime-yamcs bridge would pass frames with the OCF flag set.** Its default framing, `tm-frame-aggregator`
+  (fprime-yamcs 0.2.1, `comm/__init__.py:5`), is fprime-gds 4.4.0's
+  `fprime_gds/common/communication/ccsds/tm_frame_aggregator.py`. Its `is_frame_start` (lines 100-120) checks the
   version, the spacecraft id and the data-field status only.
 
 ## The command stream is not what COP-1 is for
@@ -97,18 +102,32 @@ each, Yamcs defaults: window 10, T1 3 s, transmission limit 3).
 | 10 %, COP-1 | 93.0 % | 5.3 s | 18 % | 13 % | 13.6 |
 
 "Silent" is the share of the time with no command arriving on board. Every FOP suspend needs an operator or a tool
-to resume. Tuning helps but never matches BD: at 5 % loss, T1 1 s with a window of 3 brings p99 to 0.77 s and
-silence above 1.5 s to 0.74 % (`cop1/fop_variants.py`).
+to re-initialise the AD service, which purges both queues. Yamcs's Resume (`Cop1TcPacketHandler.java:595-611`)
+restores the state and restarts T1 but retransmits nothing, so after a lost frame the FOP stops again. Tuning
+helps but never matches BD: at 5 % loss, T1 1 s with a window of 3 brings p99 to 0.77 s and silence above 1.5 s
+to 0.74 % (`cop1/fop_variants.py`).
 
-**This is a model, not a measurement.** It assumes a CLCW in every TM frame at 20 Hz, an ideal FARM, and one-way
-delays of 20 ms up and 50 ms down. Real TM cadence depends on `ComQueue` traffic. Quote it as an indication.
+**This is a model, not a measurement.** It assumes a CLCW in every TM frame at 20 Hz, an ideal FARM, one-way
+delays of 20 ms up and 50 ms down, and one command per frame (DoomSat sets `multiplePacketsPerFrame: false`;
+Yamcs's default is true). It also assumes an operator who re-initialises the AD service (with Set V(R)) 10 s after
+each suspend. COP-1's undelivered share in the table is exactly the commands those re-initialisations purge.
+Re-initialising at once delivers 99.7 % at 5 % loss and 96.6 % at 10 %. Real TM cadence depends on `ComQueue`
+traffic. Quote it as an indication.
 
 ## Where commands are actually lost
 
-- **On the normal link, nowhere that was found.** None of the 30 flight logs on this VM has a
+- **On the normal link, nowhere found since `f3d2c655`.** None of the 30 flight logs on this VM has a
   `FrameDetectionValidFrameDropped`, `NoBufferAvailable` or `FrameDetectionSizeError` event. A burst of 4,745
-  commands (flight `2026_10_03-23_26_33`) gave 4,745 `OpCodeDispatched`, 4,745 `OpCodeCompleted` and no
-  `UnexpectedSequenceCount`. This shows no loss on loopback. It is not a measurement under loss.
+  commands (flight `2026_10_03-23_26_33`, the first after `f3d2c655`) gave 4,745 `OpCodeDispatched`, 4,745
+  `OpCodeCompleted` and no `UnexpectedSequenceCount`. This shows no loss on loopback. It is not a measurement
+  under loss.
+- **On the normal link before `f3d2c655`, above the frame layer.** Yamcs packed several queued commands into one
+  TC frame, and F´'s `SpacePacketDeframer` kept only the first space packet of a frame, with no event
+  (`Svc/Ccsds/SpacePacketDeframer/SpacePacketDeframer.cpp:119-120`). Three flights on the plain loopback link,
+  before the relay existed (`2026_10_03-22_46_17`, `22_48_42` and `23_01_56`), log 1, 9 and 48
+  `UnexpectedSequenceCount` gaps: 1, 9 and 83 packets missing. COP-1 acknowledges whole frames, so it would have
+  accepted those frames and the packets would still have been lost. `multiplePacketsPerFrame: false` on both TC
+  virtual channels fixed it (`docs/plans/wad-uplink-stage1.md`).
 - **Behind `tools/lossy_relay.py`**, which drops datagrams on purpose. There, the commands that matter are the
   one-shots:
   - A `COMMIT_WAD` resent after its answer was lost finds no `.part` and answers `WadUplinkFailed`, the same as
@@ -119,9 +138,11 @@ delays of 20 ms up and 50 ms down. Real TM cadence depends on `ComQueue` traffic
   - `RESET_GAME`, `EXPLORE_HINT` and `CONTROL`'s relative turn are not safe to repeat either. None of them is
     resent today.
 
-  That was the behaviour when this was written. Steps 1 and 2 below change the first two commands: on
-  `feature/idempotent-wad-commands` a repeated `COMMIT_WAD` for an upload already in place answers `WadUplinked`,
-  and a repeated `LOAD_WAD` answers `WadLoaded` with nothing changed.
+  That was the behaviour when this was written. Steps 1 and 2 below, built in #8, change the first two commands.
+  A repeated `COMMIT_WAD` for an upload already in place answers `WadUplinked`. A repeated `LOAD_WAD` for what is
+  already flying answers `WadAlreadyFlying` and changes nothing (`WAD_LOADS` does not move, and `WadLoaded` keeps
+  meaning a switch). A repeat that arrives while the first is being proven is absorbed: the proof's answer serves
+  both.
 
 ## Options
 
@@ -140,21 +161,23 @@ delays of 20 ms up and 50 ms down. Real TM cadence depends on `ComQueue` traffic
 Make the one-shot commands safe to repeat, and keep the stream on BD. About a day in all: half a day of code and
 tests, and half a day for a `DOOMSAT_RELAY=1` run at 5 % loss.
 
-1. **`COMMIT_WAD` answers OK when `NAME.wad` already matches.** When the `.part` is gone, check `NAME.wad`'s size
-   and checksum against the arguments (`fileSum`, which the command already uses), and answer `WadUplinked` if
-   they match. About 15 lines in `Doom.cpp`, plus a test. *Done* on `feature/idempotent-wad-commands`
-   (`docs/plans/idempotent-wad-commands.md` there).
-2. **`LOAD_WAD` does nothing when the same WAD and map are already flying or being proven.** Compare with
-   `wu.identity` in `request_wad` (`payload/doom_payload.py`). A no-op does not raise `WAD_LOADS`, so
-   `tools/wad_uplink_demo.py`'s check must accept that. About 15 lines, plus tests. *Done* on the same branch.
-3. **The dashboard resends `LOAD_WAD`.** *Done* on `feature/dashboard-load-resend` (6ee396f3): up to 3 tries,
-   each confirmed by `WadLoaded` / `WadLoadFailed` or the 1 Hz `WAD_*` channels within 25 s. Until step 2
-   lands, a resend could still switch the game twice, but only if the event and 25 s of the `WAD_*` channels
-   were all lost. With step 2 in place, that cannot happen.
-4. **The guard commits uploads on board.** *Built* on `feature/cfdp-guard` (`docs/plans/cfdp-guard.md`): a Class
-   2 upload is committed when the receiver's own FIN says it is complete, with no `COMMIT_WAD` from the ground.
-   That takes the ambiguous retry out of the Class 2 path. Step 1 still matters for Class 1 and for a commit by
-   hand.
+1. **`COMMIT_WAD` answers OK when this upload is already in place.** When the `.part` is gone, it answers
+   `WadUplinked` only if this `.part` was the last one renamed into `NAME.wad` since start (a record the Doom
+   component keeps under a lock) and `NAME.wad` still has the size and checksum named. Size and checksum alone
+   were rejected: the CFDP checksum is a sum of 4-byte words, so an older `NAME.wad` with its words in another
+   order matches both. The record is kept in memory, so after an F´ restart a repeat fails closed
+   (`WadUplinkFailed`). *Done* in #8 (`docs/plans/idempotent-wad-commands.md`).
+2. **`LOAD_WAD` does nothing when the same WAD and map are already flying or being proven.** `request_wad`
+   (`payload/doom_payload.py`) compares the request with `wu.load_key`. A repeat of what is flying answers
+   `WadAlreadyFlying` and does not raise `WAD_LOADS`, and `tools/wad_uplink_demo.py` accepts that. A repeat
+   during the proof is absorbed. *Done* in #8.
+3. **The dashboard resends `LOAD_WAD`.** *Done* in #9: up to 3 tries, each confirmed within 25 s by `WadLoaded`,
+   `WadLoadFailed` or `WadAlreadyFlying`, or by the 1 Hz `WAD_*` channels. Without #8, a resend could still
+   switch the game twice, but only if the event and 25 s of the `WAD_*` channels were all lost. With #8, a resend
+   after a switch answers `WadAlreadyFlying`.
+4. **The guard commits uploads on board.** *Built* in #7 (`docs/plans/cfdp-guard.md`): a Class 2 upload is
+   committed when the receiver's own FIN says it is complete, with no `COMMIT_WAD` from the ground. That takes
+   the ambiguous retry out of the Class 2 path. Step 1 still matters for Class 1 and for a commit by hand.
 
 Keep COP-1 as a documented option for the day every one-shot command needs exactly-once, in-order delivery. Even
 then, use it on VC1 for one-shot commands only, and keep the stream on BD.
@@ -178,7 +201,7 @@ goes through the experiment ledger (`research/PROGRAM.md`), not a direct edit, a
   this report; they were not re-run.
 
 **Read:** everything else, in the F´ v4.3.0, v4.4.0 and `devel` sources, the Yamcs 5.12.8 source at its tag, the
-fprime-yamcs 0.2.1 package, and DoomSat itself.
+fprime-yamcs 0.2.1 and fprime-gds 4.4.0 packages, and DoomSat itself.
 
 **Not done:** no measurement of command loss on the real stack under the relay. Every guarantee above, for the
 recommended option and for COP-1 alike, is either not built or modelled until a `DOOMSAT_RELAY=1` run at 1 %, 5 %
@@ -203,17 +226,42 @@ g++ -std=c++14 -DTGT_OS_TYPE_LINUX -I"$F" -I"$B" -I"$F/lib/fprime" -I"$B/F-Prime
 
 ## Upstream note (draft, not filed)
 
-For `nasa/fprime`, if the user wants to file it:
+For `nasa/fprime`, if the user wants to file it. Check for an existing issue before filing.
 
-> **TcDeframer SDD says Type-A frames are deframed without FARM checks, but CcsdsTcFrameDetector drops them first**
+> **Stock ComCcsds uplink silently discards Type-A/Type-C and CRC-failed TC frames before TcDeframer**
 >
-> `Svc/Ccsds/TcDeframer/docs/sdd.md` says: "should Type-A frames be received, no FARM checks would be performed
-> on board". In v4.3.0 (and v4.4.0 and `devel` 55f597d), `CcsdsTcFrameDetector` compares the whole first 16 bits of a frame with
-> `(1 << BypassFlagOffset) | SpacecraftId`. So an AD frame (bypass 0) or a BC frame (control 1) is never
-> detected. `FrameAccumulator` then discards it one byte at a time with no event, and `TcDeframer` never sees
-> it. A ground station with COP-1 switched on therefore sees every sequence-controlled command vanish with no
-> trace on board. Suggest either correcting the SDD to say only Type-BD frames reach the deframer, or emitting
-> an event (throttled) when the detector rejects a frame whose version and spacecraft id match.
+> `Svc/Ccsds/TcDeframer/docs/sdd.md:9` says:
+>
+> > The TcDeframer currently functions only in the "Expedited Service" mode, for Type-B Frames. This means that
+> > should Type-A frames be received, no FARM checks would be performed on board.
+>
+> That is accurate for `TcDeframer` itself: it masks the flags off and never reads them
+> (`Svc/Ccsds/TcDeframer/TcDeframer.cpp:66`). In the stock `ComCcsds` uplink, though, such a frame never reaches
+> it, and neither does a frame with a bad CRC. Lines are for v4.3.0; v4.4.0 and `devel` (55f597d) have the same
+> code at the same lines.
+>
+> - `ComCcsds` gives its `frameAccumulator` a `CcsdsTcFrameDetector`
+>   (`Svc/Subtopologies/ComCcsds/ComCcsds.fpp:49-65`). The detector compares the whole first 16-bit word of a frame
+>   with `(0x1 << BypassFlagOffset) | SpacecraftId`
+>   (`Svc/FrameAccumulator/FrameDetector/CcsdsTcFrameDetector.hpp:45`, `CcsdsTcFrameDetector.cpp:40-43`). A frame
+>   with the bypass flag 0 (Type-A) or the control command flag 1 (Type-C) is therefore `NO_FRAME_DETECTED`. The
+>   detector then checks the CRC (`CcsdsTcFrameDetector.cpp:88-91`), so a corrupted frame is too.
+> - `FrameAccumulator` discards such a frame one byte at a time, with no event and no counter
+>   (`Svc/FrameAccumulator/FrameAccumulator.cpp:177-184`; its only events are at 123, 153 and 164).
+> - Neither doc says so. The FrameAccumulator SDD describes the one-byte rotate
+>   (`Svc/FrameAccumulator/docs/sdd.md:21`) but not that it is silent, and neither it nor the ComCcsds SDD
+>   (`Svc/Subtopologies/ComCcsds/docs/sdd.md`) says which frames the CCSDS TC detector accepts.
+>
+> So a ground station with COP-1 switched on sees every sequence-controlled command vanish with no trace on board.
+> For the same reason, `TcDeframer`'s `InvalidCrc` event (SVC-CCSDS-TC-DEFRAMER-008) can never fire in the stock
+> uplink: the detector has already checked the CRC. Suggest:
+>
+> 1. A sentence in the FrameAccumulator or ComCcsds docs: `CcsdsTcFrameDetector` accepts only Type-BD frames with
+>    this spacecraft id and a valid CRC, and anything else is discarded a byte at a time with no event.
+> 2. A counter, or a throttled event, in `FrameAccumulator` for the bytes it discards. The detector cannot emit it:
+>    `FrameDetector::detect` is a const helper with no ports (`Svc/FrameAccumulator/FrameDetector.hpp:48`). A richer
+>    detector `Status` (`FrameDetector.hpp:17-21`), for example "version and spacecraft id match but the flags or
+>    CRC do not", is one way to feed it.
 
 ## Files
 

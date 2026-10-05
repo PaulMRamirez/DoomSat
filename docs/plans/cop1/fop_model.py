@@ -10,7 +10,12 @@ FOP rules transcribed (Y = yamcs-core/src/main/java/org/yamcs/tctm/ccsds/Cop1TcP
   CLCW handling E1..E13 (Y:721-875); timer E104/E18 with timeoutType=1 (Y:924-972)
   initiateADRetransmission marks every frame nnR..vS-1 (go-back-N) and txCount++ (Y:979-989)
   removeAcknowlegedFramesFromSentQueue resets txCount=1 (Y:1007-1016)
-Defaults: K=10, t1=3 s, txLimit=3 (Y:182-184), multiplePacketsPerFrame false (one command per frame).
+Yamcs defaults: K=10, t1=3 s, txLimit=3 (Y:182-184).
+One command per frame: Yamcs's multiplePacketsPerFrame defaults to true (TcManagedParameters.java:157), and DoomSat
+sets it false (ground/yamcs/etc/yamcs.fprime-project.yaml).
+Operator: re-initialises AD with Set V(R) op_delay s (10 s here) after each suspend or alert, purging both queues;
+Yamcs's resume (Y:595-611) restores the state and restarts t1 but retransmits nothing. COP-1's undelivered
+commands are those purged.
 """
 import heapq
 import random
