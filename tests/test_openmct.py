@@ -16,6 +16,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -40,6 +41,17 @@ class Displays(unittest.TestCase):
         committed = (WEB / "displays" / "doomsat-displays.json").read_text(encoding="utf-8")
         self.assertEqual(committed, bod.display_json(self.b, self.root),
                          "run: python tools/build_openmct_displays.py --doc")
+
+    def test_plan_start_leaves_the_committed_file_alone(self):
+        # a campaign build goes beside the committed file, git-ignored; that one keeps DEFAULT_PLAN_START
+        with tempfile.TemporaryDirectory() as tmp:
+            web = Path(tmp) / "ground" / "openmct"
+            with mock.patch.multiple(bod, ROOT=Path(tmp), WEB=web), contextlib.redirect_stdout(io.StringIO()), \
+                    mock.patch.object(sys, "argv", ["build_openmct_displays.py", "--plan-start", "1800000000000"]):
+                bod.main()
+            written = sorted(f.name for f in (web / "displays").iterdir())
+            self.assertEqual(written, ["doomsat-displays.campaign.json"])
+            self.assertIn("1800000000000", (web / "displays" / written[0]).read_text(encoding="utf-8"))
 
     def test_reference_doc_is_current(self):
         committed = (ROOT / "docs" / "OPENMCT.md").read_text(encoding="utf-8")

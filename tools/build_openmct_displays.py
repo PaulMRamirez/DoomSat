@@ -8,10 +8,11 @@
     python tools/build_openmct_displays.py --target replay --pack ground/openmct/replay/flight-32/pack.json
     python tools/build_openmct_displays.py --plan-start <epoch ms>   # before a campaign flight
 
-Writes ground/openmct/displays/doomsat-displays.json (live, committed) or doomsat-displays.replay.json
-(replay, git-ignored; tools/build_openmct_replay.py calls this for you): an Open MCT
-object tree that StaticRootPlugin serves read-only as "DoomSat Displays", and that "Import from JSON" loads
-into My Items as an editable copy. Identifiers are uuid5 of the object's path, so a regenerated file diffs
+Writes ground/openmct/displays/doomsat-displays.json (live, committed), doomsat-displays.campaign.json (live
+with --plan-start, git-ignored; scripts/start_openmct.sh serves it while it is newer than the committed file)
+or doomsat-displays.replay.json (replay, git-ignored; tools/build_openmct_replay.py calls this for you): an
+Open MCT object tree that StaticRootPlugin serves read-only as "DoomSat Displays", and that "Import from JSON"
+loads into My Items as an editable copy. Identifiers are uuid5 of the object's path, so a regenerated file diffs
 cleanly against the last one.
 
 Every telemetry reference, including what the custom views read, is checked against the merged dictionary
@@ -579,8 +580,10 @@ def main():
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
     b, root, params, drift = build_all(a.target, a.pack, a.plan_start)
-    out = Path(a.out) if a.out else WEB / "displays" / (
-        "doomsat-displays.json" if a.target == "live" else "doomsat-displays.replay.json")
+    # --plan-start never writes the committed file: that one keeps DEFAULT_PLAN_START, which the tests check
+    name = ("doomsat-displays.replay.json" if a.target == "replay" else
+            "doomsat-displays.campaign.json" if a.plan_start else "doomsat-displays.json")
+    out = Path(a.out) if a.out else WEB / "displays" / name
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(display_json(b, root), encoding="utf-8", newline="\n")
     types = {}

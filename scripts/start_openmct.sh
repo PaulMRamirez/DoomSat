@@ -5,6 +5,12 @@
 cd "$(dirname "$0")/../external/openmct-yamcs" || { echo "run scripts/setup_ground.sh openmct first"; exit 1; }
 cp ../../ground/openmct/index.html ../../ground/openmct/index.js example/
 rm -rf example/doomsat example/displays && cp -r ../../ground/openmct/doomsat ../../ground/openmct/displays example/
+# A campaign build (build_openmct_displays.py --plan-start, git-ignored) is served in place of the committed
+# displays while it is the newer of the two, so the plan runs on the flight's clock.
+campaign=../../ground/openmct/displays/doomsat-displays.campaign.json
+if [ "$campaign" -nt ../../ground/openmct/displays/doomsat-displays.json ]; then
+  cp "$campaign" example/displays/doomsat-displays.json && echo "serving the campaign displays (--plan-start)"
+fi
 mkdir -p example/aar && cp ../../docs/results/e1m1-progress.html example/aar/
 # The stock dev config proxies to 0.0.0.0 (not dialable on Windows) and shows an error overlay for the
 # example display's missing telemetry; both patched in place (node, so it is the same on GNU and BSD).

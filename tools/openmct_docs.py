@@ -75,7 +75,7 @@ NOTES = {
     "CPU (%)": "F´ systemResources CPU.",
     "Memory used (derived %)": "MEMORY_USED over MEMORY_TOTAL.",
     # time and plan
-    "E1 campaign plan": "The charter's mission as a plan: E1M1 to E1M8 back to back at the 180 s budget each, with Sonnet's 60 s checkpoints on a second lane. Regenerate with --plan-start at the start of a campaign flight so planned and actual share a clock.",
+    "E1 campaign plan": "The charter's mission as a plan: E1M1 to E1M8 back to back at the 180 s budget each, with Sonnet's 60 s checkpoints on a second lane. At the start of a campaign flight, build with --plan-start (a git-ignored copy, which start_openmct.sh serves) so planned and actual share a clock.",
     "E1 campaign timelist": "The same plan as a list, with the current and next activity.",
     "UTC": "Wall clock, UTC.",
     # links
