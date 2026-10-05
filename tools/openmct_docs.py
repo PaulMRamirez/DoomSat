@@ -479,8 +479,7 @@ def render(b, root, params, drift):
       "cannot be changed by its own view, so the build pre-fills what plots, plans and graphs would otherwise "
       "write on first load. Open MCT's Bar Graph wants one array-valued source, which is why the eight-direction "
       "values are tables and the radar rather than bar graphs. The map product in a recorded flight is only the "
-      "final one, so the automap panel stays empty until the end of a replay. In a time strip, events render as "
-      "a table rather than as event markers.")
+      "final one, so the automap panel stays empty until the end of a replay.")
     w("")
     if drift:
         w(f"When this page was generated, the committed `fprime.xtce.xml` snapshot lacked {len(drift)} of the Doom "

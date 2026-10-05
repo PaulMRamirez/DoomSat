@@ -103,6 +103,11 @@ class Displays(unittest.TestCase):
         self.assertIn("get('commanding') === 'on'", (WEB / "index.js").read_text(encoding="utf-8"))
         self.assertIn("commanding: false", (WEB / "replay.js").read_text(encoding="utf-8"))
 
+    def test_time_strip_events_are_markers(self):
+        # without the plugin the events lane of 40 TIME STRIP falls back to a table off the shared clock
+        src = (WEB / "doomsat" / "common.js").read_text(encoding="utf-8")
+        self.assertIn("EventTimestripPlugin(timeline.extendedLinesBus)", src)
+
     def test_no_display_sends_commands(self):
         # plugin.js keeps the command button for later; SET_GOAL HOLD stops nothing on board, so no display
         # carries it and the reference does not offer it

@@ -28,7 +28,12 @@ export function installCommon(openmct, { displaysUrl = 'displays/doomsat-display
   openmct.install(openmct.plugins.LADTable());
   openmct.install(openmct.plugins.BarChart());
   openmct.install(openmct.plugins.ScatterPlot());
-  openmct.install(openmct.plugins.Timeline());
+  // Events in a time strip as markers on the shared clock, not a table (Open MCT 4.1 and later)
+  const timeline = openmct.plugins.Timeline();
+  openmct.install(timeline);
+  if (openmct.plugins.EventTimestripPlugin) {
+    openmct.install(openmct.plugins.EventTimestripPlugin(timeline.extendedLinesBus));
+  }
   openmct.install(openmct.plugins.PlanLayout({ creatable: true }));
   openmct.install(openmct.plugins.Timelist());
   openmct.install(openmct.plugins.Notebook());
