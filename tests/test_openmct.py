@@ -133,8 +133,10 @@ class Displays(unittest.TestCase):
         # board reads, `${GROUND}/Score${n}`). Compared both ways with the inputs docs/OPENMCT.md lists.
         src = (WEB / "doomsat" / "plugin.js").read_text(encoding="utf-8")
         base = {"DOOM": openmct_docs.DOOM, "GROUND": openmct_docs.G}
-        members = set(re.findall(r"\$\{b\}\.(\w+)", src))
-        members |= set(re.findall(r"'(\w+)'", re.search(r"\[([^\]]*)\]\.forEach\(\(m\)", src)[1]))
+        drawn = set(re.findall(r"\$\{b\}\.(\w+)", src))
+        asked = set(re.findall(r"'(\w+)'", re.search(r"\[([^\]]*)\]\.forEach\(\(m\)", src)[1]))
+        self.assertEqual(sorted(drawn - asked), [], "the board draws members it never asks for: always n/r")
+        members = drawn | asked
         read = {f"{openmct_docs.DOOM}/{k}" for k in re.findall(r"'([A-Z][A-Z0-9_]{2,})'", src)}
         for ns, name, slot in re.findall(r"\$\{(DOOM|GROUND)\}/(\w+)(\$\{n\})?", src):
             if not slot:
@@ -554,21 +556,24 @@ report({first, then: seen.s});
         self.assertEqual(got["then"][X], [[11000, 3]])
 
     def test_a_bounds_change_clears_and_asks_again(self):
+        # the answer for 3000 to 4000 is slow and has data; it comes in after the answer for 1400 to 1600
         got = self.run_view("""
-const m = fake({[A]: [[1500, 90]], [X]: [[1500, 5]], [Y]: [[1500, 7]]}, 'fixed', {start: 1000, end: 2000},
-               {3000: 80});
-watch(m); await settle();
+const m = fake({[A]: [[1500, 90], [3500, 80]], [X]: [[1500, 5], [3500, 6]], [Y]: [[3500, 8]]}, 'fixed',
+               {start: 1000, end: 2000}, {3000: 80});
+const view = watch(m); await settle();
 const before = seen;
 m.time.setBounds({start: 3000, end: 4000}); m.time.setBounds({start: 1400, end: 1600}); await settle(300);
 const back = seen;
-m.time.setBounds({start: 3000, end: 4000}); await settle(300);
-report({before, back, empty: seen});
+const held = JSON.parse(JSON.stringify({ v: view.values, s: view.series }));
+m.time.setBounds({start: 6000, end: 7000}); await settle(300);
+report({before, back, held, empty: seen});
 """)
-        A, X = f"{openmct_docs.DOOM}/ANGLE", f"{openmct_docs.DOOM}/POS_X"
+        A, X, Y = (f"{openmct_docs.DOOM}/{n}" for n in ("ANGLE", "POS_X", "POS_Y"))
         self.assertEqual(got["before"]["v"][A], 90)
-        self.assertEqual(got["back"]["v"].get(A), 90, "a slow answer for older bounds came in last and won")
-        self.assertEqual(got["back"]["s"][X], [[1500, 5]])
-        self.assertNotIn(A, got["empty"]["v"])
+        self.assertEqual(got["back"]["v"], {A: 90, X: 5}, "a slow answer for older bounds came in last and won")
+        self.assertEqual(got["back"]["s"], {X: [[1500, 5]], Y: []})
+        self.assertEqual(got["held"], got["back"], "the slow answer for older bounds changed what the view holds")
+        self.assertEqual(got["empty"]["v"], {})
         self.assertEqual(got["empty"]["s"].get(X, []), [])
 
 
