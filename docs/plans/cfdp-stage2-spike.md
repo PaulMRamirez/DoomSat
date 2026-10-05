@@ -274,6 +274,9 @@ Restricted [ran]:
 - `LOAD_WAD` names only bare `.wad` files in `wads/uplink` and `wads/`, refuses `.part` names, and proves the
   file in a child process before the game switches (Stage 1).
 
+*Since then:* `cfdpGuard` refuses any upload destination outside the uplink directory
+(`docs/plans/cfdp-guard.md`), so the first two bullets below describe the spike build; the rest still holds.
+
 Not restricted, because `cfdpManager` uses the metadata's destination path as it stands
 (`F´:Svc/Ccsds/CfdpManager/Engine.cpp:405-406`) and opens it to create or overwrite
 (`TransactionRx.cpp:368`) [read]:

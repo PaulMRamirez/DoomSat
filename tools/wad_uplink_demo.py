@@ -381,8 +381,10 @@ def uplink(a, link, bucket, part, remote, name, content):
         if said and "[WadUplinked]" in said:
             say(f"event: {said} (committed on board at the FIN)")
             return 0, False
-        say(f"{said or 'no commit of this upload seen'} within {GUARD_ANSWER_S:.0f} s of the FIN (events lost on the "
-            "way down, a failed rename, or no cfdpGuard on this build): sending COMMIT_WAD")
+        seen = ("this upload's UploadCommitted came, but no WadUplinked or WadUplinkFailed after it" if mine
+                else "no commit of this upload seen")
+        say(f"{said or seen} within {GUARD_ANSWER_S:.0f} s of the FIN (events lost on the way down, a failed rename, "
+            "or no cfdpGuard on this build): sending COMMIT_WAD")
     # Class 1 has no FIN, and F' v4.3.0 reports a class 1 file whose CRC failed as completed anyway.
     if a.cfdp == 1:
         done = link.wait_event(t0, "[RxFileTransferCompleted]", "[RxFileTransferFailed]", "[RxCrcMismatch]",
