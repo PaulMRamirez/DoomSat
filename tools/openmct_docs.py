@@ -191,7 +191,8 @@ GLOSSARY = {
 CAND_MEMBERS = {"kind": "what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY",
                 "x": "x, map units", "y": "y, map units",
                 "pathUnits": "distance along floor the payload has seen (not the straight line)",
-                "novelty": "unseen 32-unit cells reachable through it, a count up to 255 (0 for all but a frontier)",
+                "novelty": "for a frontier or a door, the unseen 32-unit cells reachable through it, a count up to 255; "
+                           "0 for every other kind",
                 "threatCount": "live things near it"}
 
 
