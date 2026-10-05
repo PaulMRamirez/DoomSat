@@ -103,6 +103,7 @@ void CfdpGuardTester ::upload(U32 seq, const std::string& dest) {
 
 void CfdpGuardTester ::from_downlinkOut_handler(FwIndexType portNum, Fw::Buffer& fwBuffer) {
     this->m_downlinkPorts.push_back(portNum);
+    this->m_announcedAtDownlink.push_back(this->fromPortHistory_fileAnnounceOut->size());
     this->pushFromPortEntry_downlinkOut(fwBuffer);
 }
 
@@ -127,6 +128,9 @@ void CfdpGuardTester ::testAnUploadToTheUplinkDirectoryPassesUnchanged() {
     ASSERT_EQ(0, std::memcmp(out.getData(), before.data(), before.size()));
     ASSERT_EVENTS_SIZE(0);
     ASSERT_TLM_UPLOADS_ACCEPTED(0, 1);
+    // The nonce is the ground's habit, not the rule: NAME.wad.part lands too
+    this->upload(8, this->path("x.wad.part"));
+    ASSERT_TLM_UPLOADS_ACCEPTED(1, 2);
 }
 
 void CfdpGuardTester ::testItsFinCommitsItOnce() {
@@ -137,6 +141,7 @@ void CfdpGuardTester ::testItsFinCommitsItOnce() {
     this->invoke_to_downlinkIn(0, f);
     ASSERT_from_downlinkOut_SIZE(1);
     ASSERT_from_downlinkOut(0, f);  // passed on unchanged, on the same port
+    ASSERT_EQ(1u, this->m_announcedAtDownlink.at(0));  // announced, so renamed, before the FIN went on
     ASSERT_from_fileAnnounceOut_SIZE(1);
     ASSERT_from_fileAnnounceOut(0, Fw::String(dest.c_str()));
     ASSERT_EVENTS_UploadCommitted_SIZE(1);
@@ -331,12 +336,24 @@ void CfdpGuardTester ::testClass1IsLetThroughButNeverCommitted() {
 }
 
 void CfdpGuardTester ::testUnreadableMetadataIsRefused() {
-    Fw::Buffer md = this->metadata(18, this->path("u.wad.1.part").c_str());
-    Fw::Buffer cut(md.getData(), md.getSize() - 4);  // the destination runs past the end
-    this->invoke_to_uplinkIn(0, cut);
-    ASSERT_FALSE(this->lastUplinkReadable());
+    // The sender resends it each time the receiver NAKs for it: refused every time, reported once
+    for (int i = 0; i < 2; i++) {
+        Fw::Buffer md = this->metadata(18, this->path("u.wad.1.part").c_str());
+        Fw::Buffer cut(md.getData(), md.getSize() - 4);  // the destination runs past the end
+        this->invoke_to_uplinkIn(0, cut);
+        ASSERT_FALSE(this->lastUplinkReadable());
+    }
+    ASSERT_from_uplinkOut_SIZE(2);
     ASSERT_EVENTS_MetadataUnreadable_SIZE(1);
+    ASSERT_TLM_UPLOADS_REFUSED_SIZE(1);
     ASSERT_TLM_UPLOADS_REFUSED(0, 1);
+    // Another transaction is reported on its own
+    Fw::Buffer other = this->metadata(19, this->path("u.wad.1.part").c_str());
+    Fw::Buffer otherCut(other.getData(), other.getSize() - 4);
+    this->invoke_to_uplinkIn(0, otherCut);
+    ASSERT_FALSE(this->lastUplinkReadable());
+    ASSERT_EVENTS_MetadataUnreadable_SIZE(2);
+    ASSERT_TLM_UPLOADS_REFUSED(1, 2);
 }
 
 void CfdpGuardTester ::testAResendKeepsTheFirstDestination() {

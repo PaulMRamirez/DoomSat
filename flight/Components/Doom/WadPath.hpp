@@ -3,7 +3,7 @@
 // \brief  Where uplinked WADs land on board and what their names look like, shared by the Doom component
 //         (COMMIT_WAD, fileAnnounce) and CfdpGuard (which uploads it lets through), so the two cannot disagree.
 //
-// An uplinked WAD arrives as $DOOMSAT_HOME/wads/uplink/NAME.wad.<nonce>.part and becomes NAME.wad in the
+// An uplinked WAD arrives as $DOOMSAT_HOME/wads/uplink/NAME.wad[.<nonce>].part and becomes NAME.wad in the
 // same directory once it is known whole. $DOOMSAT_HOME defaults to $HOME/doom, as scripts/common.sh sets it.
 // ======================================================================
 
@@ -58,7 +58,7 @@ inline FwSizeType destLength(const char* path, FwSizeType len) {
 }
 
 //! A file directly in the uplink directory whose name uses only the payload's characters (letters, digits and
-//! _ . + -) and has the NAME.wad.<nonce>.part shape: the only uploads that may land on board.
+//! _ . + -) and has the NAME.wad[.<nonce>].part shape: the only uploads that may land on board.
 inline bool isUplinkPart(const char* path) {
     Fw::String dir;
     uplinkDir(dir);
