@@ -120,8 +120,8 @@ class OpsTelemetry:
         self.rolling = Rolling(window)
         self.every_s, self.expires_s, self.retry_s = every_s, expires_s, retry_s
         self.last_pub = 0.0
-        self.dropped = set()       # names left out for the run: not in this Yamcs's ground database, or a
-                                   # number it cannot take
+        self.dropped = set()       # names left out until Yamcs next fails to answer: not in this Yamcs's ground
+                                   # database, or a number it cannot take
         self.refused = set()       # (name, label) pairs it cannot convert, e.g. an IntentMode its enum lacks
         self.retry_at = 0.0        # after Yamcs did not answer, nothing is sent before this
         self.quiet = {}            # what was reported, and until when it stays quiet
@@ -165,8 +165,9 @@ class OpsTelemetry:
 
     def publish(self, values):
         """One batchSet for the whole block. Yamcs takes a batch whole or not at all, so a refused one is
-        narrowed down: names its ground database lacks are left out for the run, and a label it cannot convert
-        is left out while it lasts (a number it cannot take, for the run)."""
+        narrowed down: names its ground database lacks are left out, and a label it cannot convert is left out
+        while it lasts (a number it cannot take, like a name). Both are asked again once Yamcs has failed to
+        answer, since the one that answers next may be a restarted one with the current ground database."""
         items = {k: v for k, v in values.items()
                  if v is not None and k not in self.dropped and (k, v) not in self.refused}
         status, msg = self.send(items)
@@ -209,6 +210,9 @@ class OpsTelemetry:
             status, msg = None, f"{type(e).__name__}: {e}"
         if status is None or status >= 500:
             self.retry_at = time.time() + self.retry_s
+            if status is None:          # down or restarting: what this Yamcs lacked, the next one may have
+                self.dropped.clear()
+                self.refused.clear()
             why = f"HTTP {status}: {msg}" if status else msg
             self.warn("link", f"autonomy block not published, next try in {self.retry_s:.0f} s: {why}")
             return None, msg

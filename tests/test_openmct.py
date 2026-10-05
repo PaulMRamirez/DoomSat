@@ -400,6 +400,24 @@ class GroundFeed(unittest.TestCase):
             self.assertEqual(len(calls), 6)
         self.assertEqual(len(err.getvalue().splitlines()), 2, err.getvalue())   # once per feed
 
+    def test_a_restarted_yamcs_is_asked_again_for_what_the_last_one_lacked(self):
+        old, new, err = FakeYamcs(lacks=("EngageAnswer",)), FakeYamcs(), io.StringIO()
+        ops = feed(old, retry_s=0)
+        engage = dict(row(), answers={"g_t0": "1", "engage": "x"})
+
+        def down(body):
+            raise ConnectionError("connection refused")
+        with contextlib.redirect_stderr(err):
+            ops.update(engage, [])
+            ops.post = down                                # Yamcs restarting, with the current ground database
+            ops.update(engage, [])
+            ops.post = new
+            ops.update(engage, [])
+        self.assertNotIn("/DoomGround/EngageAnswer", old.values)
+        self.assertEqual(new.values["/DoomGround/EngageAnswer"], "x")
+        self.assertEqual(len(new.bodies), 1)
+        self.assertEqual(err.getvalue().count("EngageAnswer"), 1, err.getvalue())
+
     def test_the_feed_reads_and_never_raises(self):
         r, cands = row(pick=1), [{"kind": "frontier"}, {"kind": "door"}]
         before = copy.deepcopy((r, cands))
