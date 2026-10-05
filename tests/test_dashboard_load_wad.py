@@ -216,7 +216,7 @@ class TestTheLoadHandler(unittest.TestCase):
 
     def test_silence_is_sent_three_times_then_said(self):
         got = self.run_form()
-        self.assertEqual(len(got["posts"]), self.TRIES)
+        self.assertEqual(len(got["posts"]), 3)
         self.assertGreaterEqual(got["seconds"], self.TRIES * self.WAIT_S)
         self.assertIn(f"no answer after {self.TRIES} tries", got["text"])
 
@@ -256,12 +256,14 @@ class TestTheLoadHandler(unittest.TestCase):
                 got = self.run_form(answers={1: [self.LOADED]}, fail_reads=1000, fail_as=fail_as)
                 self.assertEqual(got["posts"], [])
                 self.assertEqual(got["reads"], 2 * self.READS, "every read asks both queries")
+                self.assertGreaterEqual(got["seconds"], self.READS - 1, "about 1 s between reads")
                 self.assertIn("MAP01 not sent: the event archive did not answer", got["text"])
                 self.assertIn(f"HTTP {status}", got["text"])
 
     def test_the_events_from_before_are_read_again_if_the_archive_misses_once(self):
         got = self.run_form(fail_reads=1)   # still not fooled by the old answers it then reads
         self.assertEqual(len(got["posts"]), self.TRIES)
+        self.assertGreaterEqual(got["seconds"], 1 + self.TRIES * self.WAIT_S, "1 s before it reads again")
         self.assertIn(f"no answer after {self.TRIES} tries", got["text"])
 
     def test_a_refusal_from_yamcs_is_said_once(self):
