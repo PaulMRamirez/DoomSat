@@ -249,55 +249,55 @@ Every parameter a display or custom view reads. Alarm ranges for flight paramete
 | `doom/ARMOR_BEARING` | float | Bearing to that armor pickup. |
 | `doom/ARMOR_ITEM_DIST` | integer | Distance to the nearest armor pickup seen. |
 | `doom/BULLETS` | integer | Bullets held (pistol, chaingun). |
-| `doom/CAND0.kind` | enumeration, **snapshot lag** | Candidate slot 0: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND0.novelty` | integer, **snapshot lag** | Candidate slot 0: how much unseen ground lies behind it. |
-| `doom/CAND0.pathUnits` | integer, **snapshot lag** | Candidate slot 0: distance along floor the payload has seen (not the straight line). |
-| `doom/CAND0.threatCount` | integer, **snapshot lag** | Candidate slot 0: live things near it. |
-| `doom/CAND0.x` | float, **snapshot lag** | Candidate slot 0: x, map units. |
-| `doom/CAND0.y` | float, **snapshot lag** | Candidate slot 0: y, map units. |
-| `doom/CAND1.kind` | enumeration, **snapshot lag** | Candidate slot 1: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND1.novelty` | integer, **snapshot lag** | Candidate slot 1: how much unseen ground lies behind it. |
-| `doom/CAND1.pathUnits` | integer, **snapshot lag** | Candidate slot 1: distance along floor the payload has seen (not the straight line). |
-| `doom/CAND1.threatCount` | integer, **snapshot lag** | Candidate slot 1: live things near it. |
-| `doom/CAND1.x` | float, **snapshot lag** | Candidate slot 1: x, map units. |
-| `doom/CAND1.y` | float, **snapshot lag** | Candidate slot 1: y, map units. |
-| `doom/CAND2.kind` | enumeration, **snapshot lag** | Candidate slot 2: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND2.novelty` | integer, **snapshot lag** | Candidate slot 2: how much unseen ground lies behind it. |
-| `doom/CAND2.pathUnits` | integer, **snapshot lag** | Candidate slot 2: distance along floor the payload has seen (not the straight line). |
-| `doom/CAND2.threatCount` | integer, **snapshot lag** | Candidate slot 2: live things near it. |
-| `doom/CAND2.x` | float, **snapshot lag** | Candidate slot 2: x, map units. |
-| `doom/CAND2.y` | float, **snapshot lag** | Candidate slot 2: y, map units. |
-| `doom/CAND3.kind` | enumeration, **snapshot lag** | Candidate slot 3: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND3.novelty` | integer, **snapshot lag** | Candidate slot 3: how much unseen ground lies behind it. |
-| `doom/CAND3.pathUnits` | integer, **snapshot lag** | Candidate slot 3: distance along floor the payload has seen (not the straight line). |
-| `doom/CAND3.threatCount` | integer, **snapshot lag** | Candidate slot 3: live things near it. |
-| `doom/CAND3.x` | float, **snapshot lag** | Candidate slot 3: x, map units. |
-| `doom/CAND3.y` | float, **snapshot lag** | Candidate slot 3: y, map units. |
-| `doom/CAND4.kind` | enumeration, **snapshot lag** | Candidate slot 4: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND4.novelty` | integer, **snapshot lag** | Candidate slot 4: how much unseen ground lies behind it. |
-| `doom/CAND4.pathUnits` | integer, **snapshot lag** | Candidate slot 4: distance along floor the payload has seen (not the straight line). |
-| `doom/CAND4.threatCount` | integer, **snapshot lag** | Candidate slot 4: live things near it. |
-| `doom/CAND4.x` | float, **snapshot lag** | Candidate slot 4: x, map units. |
-| `doom/CAND4.y` | float, **snapshot lag** | Candidate slot 4: y, map units. |
-| `doom/CAND5.kind` | enumeration, **snapshot lag** | Candidate slot 5: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND5.novelty` | integer, **snapshot lag** | Candidate slot 5: how much unseen ground lies behind it. |
-| `doom/CAND5.pathUnits` | integer, **snapshot lag** | Candidate slot 5: distance along floor the payload has seen (not the straight line). |
-| `doom/CAND5.threatCount` | integer, **snapshot lag** | Candidate slot 5: live things near it. |
-| `doom/CAND5.x` | float, **snapshot lag** | Candidate slot 5: x, map units. |
-| `doom/CAND5.y` | float, **snapshot lag** | Candidate slot 5: y, map units. |
-| `doom/CAND6.kind` | enumeration, **snapshot lag** | Candidate slot 6: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND6.novelty` | integer, **snapshot lag** | Candidate slot 6: how much unseen ground lies behind it. |
-| `doom/CAND6.pathUnits` | integer, **snapshot lag** | Candidate slot 6: distance along floor the payload has seen (not the straight line). |
-| `doom/CAND6.threatCount` | integer, **snapshot lag** | Candidate slot 6: live things near it. |
-| `doom/CAND6.x` | float, **snapshot lag** | Candidate slot 6: x, map units. |
-| `doom/CAND6.y` | float, **snapshot lag** | Candidate slot 6: y, map units. |
-| `doom/CAND7.kind` | enumeration, **snapshot lag** | Candidate slot 7: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
-| `doom/CAND7.novelty` | integer, **snapshot lag** | Candidate slot 7: how much unseen ground lies behind it. |
-| `doom/CAND7.pathUnits` | integer, **snapshot lag** | Candidate slot 7: distance along floor the payload has seen (not the straight line). |
-| `doom/CAND7.threatCount` | integer, **snapshot lag** | Candidate slot 7: live things near it. |
-| `doom/CAND7.x` | float, **snapshot lag** | Candidate slot 7: x, map units. |
-| `doom/CAND7.y` | float, **snapshot lag** | Candidate slot 7: y, map units. |
-| `doom/CAND_COUNT` | integer, **snapshot lag** | How many of the eight candidate slots are filled. |
+| `doom/CAND0.kind` | enumeration | Candidate slot 0: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
+| `doom/CAND0.novelty` | integer | Candidate slot 0: how much unseen ground lies behind it. |
+| `doom/CAND0.pathUnits` | integer | Candidate slot 0: distance along floor the payload has seen (not the straight line). |
+| `doom/CAND0.threatCount` | integer | Candidate slot 0: live things near it. |
+| `doom/CAND0.x` | float | Candidate slot 0: x, map units. |
+| `doom/CAND0.y` | float | Candidate slot 0: y, map units. |
+| `doom/CAND1.kind` | enumeration | Candidate slot 1: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
+| `doom/CAND1.novelty` | integer | Candidate slot 1: how much unseen ground lies behind it. |
+| `doom/CAND1.pathUnits` | integer | Candidate slot 1: distance along floor the payload has seen (not the straight line). |
+| `doom/CAND1.threatCount` | integer | Candidate slot 1: live things near it. |
+| `doom/CAND1.x` | float | Candidate slot 1: x, map units. |
+| `doom/CAND1.y` | float | Candidate slot 1: y, map units. |
+| `doom/CAND2.kind` | enumeration | Candidate slot 2: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
+| `doom/CAND2.novelty` | integer | Candidate slot 2: how much unseen ground lies behind it. |
+| `doom/CAND2.pathUnits` | integer | Candidate slot 2: distance along floor the payload has seen (not the straight line). |
+| `doom/CAND2.threatCount` | integer | Candidate slot 2: live things near it. |
+| `doom/CAND2.x` | float | Candidate slot 2: x, map units. |
+| `doom/CAND2.y` | float | Candidate slot 2: y, map units. |
+| `doom/CAND3.kind` | enumeration | Candidate slot 3: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
+| `doom/CAND3.novelty` | integer | Candidate slot 3: how much unseen ground lies behind it. |
+| `doom/CAND3.pathUnits` | integer | Candidate slot 3: distance along floor the payload has seen (not the straight line). |
+| `doom/CAND3.threatCount` | integer | Candidate slot 3: live things near it. |
+| `doom/CAND3.x` | float | Candidate slot 3: x, map units. |
+| `doom/CAND3.y` | float | Candidate slot 3: y, map units. |
+| `doom/CAND4.kind` | enumeration | Candidate slot 4: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
+| `doom/CAND4.novelty` | integer | Candidate slot 4: how much unseen ground lies behind it. |
+| `doom/CAND4.pathUnits` | integer | Candidate slot 4: distance along floor the payload has seen (not the straight line). |
+| `doom/CAND4.threatCount` | integer | Candidate slot 4: live things near it. |
+| `doom/CAND4.x` | float | Candidate slot 4: x, map units. |
+| `doom/CAND4.y` | float | Candidate slot 4: y, map units. |
+| `doom/CAND5.kind` | enumeration | Candidate slot 5: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
+| `doom/CAND5.novelty` | integer | Candidate slot 5: how much unseen ground lies behind it. |
+| `doom/CAND5.pathUnits` | integer | Candidate slot 5: distance along floor the payload has seen (not the straight line). |
+| `doom/CAND5.threatCount` | integer | Candidate slot 5: live things near it. |
+| `doom/CAND5.x` | float | Candidate slot 5: x, map units. |
+| `doom/CAND5.y` | float | Candidate slot 5: y, map units. |
+| `doom/CAND6.kind` | enumeration | Candidate slot 6: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
+| `doom/CAND6.novelty` | integer | Candidate slot 6: how much unseen ground lies behind it. |
+| `doom/CAND6.pathUnits` | integer | Candidate slot 6: distance along floor the payload has seen (not the straight line). |
+| `doom/CAND6.threatCount` | integer | Candidate slot 6: live things near it. |
+| `doom/CAND6.x` | float | Candidate slot 6: x, map units. |
+| `doom/CAND6.y` | float | Candidate slot 6: y, map units. |
+| `doom/CAND7.kind` | enumeration | Candidate slot 7: what kind of place: FRONTIER, DOOR, EXIT, KEY, ITEM, SWITCH, ENEMY. |
+| `doom/CAND7.novelty` | integer | Candidate slot 7: how much unseen ground lies behind it. |
+| `doom/CAND7.pathUnits` | integer | Candidate slot 7: distance along floor the payload has seen (not the straight line). |
+| `doom/CAND7.threatCount` | integer | Candidate slot 7: live things near it. |
+| `doom/CAND7.x` | float | Candidate slot 7: x, map units. |
+| `doom/CAND7.y` | float | Candidate slot 7: y, map units. |
+| `doom/CAND_COUNT` | integer | How many of the eight candidate slots are filled. |
 | `doom/CHUNKS_SENT` | integer | 960-byte FrameChunk records sent. |
 | `doom/CLEAR_AL` | integer | Map ray: open way, map units, ahead-left (45°). |
 | `doom/CLEAR_AR` | integer | Map ray: open way, map units, ahead-right. |
@@ -320,8 +320,8 @@ Every parameter a display or custom view reads. Alarm ranges for flight paramete
 | `doom/DOOR_BR` | integer | Distance to a door in 8-unit steps (0 = none) behind-right. |
 | `doom/DOOR_FWD` | integer | Distance to a door in 8-unit steps (0 = none) straight ahead. |
 | `doom/DOOR_LEFT` | integer | Distance to a door in 8-unit steps (0 = none) left (90°). |
-| `doom/DOOR_OPENS` | integer, **snapshot lag** | Use presses that opened something. |
-| `doom/DOOR_PRESSES` | integer, **snapshot lag** | Use presses at doors. |
+| `doom/DOOR_OPENS` | integer | Use presses that opened something. |
+| `doom/DOOR_PRESSES` | integer | Use presses at doors. |
 | `doom/DOOR_RIGHT` | integer | Distance to a door in 8-unit steps (0 = none) right. |
 | `doom/ENEMY_BEARING` | float | Bearing to the nearest enemy in view, degrees, positive left. |
 | `doom/ENEMY_COUNT` | integer | Live enemies in view. |
@@ -338,7 +338,7 @@ Every parameter a display or custom view reads. Alarm ranges for flight paramete
 | `doom/HEALTH_ITEM_DIST` | integer | Distance to the nearest health pickup seen. |
 | `doom/HINT_ACTIVE` | enumeration | Sonnet's exploration hint is in force. |
 | `doom/HINT_REL` | integer | The hint's bearing relative to the heading, degrees. |
-| `doom/INTENT_ID` | integer, **snapshot lag** | The intent the executor is carrying out; rises with every INTENT. |
+| `doom/INTENT_ID` | integer | The intent the executor is carrying out; rises with every INTENT. |
 | `doom/KEYS` | integer | Keys held as a bitmask: red 1, blue 2, yellow 4. |
 | `doom/KEY_BEARING` | float | Bearing to a remembered key, degrees, positive left. |
 | `doom/KEY_DIST` | integer | Distance to a remembered key; 0 when none. |
@@ -359,10 +359,10 @@ Every parameter a display or custom view reads. Alarm ranges for flight paramete
 | `doom/POS_Y` | float | Player y, map units. |
 | `doom/SHELLS` | integer | Shotgun shells held. |
 | `doom/STUCK` | enumeration | The payload thinks the player is pushing without moving. Watch alarm when True. |
-| `doom/THREAT_CLASS` | integer, **snapshot lag** | Worst visible monster class, by index into knowledge/doom_rules.yaml; 255 = nothing in view. |
-| `doom/THREAT_COUNT` | integer, **snapshot lag** | How many monsters are in view. |
+| `doom/THREAT_CLASS` | integer | Worst visible monster class, by index into knowledge/doom_rules.yaml; 255 = nothing in view. |
+| `doom/THREAT_COUNT` | integer | How many monsters are in view. |
 | `doom/TIC` | integer | Game tic, 35 per second, counted from the level start. The status strip turns it into game seconds. |
-| `doom/WATCHDOG_TRIPS` | integer, **snapshot lag** | Times an executor invariant had to pull the player out of a freeze. Watch alarm above 0. |
+| `doom/WATCHDOG_TRIPS` | integer | Times an executor invariant had to pull the player out of a freeze. Watch alarm above 0. |
 | `doom/WEAPON` | enumeration | Weapon in hand: FIST, PISTOL, SHOTGUN or OTHER. |
 
 ### Flight: the F´ framework
@@ -449,5 +449,3 @@ The displays sit downstream of the stack and never upstream of a decision. Nothi
 ## Behaviours worth knowing
 
 Condition inputs for enumerations compare the numeric value, not the label; F´ booleans arrive in Yamcs as an enumeration with False = 0 and True = 255. The Static Root plugin renumbers object keys by position, so deep links are generated (see `tools/openmct_snapshots.py`), not written by hand. A read-only object cannot be changed by its own view, so the build pre-fills what plots, plans and graphs would otherwise write on first load. Open MCT's Bar Graph wants one array-valued source, which is why the eight-direction values are tables and the radar rather than bar graphs. The map product in a recorded flight is only the final one, so the automap panel stays empty until the end of a replay. In a time strip, events render as a table rather than as event markers.
-
-When this page was generated, the committed `fprime.xtce.xml` snapshot lacked 15 of the Doom channels in `Doom.fpp` (CAND_COUNT, CAND0, CAND1, CAND2, CAND3, CAND4, CAND5, CAND6, CAND7, INTENT_ID, WATCHDOG_TRIPS, THREAT_CLASS, THREAT_COUNT, DOOR_PRESSES, DOOR_OPENS) and the INTENT command. Live Yamcs is unaffected (see Parameters); refreshing the snapshot is housekeeping, done by running fprime-to-xtce on the deployment's dictionary and committing the result.
