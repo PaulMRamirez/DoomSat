@@ -25,8 +25,8 @@ What the flight software and Yamcs do, which shapes the code:
 - In class 2 Yamcs completes a transfer only when F' acknowledges its Finished PDU. A transfer that ends FAILED
   with "File was received OK but the Finished PDU has not been acknowledged" has left its checksum-verified
   object in the bucket all the same: it is ingested, and the lost acknowledgement is recorded as a finding.
-- F' events carry the spacecraft's time, about 0.9 s ahead of Yamcs's clock, which stamps the command and the
-  transfer; F' numbers transactions from 1 at every boot. So a transfer is found by its source path and the
+- F' events carry the spacecraft's time, which ran about 0.9 s ahead of Yamcs's clock (which stamps the command
+  and the transfer) until tools/yamcs_time_patch.py, and may again on an unpatched install; F' numbers transactions from 1 at every boot. So a transfer is found by its source path and the
   time Yamcs created it, and the event window opens a little before the command. Yamcs creates a downlink when
   its first PDU arrives, after F' has the command, so this request's transfer is never older than the command.
 """
@@ -259,7 +259,8 @@ def list_transfers(settings: Settings, since_ms: int, http=None) -> list[dict]:
 
 def observe(settings: Settings, archive, p: dict, command: dict, now_ms: int, http=None) -> dict:
     """verdict() on what the archive and Yamcs show now, read only: the command's acknowledgements, the events
-    from just before the command to now (F' time runs ahead of the ground's), and the transfer list. Of the
+    from just before the command to now (F' time can run ahead of the ground's: docs/plans/fprime-yamcs-time.md),
+    and the transfer list. Of the
     transfers listed, only one created at or after the command can be this request's."""
     issued = command["issued_ms"]
     events = archive.events(issued - EVENT_SLACK_MS, now_ms + 5_000, types=list(DOWNLINK_EVENTS + ANSWER_EVENTS))

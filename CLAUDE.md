@@ -137,7 +137,7 @@ for the dev set. The shareware `doom1.wad` E1M1 is the test level.
 - fprime-yamcs (0.2.1 and 0.2.4) stamps every F´ packet 1 s ahead: it adds 38 s to F´'s Unix time where Yamcs
   adds TAI−UTC, 37 s. `scripts/flight.sh setup fprime` patches that one constant (`tools/yamcs_time_patch.py`,
   the original kept as `.jar.orig`); `tools/doctor.py` and `flight.sh start` say when it is not applied. Data
-  recorded before the patch keeps the extra second (`docs/plans/fprime-yamcs-time.md`).
+  recorded before the patch keeps the extra second (`docs/plans/fprime-yamcs-time.md`). Restart the flight side after patching: a running Yamcs keeps the old class.
 - `feature/wad-uplink` (the native build) and this branch share `$DOOMSAT_HOME/DoomSat`. Each commits its own
   `DoomSatTopologyDefs.hpp` and `wsl_sync.sh` copies it, so after switching branches `scripts/flight.sh build` is
   enough.

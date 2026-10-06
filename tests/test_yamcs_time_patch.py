@@ -62,25 +62,40 @@ class Patch(unittest.TestCase):
         fyt.patch(self.jar, KNOWN)
         backup = self.jar.with_name(self.jar.name + ".orig")
         self.assertEqual(backup.read_bytes(), original)
-        self.assertFalse(backup.name.endswith(".jar"), "fprime-yamcs loads *.jar: the backup must not be one")
+        self.assertEqual([p.name for p in self.jar.parent.glob("*.jar")], [self.jar.name],
+                         "fprime-yamcs loads jars/*.jar: the backup must not be one")
         patched = self.jar.read_bytes()
         self.assertEqual(fyt.patch(self.jar, KNOWN), "patched")   # again: nothing changes
         self.assertEqual(self.jar.read_bytes(), patched)
         self.assertEqual(backup.read_bytes(), original)
         self.assertFalse(self.jar.with_name(self.jar.name + ".tmp").exists())
 
+    def test_a_reinstall_is_patched_again_and_backed_up_again(self):
+        self.write()
+        fyt.patch(self.jar, KNOWN)
+        with zipfile.ZipFile(self.jar, "w") as z:   # pip put a fresh copy back, with another manifest
+            z.writestr("META-INF/MANIFEST.MF", b"Manifest-Version: 1.0\nBuilt-By: a reinstall\n")
+            z.writestr(CLASS, STAND_IN)
+        reinstalled = self.jar.read_bytes()
+        self.assertEqual(fyt.state(self.jar, KNOWN), "unpatched")
+        self.assertEqual(fyt.patch(self.jar, KNOWN), "patched")
+        self.assertEqual(self.jar.with_name(self.jar.name + ".orig").read_bytes(), reinstalled)
+        self.assertFalse(self.jar.with_name(self.jar.name + ".orig.tmp").exists())
+
     def test_a_class_it_does_not_know_is_left_alone(self):
-        for cls in (STAND_IN + b"x", STAND_IN.replace(fyt.OLD, fyt.OLD + fyt.OLD)):   # another build, or two sites
+        for cls in (STAND_IN + b"x", STAND_IN.replace(fyt.OLD, fyt.NEW) + b"x",   # another build, patched or not
+                    STAND_IN.replace(fyt.OLD, fyt.OLD + fyt.OLD)):                 # or two sites
             with self.subTest(cls=cls[-12:]):
                 original = self.write(cls)
+                self.assertEqual(fyt.state(self.jar, KNOWN), "unknown")   # what doctor and flight.sh start report
                 self.assertEqual(fyt.patch(self.jar, KNOWN), "unknown")
                 self.assertEqual(self.jar.read_bytes(), original)
                 self.assertFalse(self.jar.with_name(self.jar.name + ".orig").exists())
 
     def test_a_known_hash_with_two_sites_is_refused(self):
         twice = STAND_IN.replace(fyt.OLD, fyt.OLD + fyt.OLD)
-        original = self.write(twice)
-        self.assertEqual(fyt.patch(self.jar, (sha(twice), "0" * 64)), "unknown")
+        original = self.write(twice)   # both hashes match, so only the one-site guard can refuse it
+        self.assertEqual(fyt.patch(self.jar, (sha(twice), sha(twice.replace(fyt.OLD, fyt.NEW)))), "unknown")
         self.assertEqual(self.jar.read_bytes(), original)
 
     def test_no_jar_and_no_class(self):

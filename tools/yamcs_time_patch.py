@@ -6,7 +6,8 @@ adds TAI-UTC, which has been 37 s since 2017, so every F´ telemetry point and e
 Open MCT and the SDS is stamped 1 s ahead of the ground clock that stamps commands and ground parameters
 (docs/plans/fprime-yamcs-time.md). This rewrites that constant (bipush 38 -> bipush 37) in the installed
 jar, and only when the class is byte for byte the known one; anything else is left as it is. The jar as
-installed is kept beside it as <jar>.orig, which fprime-yamcs does not load (it loads *.jar).
+installed is kept beside it as <jar>.orig, which fprime-yamcs does not load (it loads *.jar). A Yamcs already
+running keeps the class it loaded: restart it after a patch.
 
     python tools/yamcs_time_patch.py            apply (scripts/setup_flight.sh fprime runs it)
     python tools/yamcs_time_patch.py --check    report only; exit 0 when patched
@@ -79,9 +80,10 @@ def patch(jar, known=None):
     fixed = data.replace(OLD, NEW)
     if sha(fixed) != known[1]:
         return "unknown"
-    backup = jar.with_name(jar.name + ".orig")
-    if not backup.exists():
-        backup.write_bytes(jar.read_bytes())
+    # The jar as installed now (a reinstall or upgrade replaces the last one), written whole before it is named
+    backup, btmp = jar.with_name(jar.name + ".orig"), jar.with_name(jar.name + ".orig.tmp")
+    btmp.write_bytes(jar.read_bytes())
+    os.replace(btmp, backup)
     tmp = jar.with_name(jar.name + ".tmp")
     with zipfile.ZipFile(tmp, "w") as out:
         for info, blob in entries:
@@ -96,7 +98,8 @@ def main(argv=None):
     p.add_argument("--jar", type=Path, help="the fprime-yamcs jar (default: the installed one)")
     a = p.parse_args(argv)
     jar = a.jar or find_jar()
-    s = state(jar) if a.check else patch(jar)
+    before = state(jar)
+    s = before if a.check else patch(jar)
     if s == "missing":
         print(f"fprime-yamcs time: no jar found ({jar or 'fprime_yamcs not installed'})")
         return 3
@@ -109,6 +112,8 @@ def main(argv=None):
               "(apply: scripts/flight.sh setup fprime, or this tool without --check)")
         return 1
     print(f"fprime-yamcs time: patched (TAI-UTC 37 s, as Yamcs): {jar}")
+    if before == "unpatched":
+        print("fprime-yamcs time: a Yamcs already running keeps the old class; restart it (scripts/flight.sh start)")
     return 0
 
 

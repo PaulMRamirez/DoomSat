@@ -242,8 +242,9 @@ The flight software sets traps here, all handled. F´ command strings hold at mo
 dictionary says 200), so paths are kept to 39, relative to the F´ binary's directory when the absolute one is too
 long. Yamcs needs all seven `SendFile` arguments. cfdpManager answers OK when it has queued the transfer and fails
 later, asynchronously, if the file cannot be opened, so the answer alone proves nothing. F´ events carry the
-spacecraft's time, about 0.9 s ahead of Yamcs's, and F´ numbers its transactions from 1 at every boot, so the
-transfer is matched by source path and the time Yamcs created it.
+spacecraft's time, which an unpatched fprime-yamcs puts about 0.9 s ahead of Yamcs's (`tools/yamcs_time_patch.py`),
+and F´ numbers its transactions from 1 at every boot, so the transfer is matched by source path and the time
+Yamcs created it.
 
 ## Publishing (Phase E)
 
