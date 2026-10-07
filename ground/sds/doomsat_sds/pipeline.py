@@ -322,7 +322,8 @@ QL_RETENTION_H = 24
 def frames_sent_between(series: list, start_ground_ms: int, stop_ground_ms: int) -> int | None:
     """How far FRAMES_SENT rose between two ground-clock times.
 
-    The capture service counts by the ground's clock; FRAMES_SENT is stamped with F´ time, about a second ahead.
+    The capture service counts by the ground's clock; FRAMES_SENT is stamped with F´ time, which an unpatched
+    fprime-yamcs puts about a second ahead (docs/plans/fprime-yamcs-time.md).
     The offset is measured from the series itself (generation minus reception), and the counter's rises are
     summed between the two edges, so a restart of the flight software (the counter falling back to zero) inside
     the window costs only the frames sent between its last sample and the restart, never a negative count.

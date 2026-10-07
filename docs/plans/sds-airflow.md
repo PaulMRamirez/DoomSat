@@ -107,7 +107,8 @@ disagreed with the brief, the code won; each case is listed under "What the code
    seconds after an episode ends is complete. Each read spawns a replay processor, so reads are batched across
    channels, and cut into 10-minute windows, because a long replay can die inside Yamcs (see Progress).
 5. **TM time runs about 0.95 s ahead of wall clock** (the preprocessor's leap-second offset is 38, not 37),
-   while command history is stamped with wall clock. Commands are placed on the TM time axis using the
+   while command history is stamped with wall clock. *Since then:* `tools/yamcs_time_patch.py` corrects the
+   offset at setup (`docs/plans/fprime-yamcs-time.md`); data recorded before it keeps the lead. Commands are placed on the TM time axis using the
    offset measured from the samples themselves (generation minus reception).
 6. **The downlink mirror is not `$DOOMSAT_HOME/run/downlink`.** The yaml says
    `${FPRIME_DOWNLINK_DIR:...}`, which Yamcs resolves from Java system properties, not the environment, so

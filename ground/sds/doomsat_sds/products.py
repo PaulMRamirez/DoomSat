@@ -63,9 +63,10 @@ def newer(a: str, b: str) -> bool:
 def clock_offset(series: dict) -> dict:
     """TM generation time minus ground reception time, from the samples themselves.
 
-    F´ time tags run about 0.95 s ahead of the ground clock (the preprocessor adds 38 leap seconds where TAI-UTC
-    is 37), while command history is stamped with the ground clock. This is the offset that puts commands on
-    the telemetry's time axis.
+    F´ time tags come through fprime-yamcs, command history is stamped with the ground clock. This is the offset
+    that puts commands on the telemetry's time axis: about +0.95 s with an unpatched fprime-yamcs (it adds 38 leap
+    seconds where TAI-UTC is 37) and in data recorded before tools/yamcs_time_patch.py, about -0.05 s (the link
+    delay) after it (docs/plans/fprime-yamcs-time.md). Measured, so it is right either way.
     """
     d = sorted(g - r for s in series.values() for g, r, _ in s if r is not None)
     if not d:

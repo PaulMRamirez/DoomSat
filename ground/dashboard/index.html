@@ -197,7 +197,8 @@ async function pollArchive() {
     $("cmds").textContent = (cm.entry || cm.commands || []).filter(c => !c.commandId.commandName.endsWith("uplinkFilePacket"))
       .slice(0, 9).map(c => {
       const args = (c.assignments || []).filter(a => a.userInput).map(a => `${a.name}=${val({engValue: a.value})}`).join(" ");
-      return `${new Date(Number(c.commandId.generationTime)).toISOString().substr(11, 8)} ${c.commandId.commandName.split("/").pop().padEnd(9)} ${args}`;
+      // generationTime is ISO UTC; commandId.generationTime is Yamcs's TAI-based instant, 37 s off as Unix time
+      return `${(c.generationTime || "").substr(11, 8)} ${c.commandId.commandName.split("/").pop().padEnd(9)} ${args}`;
     }).join("\n");
     if (window.lastMap) $("map").src = window.lastMap.replace(/^https?:\/\/[^/]+/, "");
   } catch (e) { console.log(e); }

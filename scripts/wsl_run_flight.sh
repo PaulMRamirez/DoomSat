@@ -89,6 +89,8 @@ start_yamcs() {
   # removes it. Nothing on board is running here (stop came first, and CFDP keeps no state across a boot).
   mkdir -p "$WADS/uplink/.cfdp-tmp"
   rm -f "$WADS/uplink/.cfdp-tmp/"*.tmp
+  # fprime-yamcs stamps F´ packets 1 s ahead unless setup patched it (tools/yamcs_time_patch.py): say so here
+  fprime-venv/bin/python "$REPO/tools/yamcs_time_patch.py" --check | grep -v "^fprime-yamcs time: patched"
   detach "cd '$PROJ' && . fprime-venv/bin/activate && python '$REPO/ground/yamcs/launch.py' --deployment $DEPLOY --app $DEPLOY/bin/DoomSat --skip-browser-open --yamcs-config-dir '$REPO/ground/yamcs' --yamcs-data-dir '$RUN/yamcs-data' --yamcs-realtime-only-channels DoomSat.doom.FRAME_CHUNK > '$RUN/yamcs.log' 2>&1"
 }
 case "${1:-start}" in

@@ -206,7 +206,7 @@ def capture(settings: Settings, number: int, start_ms: int, procs: list[dict] | 
     `flown` is flown_wad()'s answer for the episode. Without WAD samples in it, the WAD is the payload's --wad and
     --pwad, which is right only on a flight build from before main (it cannot switch WAD)."""
     procs = processes() if procs is None else procs
-    started = start_ms / 1000 + 5        # TM time runs ~1 s ahead of the process clock; allow a margin
+    started = start_ms / 1000 + 5        # TM time can run ~1 s ahead of the process clock (unpatched fprime-yamcs)
     ctx: dict = {"sources": {}}
     tlm = flown if flown and "wad" in flown else None
     missing = (flown or {}).get("missing", "the WAD telemetry was not read")
